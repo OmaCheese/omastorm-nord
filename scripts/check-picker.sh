@@ -10,7 +10,8 @@ cd "$(dirname "$0")/.."
 check_dir="$PWD/target/check-picker"
 mkdir -p "$check_dir"
 : > "$check_dir/none.toml"
-jq -c '.sites[] | select(.id=="KTLX") | {lat, lon, span: 210}' engine/data/sites.json > "$check_dir/state.json"
+# Camera on Vara so the empty query ranks the SMHI neighbours by distance.
+jq -c '.sites[] | select(.id=="vara") | {lat, lon, span: 210}' engine/data/sites.json > "$check_dir/state.json"
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
 OMASTORM_CONFIG="$check_dir/none.toml" OMASTORM_STATE="$check_dir/state.json" bash run.sh > "$check_dir/log" 2>&1 &
 pid=$!
@@ -22,31 +23,31 @@ for _ in {1..100}; do call status > /dev/null 2>&1 && break; sleep .1; done
 call status > /dev/null || fail "The window's picker IPC never answered"
 call open ""
 for _ in {1..50}; do [[ $(call matches) != '[]' ]] && break; sleep .1; done
-# The fixture's home view centres north-west of KTLX: KTLX first, the Norman pair next.
+# Vara first, then the next-nearest SMHI sites (Åtvidaberg, Ängelholm, …).
 m=$(call matches)
-[[ $m == '["KTLX","K'* && $m == *KOUN* && $m == *KCRI* ]] || fail "Empty query did not list the nearest stations first: $m"
-expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":163,"focused":true}' "$(call status)"
-call open tlx
-expect 'ID without its leading letter ranks first' '"KTLX"' "$(call matches | cut -d, -f1 | tr -d '[]')"
-call open tulsa
-expect 'City word start ranks first' '"KINX"' "$(call matches | cut -d, -f1 | tr -d '[]')"
-call open ok
-# KOKX by ID prefix, then KTLX by the city, then Oklahoma's stations by distance.
+[[ $m == '["vara","atvidaberg",'* || $m == '["vara","angelholm",'* ]] || fail "Empty query did not list the nearest stations first: $m"
+expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":12,"focused":true}' "$(call status)"
+call open vara
+expect 'ID prefix ranks first' '"vara"' "$(call matches | cut -d, -f1 | tr -d '[]')"
+call open ostersund
+expect 'Folded city word start ranks first' '"ostersund"' "$(call matches | cut -d, -f1 | tr -d '[]')"
+call open väst
+# County word start: Västra Götaland → Vara before other hits.
 m=$(call matches)
-[[ $m == '["KOKX","KTLX",'* ]] || fail "Tier order for 'ok' was wrong: $m"
+[[ $m == '["vara",'* ]] || fail "Tier order for 'väst' was wrong: $m"
 call open zzzq
 expect 'A hopeless query shows nothing' '[]' "$(call matches)"
 expect 'A hopeless query counts nothing' '{"open":true,"query":"zzzq","selected":0,"total":0,"focused":true}' "$(call status)"
 call close
 expect 'Close clears the picker' '{"open":false,"query":"","selected":0,"total":0,"focused":false}' "$(call status)"
-call open ok
+call open väst
 call move 1; call move 5
 expect 'Down stops at the last of four rows' '3' "$(call status | grep -o '"selected":[0-9]*' | cut -d: -f2)"
 call move -9
 expect 'Up stops at the first row' '0' "$(call status | grep -o '"selected":[0-9]*' | cut -d: -f2)"
-call open norman
+call open balsta
 first=$(call matches | cut -d, -f1 | tr -d '[]"')
-expect 'Norman finds KOUN' KOUN "$first"
+expect 'balsta finds Bålsta' balsta "$first"
 call accept
 expect 'Enter closes the picker' 'false' "$(call status | grep -o '"open":[a-z]*' | cut -d: -f2)"
 # The field must let go of the keyboard, or the next `/` types into it instead of reopening.

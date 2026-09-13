@@ -13,9 +13,9 @@ cd "$(dirname "$0")/.."
 check_dir="$PWD/target/check-keys"
 mkdir -p "$check_dir"
 rm -f "$check_dir/state.json"
-# Stokesdale, NC, as Omarchy's weather panel writes it: the camera sits on
-# the place; KFCX (Roanoke) is the nearest radar.
-printf '{\n  "name": "Stokesdale",\n  "latitude": 36.23708,\n  "longitude": -79.97948\n}\n' > "$check_dir/weather.json"
+# Gothenburg as Omarchy's weather panel writes it: the camera sits on
+# the place; Vara is the nearest SMHI radar.
+printf '{\n  "name": "Gothenburg",\n  "latitude": 57.70716,\n  "longitude": 11.96679\n}\n' > "$check_dir/weather.json"
 cat > "$check_dir/config.toml" <<'TOML'
 treatment = "neon"
 weak_floor = true
@@ -51,7 +51,7 @@ call status > /dev/null || fail "The window's keys IPC never answered"
 # The table over the defaults: the good line applies, every mistake is
 # reported once and leaves its default in place, a key bound twice stays
 # with the first action.
-until_field site KFCX
+until_field site vara
 b=$(call bindings)
 [[ $b == *'"pan_left":["A","Left"]'* ]] || fail "pan_left was not rebound: $b"
 [[ $b == *'"zoom_in":["+","="]'* ]] || fail "A bad zoom_in did not keep its default: $b"
@@ -68,7 +68,7 @@ expect 'A bad weak_floor leaves the default floor' 5 "$(field weakFloor)"
 expect 'The header names the weather location' weather "$(field locationSource)"
 
 # Each action's effect, through the same function the shortcuts call.
-until_field site KFCX
+until_field site vara
 call run reset
 span=$(field span); lon=$(field lon); lat=$(field lat)
 call run pan_left
@@ -103,19 +103,19 @@ quickshell ipc --pid "$pid" call picker close
 call run home
 for _ in {1..50}; do [[ $(quickshell ipc --pid "$pid" call location status | grep -o '"open":[a-z]*' | cut -d: -f2) == true ]] && break; sleep .1; done
 expect 'Shift+H opens the location picker' true "$(quickshell ipc --pid "$pid" call location status | grep -o '"open":[a-z]*' | cut -d: -f2)"
-quickshell ipc --pid "$pid" call location go 35.4 -97.5 "Moore"
-until_field lat 35.4
-until_field lon -97.5
+quickshell ipc --pid "$pid" call location go 58.26 12.83 "Vara"
+until_field lat 58.26
+until_field lon 12.83
 until_field locationSource state
 sleep 0.6
-state_exact "$check_dir/state.json" 35.4 -97.5 || fail "Shift+H location did not keep exact centre" "$(cat "$check_dir/state.json")"
+state_exact "$check_dir/state.json" 58.26 12.83 || fail "Shift+H location did not keep exact centre" "$(cat "$check_dir/state.json")"
 grep -q home_site "$check_dir/config.toml" && fail "Shift+H wrote home_site into config.toml"
 
 # The fix applies through the file watch: no report, the new key in force,
 # and an explicit centre outranking the weather location.
 cat > "$check_dir/config.toml" <<'TOML'
-center_lat = 35.333
-center_lon = -97.277
+center_lat = 58.256
+center_lon = 12.826
 treatment = "pixels"
 weak_floor = 10
 [keys]
@@ -129,7 +129,7 @@ b=$(call bindings)
 expect 'The treatment setting applies' PIXELS "$(field treatment)"
 expect 'The weak_floor setting applies' 10 "$(field weakFloor)"
 until_field locationSource config
-until_field lat 35.333
-until_field lon -97.277
+until_field lat 58.256
+until_field lon 12.826
 if rg -q 'TypeError|ReferenceError|Unable to assign|Failed to create.*context|is not a function' "$check_dir/log"; then fail "QML errors in the log"; fi
 echo "KEYS_PASSED"

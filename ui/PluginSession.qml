@@ -85,7 +85,7 @@ QtObject {
         locationPending = true;
         var url = Quickshell.env("OMASTORM_LOCATION_URL") || "https://wttr.in/?format=j2";
         locator.command = ["curl", "-fsS", "--max-time", "10", "-A",
-            "omastorm (https://omastorm.com)", url];
+            "omastorm-se (fork of https://omastorm.com)", url];
         // Bind the attempt to this launch. If a prior curl is still dying after
         // cancel, queue one restart instead of overwriting its exit attribution.
         locator.attempt = locateAttempt;
@@ -412,8 +412,8 @@ QtObject {
     // (qrc:/qs-blackhole), so env -C moves it home. Its stderr lands in
     // bootstrap.log beside the socket, and the popover shows the last line
     // while there is no engine.
-    readonly property string root: Quickshell.env("OMASTORM_ROOT") || Quickshell.env("HOME") + "/.config/omarchy/plugins/com.omastorm.radar"
-    readonly property string bootstrapLog: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omastorm/bootstrap.log"
+    readonly property string root: Quickshell.env("OMASTORM_ROOT") || Quickshell.env("HOME") + "/.config/omarchy/plugins/rb.omastorm-se"
+    readonly property string bootstrapLog: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omastorm-se/bootstrap.log"
     function bootstrap() {
         Quickshell.execDetached(["env", "-C", Quickshell.env("HOME"), "OMASTORM_BOOTSTRAP_LOG=" + bootstrapLog, "bash", root + "/run.sh", "--ensure"]);
     }

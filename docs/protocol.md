@@ -5,7 +5,7 @@ travel over this protocol; they go to the GPU as texture files.
 
 ## Transport
 
-- Unix stream socket at `$XDG_RUNTIME_DIR/omastorm/engine.sock`.
+- Unix stream socket at `$XDG_RUNTIME_DIR/omastorm-se/engine.sock`.
 - Newline-delimited JSON, UTF-8, one object per line, no pretty printing.
 - Multiple clients may connect (window and popover). Every client receives every
   broadcast. Commands from any client apply to the shared state.
@@ -86,7 +86,7 @@ It is small (a few KB) so clients replace rather than merge.
   `rays` 1, `gates` 1, empty `scanTime` and `sweepEnd`, the station table's
   coordinates. Before any station is selected the placeholder is `-loading`, sited
   at the middle of the contiguous network.
-- Paths are relative to `$XDG_RUNTIME_DIR/omastorm/` and have the form
+- Paths are relative to `$XDG_RUNTIME_DIR/omastorm-se/` and have the form
   `tex/<file>`: the literal prefix `tex/` and exactly one further segment that
   is not empty, `.`, or `..` and contains no `/`, backslash, or NUL. The file
   name is otherwise free and carries no meaning to the UI. Both ends apply this
@@ -134,7 +134,7 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
  "labels":[{"name":"Moore","lat":35.3395,"lon":-97.4867,"class":"city","rank":8}]}
 ```
 
-- `path` is relative to `$XDG_RUNTIME_DIR/omastorm/` and has the form
+- `path` is relative to `$XDG_RUNTIME_DIR/omastorm-se/` and has the form
   `tiles/<set>/<z>/<x>/<file>`: the literal prefix, `ne` or `osm`, two
   decimal integers, and one further segment under the texture rule (not
   empty, `.`, or `..`; no `/`, backslash, or NUL). The file name is otherwise
@@ -224,7 +224,7 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 
 ## Texture files
 
-Directory `$XDG_RUNTIME_DIR/omastorm/tex/`. Every file is written to a temporary
+Directory `$XDG_RUNTIME_DIR/omastorm-se/tex/`. Every file is written to a temporary
 name and renamed into place. Files are never modified after rename; a change
 produces a new name with a bumped `-rN` revision, so Qt image caching can never
 show stale pixels. The engine deletes files no `state` has referenced for 30 s.
@@ -268,7 +268,7 @@ derives from `frame.scale` and `frame.offset` for the floor in `units`
 draws nothing, exactly as a blank cell does; 0 is no floor. Folded and
 below-threshold codes are never weak, and the legend names the hidden range.
 
-**Tiles:** `$XDG_RUNTIME_DIR/omastorm/tiles/<set>/<z>/<x>/<y>-<gen>.png`,
+**Tiles:** `$XDG_RUNTIME_DIR/omastorm-se/tiles/<set>/<z>/<x>/<y>-<gen>.png`,
 Web Mercator XYZ numbering, 512 px, RGBA antialiased masks tinted by the
 UI's shader (`ui/shaders/tile.frag`):
 
@@ -288,7 +288,7 @@ in `osm` data. Sets: `ne` (Natural Earth, embedded in the binary, any zoom) and
 `osm` (OpenMapTiles-schema vector tiles fetched lazily from z7; roads exist
 only here). Masks are rasterized on demand into the runtime directory, never
 modified, and dropped oldest-first past 4,096 files. The fetched vector tiles,
-not the masks, are what persists: `$XDG_CACHE_HOME/omastorm/vt/<source>/<version>/<z>/<x>/<y>.pbf`,
+not the masks, are what persists: `$XDG_CACHE_HOME/omastorm-se/vt/<source>/<version>/<z>/<x>/<y>.pbf`,
 512 MB ceiling, least-recently-read evicted.
 
 ## Golden files
@@ -325,7 +325,7 @@ coordinates, and `product`, `palette`, and `bounds` the engine's reflectivity
 vocabulary shared with the fixture. Each chunk that grows the cut republishes
 the texture as `partial`; the cut's last radial (or the next cut's first)
 makes it `complete`, and complete frames enter the per-station catalog under
-`$XDG_CACHE_HOME/omastorm/frames/` (SQLite catalog plus the PNGs; 60 per
+`$XDG_CACHE_HOME/omastorm-se/frames/` (SQLite catalog plus the PNGs; 60 per
 station; the UI never reads it). Selecting a station shows its newest
 catalogued frame while the poller replays the current volume's lowest cut
 from the bucket, so a picture arrives within seconds and the next volume
@@ -333,8 +333,8 @@ paints live.
 
 ## Configuration
 
-`~/.config/omastorm/config.toml` and
-`$XDG_STATE_HOME/omastorm/state.json` are read by the UI, never by the engine.
+`~/.config/omastorm-se/config.toml` and
+`$XDG_STATE_HOME/omastorm-se/state.json` are read by the UI, never by the engine.
 Explicit preferences override remembered view state. The UI resolves the map
 center and radar lock independently, then sends `select_site`, `lock`,
 `follow`, and settled `view_center` commands as needed. Unlocked navigation

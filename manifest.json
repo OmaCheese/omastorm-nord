@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "id": "com.omastorm.radar",
-  "name": "Omastorm",
+  "id": "rb.omastorm-se",
+  "name": "Omastorm SE",
   "version": "0.1.9",
   "author": "Wes Grimes",
   "license": "MIT",
   "homepage": "https://omastorm.com",
-  "description": "Live NEXRAD radar for the Omarchy desktop",
+  "description": "Live SMHI radar for the Omarchy desktop, a fork of Omastorm",
   "kinds": [
     "bar-widget",
     "panel"
@@ -16,7 +16,7 @@
     "panel": "ui/Panel.qml"
   },
   "barWidget": {
-    "displayName": "Omastorm",
+    "displayName": "Omastorm SE",
     "description": "Home radar, scan age, playback, and expand",
     "category": "Weather",
     "allowMultiple": false,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fetch the pinned GitHub Release asset, verify its committed sha256, and
-# install it under $XDG_DATA_HOME/omastorm/bin (DESIGN.md, distribution).
+# install it under $XDG_DATA_HOME/omastorm-se/bin (DESIGN.md, distribution).
 # Ordinary launch never calls this. Plugin bootstrap does, through
 # `run.sh --ensure`, only when the checkout has no debug engine.
 set -euo pipefail
@@ -17,7 +17,7 @@ sha256=${hashes[$machine]:-}
 [[ -n $asset && -n $sha256 ]] || die "No pinned $machine engine for $tag yet. Publish its release asset and add its checksum to $pin_file."
 
 data_home=${XDG_DATA_HOME:-$HOME/.local/share}
-dest_dir=$data_home/omastorm/bin
+dest_dir=$data_home/omastorm-se/bin
 dest=$dest_dir/omastorm-engine
 
 hash_of() { sha256sum -- "$1" | awk '{print $1}'; }
@@ -36,7 +36,7 @@ if [[ -n ${OMASTORM_ENGINE_ASSET:-} ]]; then
   cp -- "$OMASTORM_ENGINE_ASSET" "$tmp"
 else
   url=${OMASTORM_ENGINE_URL:-https://github.com/$repo/releases/download/$tag/$asset}
-  if ! curl -fsSL --retry 2 -A "omastorm/$tag (https://omastorm.com)" -o "$tmp" -- "$url"; then
+  if ! curl -fsSL --retry 2 -A "omastorm-se/$tag (fork of https://omastorm.com)" -o "$tmp" -- "$url"; then
     die "Could not download $asset from $url." \
       "Publish GitHub Release $tag on $repo with that asset matching $pin_file, and make the repository public so the asset is anonymous." \
       "From a checkout with Rust: bash scripts/cargo.sh build --locked && bash run.sh"

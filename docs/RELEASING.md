@@ -1,7 +1,7 @@
 # Releasing Omastorm
 
 The repository is the plugin: installs clone the default branch into
-`~/.config/omarchy/plugins/com.omastorm.radar`; updates fast-forward it.
+`~/.config/omarchy/plugins/rb.omastorm-se`; updates fast-forward it.
 The engine is a separate GitHub Release binary, selected by tag and sha256 in
 `engine/release.pin`. Plugin and engine versions move independently.
 

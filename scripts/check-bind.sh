@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 fail() { printf '%s\n' "$@" >&2; exit 1; }
 
-bind='o.bind("SUPER + SHIFT + R", "Omastorm", "omarchy shell shell toggle com.omastorm.radar '"'"'{}'"'"'")'
+bind='o.bind("SUPER + SHIFT + R", "Omastorm SE", "omarchy shell shell toggle rb.omastorm-se '"'"'{}'"'"'")'
 rg -F -- "$bind" README.md >/dev/null \
   || fail "README.md does not name the documented o.bind line"
 # shellcheck disable=SC2088 # the literal path as the README prints it

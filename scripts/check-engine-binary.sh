@@ -11,7 +11,7 @@ unset OMASTORM_ARCHIVE
 mkdir -p "$XDG_RUNTIME_DIR"
 trap '"$binary" stop >/dev/null 2>&1 || true; rm -rf "$scratch"' EXIT
 "$binary" ensure
-hello=$(timeout 2 socat -t0.2 - "UNIX-CONNECT:$XDG_RUNTIME_DIR/omastorm/engine.sock" < /dev/null | head -n1 || true)
+hello=$(timeout 2 socat -t0.2 - "UNIX-CONNECT:$XDG_RUNTIME_DIR/omastorm-se/engine.sock" < /dev/null | head -n1 || true)
 jq -e --arg version "$version" --argjson protocol "$protocol" \
   '.type == "hello" and .engine == $version and .v == $protocol' <<< "$hello" >/dev/null \
   || { echo "Candidate hello does not match engine $version / protocol $protocol: $hello" >&2; exit 1; }

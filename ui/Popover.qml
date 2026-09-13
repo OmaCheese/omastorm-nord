@@ -242,7 +242,7 @@ FocusScope {
             font.pixelSize: 8
             opacity: .5
             elide: Text.ElideRight
-            text: map.osmOnScreen ? "NOAA · © OpenStreetMap" : "NOAA · Natural Earth"
+            text: map.osmOnScreen ? "SMHI CC BY 4.0 · © OpenStreetMap" : "SMHI CC BY 4.0 · Natural Earth"
         }
     }
 }

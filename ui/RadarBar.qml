@@ -5,7 +5,7 @@ import qs.Commons
 
 BarWidget {
     id: root
-    moduleName: "com.omastorm.radar"
+    moduleName: "rb.omastorm-se"
     property var session: PluginSession
     property bool opened: false
     property bool popoutSwitchClosing: false
@@ -19,7 +19,7 @@ BarWidget {
     function close() { opened = false; }
     function closeForPopoutSwitch() { popoutSwitchClosing = true; close(); }
     function expand() {
-        Quickshell.execDetached(["omarchy", "shell", "shell", session.windowOpen ? "summon" : "toggle", "com.omastorm.radar", "{}"]);
+        Quickshell.execDetached(["omarchy", "shell", "shell", session.windowOpen ? "summon" : "toggle", "rb.omastorm-se", "{}"]);
         close();
     }
     implicitWidth: button.implicitWidth

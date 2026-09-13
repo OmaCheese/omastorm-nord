@@ -21,7 +21,7 @@ scratch=$(mktemp -d /tmp/omastorm-handoff.XXXXXX)
 : > "$scratch/none.toml" # no home site: the camera alone picks the station
 bash scripts/cargo.sh build --offline --locked --quiet
 target/debug/omastorm-engine ensure
-sock="$XDG_RUNTIME_DIR/omastorm/engine.sock"
+sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.3 - "UNIX-CONNECT:$sock" > /dev/null; }
 # The pan: latitude, longitude, and the station the engine should hand off to.
 positions=('35.468 -97.333 KTLX' '35.30 -95.00 KSRX' '34.90 -92.30 KLZK' '33.20 -87.00 KBMX' '31.00 -84.30 KTLH' '30.50 -81.90 KJAX')

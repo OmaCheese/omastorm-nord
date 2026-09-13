@@ -51,7 +51,7 @@ fn scratch_root(name: &str) -> PathBuf {
 fn await_daemon(root: &Path, mut alive: impl FnMut() -> bool) -> BufReader<UnixStream> {
     let deadline = Instant::now() + STARTUP;
     loop {
-        if let Ok(stream) = UnixStream::connect(root.join("omastorm/engine.sock")) {
+        if let Ok(stream) = UnixStream::connect(root.join("omastorm-se/engine.sock")) {
             stream.set_read_timeout(Some(REPLY)).unwrap();
             return BufReader::new(stream);
         }
@@ -78,7 +78,7 @@ impl Engine {
         engine
     }
     fn connect(&self) -> BufReader<UnixStream> {
-        let stream = UnixStream::connect(self.root.join("omastorm/engine.sock")).unwrap();
+        let stream = UnixStream::connect(self.root.join("omastorm-se/engine.sock")).unwrap();
         stream.set_read_timeout(Some(REPLY)).unwrap();
         BufReader::new(stream)
     }
@@ -160,7 +160,7 @@ fn fixture_transport_and_shared_commands() {
             path.starts_with("tex/") && path.contains("-r"),
             "{field}: {path}"
         );
-        let bytes = fs::read(engine.root.join("omastorm").join(path)).unwrap();
+        let bytes = fs::read(engine.root.join("omastorm-se").join(path)).unwrap();
         let info = png::Decoder::new(std::io::Cursor::new(bytes))
             .read_info()
             .unwrap()
@@ -321,7 +321,7 @@ fn crash_recovery_and_immutable_revisions() {
         .to_owned();
     engine.child.kill().unwrap();
     engine.child.wait().unwrap();
-    let old_path = engine.root.join("omastorm").join(&old);
+    let old_path = engine.root.join("omastorm-se").join(&old);
     let restarted = Instant::now();
     engine.child = Command::new(env!("CARGO_BIN_EXE_omastorm-engine"))
         .env("OMASTORM_ARCHIVE", ARCHIVE)
@@ -357,7 +357,7 @@ fn crash_recovery_and_immutable_revisions() {
         );
         thread::sleep(Duration::from_millis(20));
     }
-    assert!(engine.root.join("omastorm").join(new).exists());
+    assert!(engine.root.join("omastorm-se").join(new).exists());
 }
 #[test]
 fn oversized_client_is_disconnected_without_harming_server() {
@@ -377,7 +377,7 @@ fn oversized_client_is_disconnected_without_harming_server() {
 fn launcher_replaces_a_daemon_of_another_build() {
     let _serial = serial();
     let root = scratch_root("launcher");
-    let dir = root.join("omastorm");
+    let dir = root.join("omastorm-se");
     fs::create_dir_all(&dir).unwrap();
     let listener = UnixListener::bind(dir.join("engine.sock")).unwrap();
     // Stand in for a daemon left over from an earlier build: a real process
@@ -453,7 +453,7 @@ fn stop_with_no_daemon_is_quiet_and_leaves_nothing_behind() {
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
     assert!(
-        !root.join("omastorm").exists(),
+        !root.join("omastorm-se").exists(),
         "stop created the runtime directory"
     );
     let _ = fs::remove_dir_all(&root);
@@ -488,7 +488,7 @@ fn tiles_needed_is_answered_tile_by_tile_to_the_sender() {
             "{path}"
         );
         assert_eq!(path.matches('/').count(), 4);
-        let bytes = fs::read(engine.root.join("omastorm").join(&path)).unwrap();
+        let bytes = fs::read(engine.root.join("omastorm-se").join(&path)).unwrap();
         let info = png::Decoder::new(std::io::Cursor::new(bytes))
             .read_info()
             .unwrap()
@@ -576,7 +576,7 @@ fn a_lean_start_has_no_frame_until_a_site_is_selected() {
     assert_eq!(initial["frame"]["rays"], 1);
     assert_eq!(initial["frame"]["gates"], 1);
     assert!(
-        root.join("omastorm")
+        root.join("omastorm-se")
             .join(initial["frame"]["texture"].as_str().unwrap())
             .is_file()
     );
@@ -591,7 +591,7 @@ fn launcher_retries_a_slow_hello_within_its_startup_budget() {
     let engine = Engine::start();
     let hello = read(&mut engine.connect());
     let root = scratch_root("hello");
-    let dir = root.join("omastorm");
+    let dir = root.join("omastorm-se");
     fs::create_dir_all(&dir).unwrap();
     let lock = fs::File::create(dir.join("engine.lock")).unwrap();
     lock.try_lock().unwrap();

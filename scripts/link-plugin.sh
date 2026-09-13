@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 
 die() { printf '%s\n' "$@" >&2; exit 1; }
 
-id=com.omastorm.radar
+id=rb.omastorm-se
 root=$(readlink -f "$PWD")
 plugins=${XDG_CONFIG_HOME:-${HOME:?}/.config}/omarchy/plugins
 target=$plugins/$id

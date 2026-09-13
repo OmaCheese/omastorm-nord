@@ -15,7 +15,7 @@ scratch=$(mktemp -d /tmp/omastorm-picker.XXXXXX)
 jq -r '.sites[] | select(.id=="KTLX") | "center_lat = \(.lat)\ncenter_lon = \(.lon)\nlocked_radar = \"KTLX\""' engine/data/sites.json > "$scratch/home.toml"
 bash scripts/cargo.sh build --offline --locked --quiet
 target/debug/omastorm-engine ensure
-sock="$XDG_RUNTIME_DIR/omastorm/engine.sock"
+sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.3 - "UNIX-CONNECT:$sock" > /dev/null; }
 tell '{"type":"select_site","id":"KTLX"}' '{"type":"lock","enabled":false}'
 

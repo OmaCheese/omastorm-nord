@@ -108,5 +108,5 @@ ffprobe -v error -show_entries stream=width,height,r_frame_rate,nb_frames:format
 ffmpeg -hide_banner -loglevel error -y -i docs/media/omastorm-demo.mp4 \
   -filter_complex "[0:v]select='lt(t,4)+between(t,13.5,17.5)',setpts=N/30/TB,fps=8,scale=640:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff:max_colors=96[p];[b][p]paletteuse=dither=bayer:bayer_scale=5" \
   -loop 0 docs/media/omastorm-preview.gif
-grep -h "^Live\|backfilled [0-9]" "$XDG_RUNTIME_DIR/omastorm/engine.log" | sed 's/^/  engine: /' | head -6
+grep -h "^Live\|backfilled [0-9]" "$XDG_RUNTIME_DIR/omastorm-se/engine.log" | sed 's/^/  engine: /' | head -6
 echo "docs/media/omastorm-demo.mp4 · omastorm-preview.gif"

@@ -37,7 +37,7 @@ geo-types = { version = "0.7", default-features = false }
 # the tree through `nexrad-data`, so no second date library.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 # The per-station frame catalog (DESIGN.md, frame storage): a SQLite file
-# under `$XDG_CACHE_HOME/omastorm/frames/`. `bundled` compiles SQLite into
+# under `$XDG_CACHE_HOME/omastorm-se/frames/`. `bundled` compiles SQLite into
 # the binary so a plugin install depends on no system library version.
 rusqlite = { version = "0.40", features = ["bundled"] }
 

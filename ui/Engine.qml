@@ -19,7 +19,7 @@ QtObject {
     signal tileReady(var tile)
     /// Places answering this client's `search_places`; a reply, not state.
     signal placesReady(var message)
-    readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm/"
+    readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-se/"
     readonly property string texture: state && state.frame ? "file://" + runtime + state.frame.texture : ""
     readonly property string azimuthLut: state && state.frame ? "file://" + runtime + state.frame.azimuthLut : ""
     /// The selected station's row from `hello`, or null before it arrives.

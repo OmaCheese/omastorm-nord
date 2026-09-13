@@ -548,7 +548,7 @@ impl Engine {
             root: root.to_owned(),
         };
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !engine.root.join("omastorm/engine.sock").exists() {
+        while !engine.root.join("omastorm-se/engine.sock").exists() {
             assert!(engine.child.try_wait().unwrap().is_none(), "engine exited");
             assert!(Instant::now() < deadline, "engine startup timed out");
             thread::sleep(Duration::from_millis(10));
@@ -557,7 +557,7 @@ impl Engine {
     }
     /// The initial `state` message.
     fn state(&self) -> Value {
-        let stream = UnixStream::connect(self.root.join("omastorm/engine.sock")).unwrap();
+        let stream = UnixStream::connect(self.root.join("omastorm-se/engine.sock")).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
@@ -821,7 +821,7 @@ fn rendering_matches_nearest_gate_expectations_in_every_treatment() {
     let engine = Engine::start(&root);
     let state = engine.state();
     let frame = &state["frame"];
-    let runtime = root.join("omastorm");
+    let runtime = root.join("omastorm-se");
     let geometry = Geometry::of(frame);
     assert_eq!((geometry.rays, geometry.gates), (720, 1832));
     let sweep = golden_sweep(frame, &runtime);

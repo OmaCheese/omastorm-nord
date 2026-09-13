@@ -117,7 +117,7 @@ fn fixture_transport_and_shared_commands() {
     assert_eq!(hello["v"], 1);
     assert_eq!(hello["build"].as_str().unwrap().len(), 16);
     let sites = hello["sites"].as_array().unwrap();
-    assert_eq!(sites.len(), 163);
+    assert_eq!(sites.len(), 12);
     let mut ids = std::collections::HashSet::new();
     for site in sites {
         assert!(ids.insert(site["id"].as_str().unwrap()));
@@ -125,9 +125,11 @@ fn fixture_transport_and_shared_commands() {
         assert!((-180.0..=180.0).contains(&site["lon"].as_f64().unwrap()));
         assert!(site["altM"].as_f64().unwrap() > -500.0);
     }
-    for id in ["KTLX", "PABC", "PHKI", "PGUA", "TJUA", "RKJK", "LPLA"] {
+    // The SMHI network; the archived KTLX scan is never listed.
+    for id in ["vara", "balsta", "kiruna", "leksand"] {
         assert!(ids.contains(id));
     }
+    assert!(!ids.contains("KTLX"));
     let initial = read(&mut first);
     assert_eq!(initial["frame"]["scanTime"], "2013-05-20T20:16:43Z");
     assert_eq!(initial["source"], "archived");
@@ -251,23 +253,23 @@ fn fixture_transport_and_shared_commands() {
     // state change, and a bad origin is rejected without a broadcast.
     send(
         &mut first,
-        json!({"type":"search_places","query":"oklahoma","lat":35.47,"lon":-97.52}),
+        json!({"type":"search_places","query":"göteborg","lat":58.26,"lon":12.83}),
     );
     let places = read(&mut first);
     assert_eq!(places["type"], "places");
     assert_eq!(places["v"], 1);
-    assert_eq!(places["query"], "oklahoma");
+    assert_eq!(places["query"], "göteborg");
     let results = places["results"].as_array().unwrap();
-    assert_eq!(results[0]["name"], "Oklahoma City");
-    assert_eq!(results[0]["region"], "Oklahoma");
-    assert_eq!(results[0]["country"], "US");
+    assert_eq!(results[0]["name"], "Göteborg");
+    assert_eq!(results[0]["region"], "Västra Götaland");
+    assert_eq!(results[0]["country"], "SE");
     assert!(results.len() <= 8);
     send(
         &mut second,
-        json!({"type":"search_places","query":"norman"}),
+        json!({"type":"search_places","query":"kiruna"}),
     );
     let places = read(&mut second);
-    assert_eq!(places["results"][0]["name"], "Norman");
+    assert_eq!(places["results"][0]["name"], "Kiruna");
     send(
         &mut first,
         json!({"type":"search_places","query":"x","lat":95.0,"lon":0.0}),

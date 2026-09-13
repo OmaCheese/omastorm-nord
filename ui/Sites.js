@@ -1,24 +1,20 @@
 .pragma library
 // The site picker's matching and ranking (DESIGN.md, picker as built) over
 // hello.sites. Pure functions so a check can drive them without a window.
+//
+// The table is SMHI's twelve radars: the ID is the API's ASCII area key
+// (ornskoldsvik), the name its Swedish spelling (Örnsköldsvik), and the
+// state column holds the county spelled out (Västernorrland).
 
-// Names for the table's postal abbreviations, so a row reads TULSA, OKLAHOMA
-// and "oklahoma" finds it. The four overseas sites carry no state.
-var STATES = {
-    AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado",
-    CT: "Connecticut", DE: "Delaware", DC: "District of Columbia", FL: "Florida", GA: "Georgia",
-    HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa", KS: "Kansas",
-    KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland", MA: "Massachusetts",
-    MI: "Michigan", MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana",
-    NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico",
-    NY: "New York", NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma",
-    OR: "Oregon", PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota",
-    TN: "Tennessee", TX: "Texas", UT: "Utah", VT: "Vermont", VA: "Virginia", WA: "Washington",
-    WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming", PR: "Puerto Rico", GU: "Guam"
-};
-function stateName(abbr) { return STATES[abbr] || abbr || ""; }
-// The row's place column: the table's city, then the state spelled out.
+function stateName(county) { return county || ""; }
+// The row's place column: the name, then the county.
 function place(site) { var s = stateName(site.state); return site.name.toUpperCase() + (s ? ", " + s.toUpperCase() : ""); }
+// Lower case with the Nordic letters folded one for one (å ä → a, ö ø → o,
+// æ → a, é → e), so "ostersund" finds Östersund and a hit's position in the
+// folded text is its position in the shown one.
+function fold(text) {
+    return text.toLowerCase().replace(/[åäàáæ]/g, "a").replace(/[öøó]/g, "o").replace(/[éè]/g, "e").replace(/ü/g, "u");
+}
 
 function distanceKm(lat1, lon1, lat2, lon2) {
     var r = Math.PI / 180, dp = (lat2 - lat1) * r, dl = (lon2 - lon1) * r;
@@ -61,21 +57,20 @@ function subsequence(text, needle) {
 
 // How `query` matches one station: the tier it lands in and the matched
 // letters in the ID and place columns, or null. Tiers, best first:
-//   0  the query starts the ID, with or without its leading K/P/T
-//   1  the query starts a word of the city
-//   2  the query is the state's abbreviation or starts a word of its name
-//   3  the query appears anywhere in the ID, city, or state
+//   0  the query starts the ID
+//   1  the query starts a word of the name
+//   2  the query starts a word of the county
+//   3  the query appears anywhere in the ID, name, or county
 //   4  the query's letters appear in order across the ID and place
+// All comparisons are on folded text (`fold`).
 function match(site, query) {
-    var q = query.trim().toLowerCase().replace(/\s+/g, " ");
-    var id = site.id.toLowerCase(), name = site.name.toLowerCase(), placeText = place(site).toLowerCase();
-    var state = stateName(site.state).toLowerCase(), abbr = (site.state || "").toLowerCase();
+    var q = fold(query.trim().replace(/\s+/g, " "));
+    var id = fold(site.id), name = fold(site.name), placeText = fold(place(site));
+    var state = fold(stateName(site.state));
     var stateAt = name.length + 2, i;
     if (!q) return { tier: 5, idHits: [], placeHits: [] };
     if (id.indexOf(q) === 0) return { tier: 0, idHits: range(0, q.length), placeHits: [] };
-    if (id.slice(1).indexOf(q) === 0) return { tier: 0, idHits: range(1, q.length), placeHits: [] };
     if ((i = wordStart(name, q)) >= 0) return { tier: 1, idHits: [], placeHits: range(i, q.length) };
-    if (abbr && abbr === q) return { tier: 2, idHits: [], placeHits: range(stateAt, state.length) };
     if (state && (i = wordStart(state, q)) >= 0) return { tier: 2, idHits: [], placeHits: range(stateAt + i, q.length) };
     if ((i = id.indexOf(q)) >= 0) return { tier: 3, idHits: range(i, q.length), placeHits: [] };
     if ((i = placeText.indexOf(q)) >= 0) return { tier: 3, idHits: [], placeHits: range(i, q.length) };

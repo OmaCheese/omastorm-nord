@@ -35,7 +35,7 @@ const DEFAULT_URL: &str = "https://tiles.openfreemap.org/planet";
 const USER_AGENT: &str = concat!(
     "omastorm-se/",
     env!("CARGO_PKG_VERSION"),
-    " (https://omastorm.com)"
+    " (fork of https://omastorm.com)"
 );
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const IN_FLIGHT: usize = 4;

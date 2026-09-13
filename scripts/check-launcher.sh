@@ -33,7 +33,7 @@ path=$(bash scripts/write-desktop-entry.sh --print-path)
 [[ -f $desktop ]] || fail 'write-desktop-entry.sh did not write omastorm-se.desktop'
 
 rg -q '^Type=Application$' "$desktop" || fail 'desktop Type missing'
-rg -q '^Name=Omastorm$' "$desktop" || fail 'desktop Name is not Omastorm'
+rg -q '^Name=Omastorm SE$' "$desktop" || fail 'desktop Name is not Omastorm SE'
 exec_line=$(awk -F= '/^Exec=/{print substr($0,6); exit}' "$desktop")
 [[ $exec_line == 'omarchy shell shell toggle rb.omastorm-se "{}"' ]] \
   || fail "desktop Exec is not the shell toggle: $exec_line"
@@ -50,7 +50,7 @@ fi
 # A second run refreshes the file in place.
 printf 'stale' > "$desktop"
 bash scripts/write-desktop-entry.sh
-rg -q '^Name=Omastorm$' "$desktop" || fail 'second run did not refresh omastorm-se.desktop'
+rg -q '^Name=Omastorm SE$' "$desktop" || fail 'second run did not refresh omastorm-se.desktop'
 
 # The same DesktopEntries list the Omarchy launcher reads.
 cat > "$scratch/probe.qml" <<'QML'
@@ -81,7 +81,7 @@ expect_entry() {
   cat "$scratch/probe.log" >&2
   exit 1
 }
-expect_entry 'omastorm|Omastorm'
+expect_entry 'omastorm-se|Omastorm SE'
 
 # Deleting the file is removal.
 rm -f -- "$desktop"

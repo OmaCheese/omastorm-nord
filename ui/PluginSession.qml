@@ -85,7 +85,7 @@ QtObject {
         locationPending = true;
         var url = Quickshell.env("OMASTORM_LOCATION_URL") || "https://wttr.in/?format=j2";
         locator.command = ["curl", "-fsS", "--max-time", "10", "-A",
-            "omastorm-se (https://omastorm.com)", url];
+            "omastorm-se (fork of https://omastorm.com)", url];
         // Bind the attempt to this launch. If a prior curl is still dying after
         // cancel, queue one restart instead of overwriting its exit attribution.
         locator.attempt = locateAttempt;

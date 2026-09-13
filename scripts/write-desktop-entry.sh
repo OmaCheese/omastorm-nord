@@ -26,16 +26,16 @@ trap 'rm -f -- "$tmp"' EXIT
 cat > "$tmp" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Omastorm
+Name=Omastorm SE
 GenericName=Weather radar
-Comment=Live NEXRAD radar for the Omarchy desktop
+Comment=Live SMHI radar for the Omarchy desktop
 Exec=omarchy shell shell toggle rb.omastorm-se "{}"
 TryExec=omarchy
 Icon=$mark
 Terminal=false
 StartupNotify=false
 Categories=Science;
-Keywords=radar;NEXRAD;weather;
+Keywords=radar;SMHI;weather;
 EOF
 chmod 644 -- "$tmp"
 mv -f -- "$tmp" "$desktop"

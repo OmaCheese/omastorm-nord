@@ -1,6 +1,12 @@
-# Omastorm
+# Omastorm SE
 
-Open-source, live NEXRAD radar for the Omarchy desktop. Beta.
+> **Omastorm SE** is a fork of [Omastorm](https://github.com/wesleygrimes/omastorm)
+> that shows Swedish weather radar from [SMHI](https://www.smhi.se/) instead of
+> NOAA NEXRAD. It installs beside upstream under its own plugin id
+> (`rb.omastorm-se`) and directories (`omastorm-se`). The SMHI engine is still
+> being built; until it lands, the engine described below reads NEXRAD.
+
+Open-source, live weather radar for the Omarchy desktop. Beta.
 
 [![Omastorm window: live take with loop, search, keys, and treatments](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/omastorm-preview.gif)](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/omastorm-demo.mp4)
 
@@ -61,7 +67,7 @@ To open the window from the keyboard, add one line to
 `~/.config/hypr/bindings.lua`. Omastorm never writes that file.
 
 ```lua
-o.bind("SUPER + SHIFT + R", "Omastorm", "omarchy shell shell toggle rb.omastorm-se '{}'")
+o.bind("SUPER + SHIFT + R", "Omastorm SE", "omarchy shell shell toggle rb.omastorm-se '{}'")
 ```
 
 To list Omastorm in the app launcher:
@@ -187,7 +193,9 @@ This is a beta. Bugs, rough edges, and ideas go to
 
 ## Data and licenses
 
-Radar: NOAA NEXRAD Level II via the NOAA Open Data program on AWS. Basemap: ©
+Radar: [SMHI](https://www.smhi.se/) open data,
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Upstream Omastorm reads
+NOAA NEXRAD Level II via the NOAA Open Data program on AWS. Basemap: ©
 OpenStreetMap contributors, [ODbL](https://opendatacommons.org/licenses/odbl/1-0/),
 tiles by [OpenFreeMap](https://openfreemap.org); Natural Earth, public domain.
 Location search: [GeoNames](https://www.geonames.org/),

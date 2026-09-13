@@ -1,9 +1,8 @@
 mod catalog;
-mod live;
-mod live_index;
 mod odim;
 mod osm;
 mod protocol;
+mod smhi_live;
 mod sweep;
 mod tiles;
 
@@ -59,8 +58,10 @@ const RETIRE_AFTER: Duration = Duration::from_secs(30);
 /// client that still falls behind is dropped by the next broadcast.
 const QUEUE: usize = 128;
 /// A reachable feed whose newest radial for the station is this old or older
-/// is `stale`, and `unavailable` at three times that.
-const STALE_AFTER: Duration = Duration::from_secs(600);
+/// is `stale`, and `unavailable` at 30 minutes. 15, not upstream's 10: SMHI's
+/// 5-minute cadence plus ~5 minutes to publish makes a healthy frame 5–10
+/// minutes old, so 10 would flap (DEC-9).
+const STALE_AFTER: Duration = Duration::from_secs(900);
 const UNAVAILABLE_AFTER: Duration = Duration::from_secs(1800);
 /// Playback advances one frame per tick and loops (DESIGN.md, timeline).
 const PLAY_LOOP: Duration = Duration::from_secs(10);
@@ -530,14 +531,14 @@ struct Shared {
     /// The runtime directory textures are published to.
     dir: PathBuf,
     catalog: Arc<catalog::Catalog>,
-    /// The poller for the selected station in live mode (`live.rs`);
+    /// The poller for the selected station in live mode (`smhi_live.rs`);
     /// aborted and replaced by a site switch or a quiet-feed restart.
     live: Option<JoinHandle<()>>,
     /// When the poller was last spawned, so an UNAVAILABLE feed is
     /// rediscovered at most once per `UNAVAILABLE_AFTER` rather than every
     /// cleanup tick.
     last_live_restart: Instant,
-    events: Sender<live::Event>,
+    events: Sender<smhi_live::Event>,
     /// `scanTime` of the newest complete frame, milliseconds since the
     /// epoch, for `connection.ageSeconds`; `None` while there is none.
     frame_ms: Option<i64>,
@@ -626,7 +627,7 @@ impl Shared {
             task.abort();
         }
         let cached: Vec<i64> = self.timeline.stored.iter().map(|e| e.start_ms).collect();
-        self.live = Some(tokio::spawn(live::poll(
+        self.live = Some(tokio::spawn(smhi_live::poll(
             site,
             self.events.clone(),
             cached,
@@ -1006,10 +1007,10 @@ fn decode_and_publish(dir: &Path, template: &Frame, archive: &[u8]) -> io::Resul
 /// record complete frames in the catalog, then hand the frame to the
 /// timeline, which publishes it if it is to be shown, and broadcast. An
 /// event for a station that is no longer selected is dropped.
-async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<live::Event>) {
+async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<smhi_live::Event>) {
     while let Some(event) = events.recv().await {
         match event {
-            live::Event::Sweep {
+            smhi_live::Event::Sweep {
                 site,
                 sweep,
                 complete,
@@ -1076,7 +1077,7 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<live::Even
                     Err(e) => eprintln!("Live frame: {e}"),
                 }
             }
-            live::Event::Backfill {
+            smhi_live::Event::Backfill {
                 site,
                 sweep,
                 provenance,
@@ -1127,19 +1128,32 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<live::Even
                     Err(e) => eprintln!("Backfill frame: {e}"),
                 }
             }
-            live::Event::Offline { site, reason } => {
+            // The newest volume is already catalogued: the feed is up, so a
+            // station opened on its cached frame leaves `loading`. Any other
+            // condition stays, as for a catalogued sweep in `arrived`.
+            smhi_live::Event::Current { site } => {
+                let mut shared = shared.lock().unwrap();
+                if shared.state.site.id == site
+                    && shared.state.source == Source::Live
+                    && known_sweep_clears_loading(shared.state.connection.status)
+                {
+                    shared.state.connection.status = ConnectionStatus::Ok;
+                    shared.broadcast();
+                }
+            }
+            smhi_live::Event::Offline { site, reason } => {
                 report(&shared, &site, &reason, ConnectionStatus::Offline);
             }
-            live::Event::Silent { site, reason } => {
+            smhi_live::Event::Silent { site, reason } => {
                 report(&shared, &site, &reason, ConnectionStatus::Unavailable);
             }
         }
     }
 }
-/// The poller's word on the feed for `site`: `Offline` when the bucket could
-/// not be reached, `Unavailable` when it answered with nothing for the
-/// station. Broadcast if the condition changed; ignored for a station no
-/// longer selected.
+/// The poller's word on the feed for `site`: `Offline` when SMHI could not
+/// be reached, `Unavailable` when it answered and the station has published
+/// nothing recent. Broadcast if the condition changed; ignored for a station
+/// no longer selected.
 fn report(shared: &Mutex<Shared>, site: &str, reason: &str, condition: ConnectionStatus) {
     let mut shared = shared.lock().unwrap();
     if shared.state.site.id != site || shared.state.source != Source::Live {

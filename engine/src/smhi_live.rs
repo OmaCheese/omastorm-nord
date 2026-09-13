@@ -1,0 +1,1867 @@
+//! SMHI live polar volumes: the poller that replaces upstream's NOAA chunk
+//! follower (`live.rs` and `live_index.rs`; plan Phase 2, stream S3).
+//!
+//! SMHI publishes one whole ODIM volume per site every 5 minutes, about
+//! 4–5 minutes after its valid time. There is no sweep to assemble and
+//! nothing partial to paint, so every frame this module reports is complete.
+//!
+//! - `area/{site}/product/qcvol.json` is polled every `POLL`, and its
+//!   `lastFiles` names the newest volume. The request carries
+//!   `If-Modified-Since` from the previous answer, and a `304` costs nothing.
+//!   SMHI restamps the listing each time it regenerates it, though, so a
+//!   `200` is normal, and the volume key decides whether anything is new.
+//! - A new volume is read with HTTP range requests (DEC-2): a 64 KiB
+//!   prefetch, then 4 KiB blocks. That comes to about 7 requests and 100 KB
+//!   of a 15 MB file, handed to the ODIM decoder as `Read + Seek`. Reads
+//!   always go to the dated URL: `lastFiles` links `latest.h5`, which moves
+//!   under a reader every 5 minutes.
+//! - Backfill reads the day listing, plus yesterday's while today's is
+//!   short (just after midnight UTC). It fetches whichever of the newest
+//!   `BACKFILL` volumes the catalog lacks, newest first.
+//! - 429 and 5xx answers back off, honouring `Retry-After`, and so do
+//!   transport errors. The second failure in a row reports `offline`. Only
+//!   one volume download runs at a time in the whole engine (`FETCHER`).
+//! - A station whose newest volume is older than `SILENT_AFTER_MS` is
+//!   reported `Silent`, which the UI shows as `unavailable`. Leksand has
+//!   published nothing since January 2026.
+
+// Until S2's ODIM decoder merges, `main.rs` still runs `live.rs` and only the
+// tests here reach this module. Wiring `poll` into `main.rs` removes this.
+#![allow(dead_code)]
+
+use crate::sweep::Sweep;
+use chrono::{DateTime, NaiveDateTime};
+use reqwest::header::{
+    CONTENT_RANGE, HeaderMap, IF_MODIFIED_SINCE, LAST_MODIFIED, RANGE, RETRY_AFTER,
+};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::fmt;
+use std::io::{self, Read, Seek, SeekFrom};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::runtime::Handle;
+use tokio::sync::{Semaphore, mpsc::Sender, oneshot};
+use tokio::task::spawn_blocking;
+use tokio::time::sleep;
+
+/// SMHI's open radar API root. Data licence CC BY 4.0: credit "SMHI".
+pub const API: &str = "https://opendata-download-radar.smhi.se/api/version/latest";
+/// The quality-controlled polar volume (plan section 2).
+pub const PRODUCT: &str = "qcvol";
+const USER_AGENT: &str = concat!(
+    "omastorm-se/",
+    env!("CARGO_PKG_VERSION"),
+    " (fork of https://omastorm.com; SMHI open data)"
+);
+/// Between listing polls. SMHI's cadence is 5 minutes.
+const POLL: Duration = Duration::from_secs(60);
+/// The ceiling of the doubling back-off after failures.
+const MAX_BACK_OFF: Duration = Duration::from_secs(600);
+/// The most of a `Retry-After` honoured, so a bad header cannot park the
+/// poller for a day.
+const RETRY_AFTER_CAP: Duration = Duration::from_secs(3600);
+/// Each HTTP request, listing or range, as a whole.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// One failure is retried quietly; this many in a row report `offline`.
+const OFFLINE_AFTER: u32 = 2;
+/// Frames the loop holds after a join, counting the live one (DEC-2 passed:
+/// a volume costs ~100 KB, so 60 of them is ~6 MB). Matches `catalog::RING`.
+pub const BACKFILL: usize = 60;
+/// The backfill starts this long after a join, so a hand-off passed while
+/// panning costs nothing.
+const BACKFILL_DELAY: Duration = Duration::from_secs(3);
+/// Between backfill volumes, to be gentle with SMHI.
+const BACKFILL_PACE: Duration = Duration::from_millis(250);
+/// A station whose newest volume is this old has gone quiet: `Silent`. Same
+/// as the engine's `UNAVAILABLE_AFTER`.
+const SILENT_AFTER_MS: i64 = 30 * 60 * 1000;
+/// A newest volume older than this is neither fetched nor backfilled: the
+/// day listings cannot reach it, and a months-old picture is not "live".
+const HORIZON_MS: i64 = 24 * 60 * 60 * 1000;
+/// A catalogued sweep (by its first ray's time) belongs to the volume whose
+/// valid time is at most this far after it...
+const MATCH_BEFORE_MS: i64 = 60 * 1000;
+/// ...or less than this far before it. The lowest tilt starts a few seconds
+/// after the valid time, and volumes are 5 minutes apart.
+const MATCH_AFTER_MS: i64 = 4 * 60 * 1000;
+/// The first range request: the superblock, the root group and
+/// `/dataset1`'s metadata all sit in the first ~55 KB (DEC-2).
+pub const PREFETCH: u64 = 64 * 1024;
+/// Every later range request is a run of these.
+pub const BLOCK: u64 = 4 * 1024;
+/// Budget per volume. DEC-2 measured 7 requests and 98,304 B, so these
+/// only stop a decoder that wanders through the whole 15 MB file.
+const MAX_REQUESTS: u32 = 64;
+const MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// Decode failures of one volume before the poller stops retrying it.
+const GIVE_UP_AFTER: u32 = 2;
+
+/// One volume download at a time in the whole engine. The permit travels
+/// into the blocking decode, so an aborted poller's in-flight read still
+/// holds it until it ends.
+static FETCHER: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// `2026-09-13 16:50Z`, as SMHI's `valid` reads.
+fn stamp(ms: i64) -> String {
+    DateTime::from_timestamp_millis(ms)
+        .map(|t| t.format("%Y-%m-%d %H:%MZ").to_string())
+        .unwrap_or_default()
+}
+
+fn live_log(site: &str, message: impl fmt::Display) {
+    let now = DateTime::from_timestamp_millis(now_ms())
+        .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_default();
+    eprintln!("{now} Live {site}: {message}");
+}
+
+/// What the poller reports to `main.rs`.
+pub enum Event {
+    /// An earlier volume, fetched after a join. The timeline gains history
+    /// and the frame on screen stays.
+    Backfill {
+        site: String,
+        sweep: Sweep,
+        provenance: String,
+    },
+    /// The newest volume. `complete` is always true, because SMHI publishes
+    /// whole volumes. The field stays so the frame path in `main.rs` still
+    /// serves both sources.
+    Sweep {
+        site: String,
+        sweep: Sweep,
+        complete: bool,
+        provenance: String,
+    },
+    /// The newest volume is already in the catalog. The feed is up, so a
+    /// station opened on a cached frame can leave `loading` without paying
+    /// for the volume again.
+    Current { site: String },
+    /// SMHI could not be reached or read. The frame on screen stays.
+    Offline { site: String, reason: String },
+    /// SMHI answered, and the station has published nothing recent.
+    Silent { site: String, reason: String },
+}
+
+// ---------------------------------------------------------------------------
+// Listings
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct Listing {
+    #[serde(rename = "lastFiles", default)]
+    last_files: Option<Vec<Listed>>,
+}
+
+/// `…/qcvol/YYYY/MM/DD.json`. A day with no volumes (Leksand) is
+/// `"files": []` with `null` beside it.
+#[derive(Deserialize)]
+struct DayListing {
+    #[serde(default)]
+    files: Option<Vec<Listed>>,
+}
+
+#[derive(Deserialize)]
+struct Listed {
+    key: String,
+    valid: String,
+    #[serde(default)]
+    formats: Option<Vec<Format>>,
+}
+
+#[derive(Deserialize)]
+struct Format {
+    key: String,
+}
+
+/// One published volume.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Volume {
+    /// `radar_vara_qcvol_202609131650`.
+    pub key: String,
+    /// The nominal start (`valid`), milliseconds since the epoch.
+    pub valid_ms: i64,
+    /// The dated, immutable download URL.
+    pub url: String,
+}
+
+fn valid_ms(valid: &str) -> Option<i64> {
+    NaiveDateTime::parse_from_str(valid.trim(), "%Y-%m-%d %H:%M")
+        .ok()
+        .map(|t| t.and_utc().timestamp_millis())
+}
+
+/// `YYYY/MM/DD` of a UTC instant, the way SMHI's paths name days.
+fn day_path(ms: i64) -> String {
+    DateTime::from_timestamp_millis(ms)
+        .map(|t| t.format("%Y/%m/%d").to_string())
+        .unwrap_or_default()
+}
+
+pub fn listing_url(base: &str, site: &str) -> String {
+    format!("{base}/area/{site}/product/{PRODUCT}.json")
+}
+
+pub fn day_listing_url(base: &str, site: &str, day_ms: i64) -> String {
+    format!(
+        "{base}/area/{site}/product/{PRODUCT}/{}.json",
+        day_path(day_ms)
+    )
+}
+
+/// The dated URL of a volume. Built rather than read from the listing:
+/// `lastFiles` links the moving `latest.h5`, and building it keeps every
+/// request under `base`. The day listing test checks that the built URL
+/// matches every link SMHI lists.
+pub fn volume_url(base: &str, site: &str, key: &str, valid_ms: i64) -> String {
+    format!(
+        "{base}/area/{site}/product/{PRODUCT}/{}/{key}.h5",
+        day_path(valid_ms)
+    )
+}
+
+fn volumes(files: Vec<Listed>, base: &str, site: &str) -> Vec<Volume> {
+    files
+        .into_iter()
+        .filter(|f| {
+            f.formats
+                .as_ref()
+                .is_none_or(|formats| formats.iter().any(|x| x.key == "h5"))
+        })
+        .filter_map(|f| {
+            let valid_ms = valid_ms(&f.valid)?;
+            Some(Volume {
+                url: volume_url(base, site, &f.key, valid_ms),
+                key: f.key,
+                valid_ms,
+            })
+        })
+        .collect()
+}
+
+/// The newest volume `qcvol.json` lists, if any.
+pub fn newest_volume(body: &[u8], base: &str, site: &str) -> Result<Option<Volume>, String> {
+    let listing: Listing =
+        serde_json::from_slice(body).map_err(|e| format!("reading the listing: {e}"))?;
+    Ok(volumes(listing.last_files.unwrap_or_default(), base, site)
+        .into_iter()
+        .max_by_key(|v| v.valid_ms))
+}
+
+/// Every volume a day listing names.
+pub fn day_volumes(body: &[u8], base: &str, site: &str) -> Result<Vec<Volume>, String> {
+    let listing: DayListing =
+        serde_json::from_slice(body).map_err(|e| format!("reading the day listing: {e}"))?;
+    Ok(volumes(listing.files.unwrap_or_default(), base, site))
+}
+
+/// Whether a catalogued sweep start (`known`) is the volume valid at
+/// `valid_ms`.
+pub fn covered(valid_ms: i64, known: &[i64]) -> bool {
+    known
+        .iter()
+        .any(|&start| start >= valid_ms - MATCH_BEFORE_MS && start < valid_ms + MATCH_AFTER_MS)
+}
+
+/// Today's listing alone cannot fill the loop just after midnight UTC.
+pub fn needs_yesterday(today: usize, n: usize) -> bool {
+    today < n
+}
+
+/// What a backfill fetches: of the newest `n` volumes up to and including
+/// the live one (valid at `live_ms`), those the catalog lacks, newest
+/// first. The live volume counts toward `n` but is left to the live path.
+pub fn backfill_targets(
+    mut listed: Vec<Volume>,
+    live_ms: i64,
+    known: &[i64],
+    n: usize,
+) -> Vec<Volume> {
+    listed.retain(|v| v.valid_ms <= live_ms);
+    listed.sort_by(|a, b| b.valid_ms.cmp(&a.valid_ms).then_with(|| a.key.cmp(&b.key)));
+    listed.dedup_by(|a, b| a.key == b.key);
+    listed.truncate(n);
+    listed.retain(|v| v.valid_ms != live_ms && !covered(v.valid_ms, known));
+    listed
+}
+
+/// How long to wait after `failures` failures in a row: the poll interval
+/// doubled per failure up to `max`, but never less than the server's
+/// `Retry-After`.
+pub fn back_off(
+    poll: Duration,
+    max: Duration,
+    failures: u32,
+    retry_after: Option<Duration>,
+) -> Duration {
+    let doubled = poll.saturating_mul(1u32 << failures.min(16));
+    doubled
+        .min(max)
+        .max(retry_after.unwrap_or_default().min(RETRY_AFTER_CAP))
+}
+
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
+
+/// Why a request failed.
+#[derive(Debug, Clone)]
+pub enum Fail {
+    /// An unexpected status, with the `Retry-After` it carried.
+    Status(u16, Option<Duration>),
+    Transport(String),
+    /// The answer arrived but was not what was asked for.
+    Answer(String),
+}
+
+impl Fail {
+    fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Fail::Status(_, after) => *after,
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Fail {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Fail::Status(code, Some(after)) => {
+                write!(f, "HTTP {code} (retry after {}s)", after.as_secs())
+            }
+            Fail::Status(code, None) => write!(f, "HTTP {code}"),
+            Fail::Transport(e) => write!(f, "{e}"),
+            Fail::Answer(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+    let seconds = headers
+        .get(RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    Some(Duration::from_secs(seconds))
+}
+
+enum Fetched {
+    NotModified,
+    Body(Vec<u8>, Option<String>),
+}
+
+#[derive(Clone)]
+struct Http {
+    client: reqwest::Client,
+}
+
+impl Http {
+    fn new() -> Result<Self, String> {
+        reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .timeout(CALL_TIMEOUT)
+            .build()
+            .map(|client| Http { client })
+            .map_err(|e| format!("building the HTTP client: {e}"))
+    }
+
+    /// A listing, conditional on `since` (a previous `Last-Modified`).
+    async fn get(&self, url: &str, since: Option<&str>) -> Result<Fetched, Fail> {
+        let mut request = self.client.get(url);
+        if let Some(since) = since {
+            request = request.header(IF_MODIFIED_SINCE, since);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| Fail::Transport(e.to_string()))?;
+        match response.status().as_u16() {
+            304 => return Ok(Fetched::NotModified),
+            200 => {}
+            code => return Err(Fail::Status(code, retry_after(response.headers()))),
+        }
+        let modified = response
+            .headers()
+            .get(LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| Fail::Transport(e.to_string()))?;
+        Ok(Fetched::Body(body.to_vec(), modified))
+    }
+
+    /// `len` bytes of `url` from `offset` (fewer at the end of the file),
+    /// and the file's total length from `Content-Range`.
+    async fn range(&self, url: &str, offset: u64, len: u64) -> Result<(Vec<u8>, u64), Fail> {
+        let response = self
+            .client
+            .get(url)
+            .header(RANGE, format!("bytes={offset}-{}", offset + len - 1))
+            .send()
+            .await
+            .map_err(|e| Fail::Transport(e.to_string()))?;
+        let code = response.status().as_u16();
+        if code != 206 {
+            // A 200 would be the whole 15 MB: drop it unread.
+            return Err(Fail::Status(code, retry_after(response.headers())));
+        }
+        let range = response
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        let (start, total) = parse_content_range(&range)
+            .ok_or_else(|| Fail::Answer(format!("unreadable Content-Range {range:?}")))?;
+        if start != offset {
+            return Err(Fail::Answer(format!("asked for {offset}, got {range}")));
+        }
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| Fail::Transport(e.to_string()))?;
+        let expected = len.min(total.saturating_sub(offset));
+        if body.len() as u64 != expected {
+            return Err(Fail::Answer(format!(
+                "short range: {} of {expected} bytes at {offset}",
+                body.len()
+            )));
+        }
+        Ok((body.to_vec(), total))
+    }
+}
+
+/// `bytes 0-65535/14701179` as (0, 14701179).
+fn parse_content_range(value: &str) -> Option<(u64, u64)> {
+    let rest = value.trim().strip_prefix("bytes ")?;
+    let (span, total) = rest.split_once('/')?;
+    let (start, _) = span.split_once('-')?;
+    Some((start.trim().parse().ok()?, total.trim().parse().ok()?))
+}
+
+// ---------------------------------------------------------------------------
+// Range reader
+// ---------------------------------------------------------------------------
+
+/// Something that answers one ranged request: the bytes, and the file's
+/// total length.
+pub trait RangeSource: Send {
+    fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, u64)>;
+}
+
+/// What a reader has fetched so far. Shared, so it can be read after the
+/// decoder has consumed the reader.
+#[derive(Default, Debug)]
+pub struct Traffic {
+    requests: AtomicU32,
+    bytes: AtomicU64,
+    len: AtomicU64,
+}
+
+impl Traffic {
+    pub fn requests(&self) -> u32 {
+        self.requests.load(Ordering::Relaxed)
+    }
+    pub fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+    /// The whole file's length.
+    pub fn total(&self) -> u64 {
+        self.len.load(Ordering::Relaxed)
+    }
+}
+
+/// `Read + Seek` over ranged requests, behind a block cache (DEC-2). The
+/// first request is `PREFETCH` bytes from the start; each later miss fetches
+/// the run of adjacent missing `BLOCK`s it needs, in one request. It fails
+/// if the file's length changes between requests, or if a volume would
+/// cost more than `MAX_REQUESTS` or `MAX_BYTES`.
+pub struct RangeReader {
+    source: Box<dyn RangeSource>,
+    len: u64,
+    pos: u64,
+    blocks: HashMap<u64, Vec<u8>>,
+    traffic: Arc<Traffic>,
+}
+
+impl RangeReader {
+    pub fn open(mut source: Box<dyn RangeSource>) -> io::Result<Self> {
+        let (head, len) = source.get(0, PREFETCH)?;
+        if head.len() as u64 != PREFETCH.min(len) {
+            return Err(io::Error::other(format!(
+                "short prefetch: {} of {} bytes",
+                head.len(),
+                PREFETCH.min(len)
+            )));
+        }
+        let traffic = Arc::new(Traffic::default());
+        traffic.requests.store(1, Ordering::Relaxed);
+        traffic.bytes.store(head.len() as u64, Ordering::Relaxed);
+        traffic.len.store(len, Ordering::Relaxed);
+        let mut reader = RangeReader {
+            source,
+            len,
+            pos: 0,
+            blocks: HashMap::new(),
+            traffic,
+        };
+        reader.store(0, &head);
+        Ok(reader)
+    }
+
+    /// The whole file's length.
+    pub fn total(&self) -> u64 {
+        self.len
+    }
+
+    pub fn traffic(&self) -> Arc<Traffic> {
+        self.traffic.clone()
+    }
+
+    fn store(&mut self, first_block: u64, bytes: &[u8]) {
+        for (i, chunk) in bytes.chunks(BLOCK as usize).enumerate() {
+            self.blocks.insert(first_block + i as u64, chunk.to_vec());
+        }
+    }
+
+    /// Fetch whichever of blocks `first..=last` are missing, one request per
+    /// run of adjacent missing blocks.
+    fn ensure(&mut self, first: u64, last: u64) -> io::Result<()> {
+        let mut block = first;
+        while block <= last {
+            if self.blocks.contains_key(&block) {
+                block += 1;
+                continue;
+            }
+            let run = block;
+            while block <= last && !self.blocks.contains_key(&block) {
+                block += 1;
+            }
+            let start = run * BLOCK;
+            let end = (block * BLOCK).min(self.len);
+            let requests = self.traffic.requests();
+            let bytes = self.traffic.bytes();
+            if requests >= MAX_REQUESTS || bytes + (end - start) > MAX_BYTES {
+                return Err(io::Error::other(format!(
+                    "range budget spent: {requests} requests, {bytes} bytes"
+                )));
+            }
+            let (got, total) = self.source.get(start, end - start)?;
+            if total != self.len {
+                return Err(io::Error::other(format!(
+                    "the volume changed while it was read ({} bytes, now {total})",
+                    self.len
+                )));
+            }
+            if got.len() as u64 != end - start {
+                return Err(io::Error::other(format!(
+                    "short range: {} of {} bytes at {start}",
+                    got.len(),
+                    end - start
+                )));
+            }
+            self.traffic.requests.fetch_add(1, Ordering::Relaxed);
+            self.traffic.bytes.fetch_add(end - start, Ordering::Relaxed);
+            self.store(run, &got);
+        }
+        Ok(())
+    }
+}
+
+impl Read for RangeReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() || self.pos >= self.len {
+            return Ok(0);
+        }
+        let end = (self.pos + buf.len() as u64).min(self.len);
+        self.ensure(self.pos / BLOCK, (end - 1) / BLOCK)?;
+        let mut out = 0;
+        while self.pos < end {
+            let block = self.pos / BLOCK;
+            let bytes = &self.blocks[&block];
+            let at = (self.pos - block * BLOCK) as usize;
+            let n = (bytes.len() - at).min((end - self.pos) as usize);
+            buf[out..out + n].copy_from_slice(&bytes[at..at + n]);
+            out += n;
+            self.pos += n as u64;
+        }
+        Ok(out)
+    }
+}
+
+impl Seek for RangeReader {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let pos = match to {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::End(d) => self.len.checked_add_signed(d),
+            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+        };
+        self.pos = pos.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek before the start of the volume",
+            )
+        })?;
+        Ok(self.pos)
+    }
+}
+
+/// Ranged requests from the blocking decode thread, answered by the async
+/// client on the engine's runtime. The last HTTP failure is kept, so the
+/// poller can tell a network problem (back off) from a bad volume.
+struct HttpRanges {
+    http: Http,
+    url: String,
+    runtime: Handle,
+    failure: Arc<Mutex<Option<Fail>>>,
+}
+
+impl RangeSource for HttpRanges {
+    fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, u64)> {
+        let (tx, rx) = oneshot::channel();
+        let http = self.http.clone();
+        let url = self.url.clone();
+        self.runtime.spawn(async move {
+            let _ = tx.send(http.range(&url, offset, len).await);
+        });
+        match rx.blocking_recv() {
+            Ok(Ok(answer)) => Ok(answer),
+            Ok(Err(fail)) => {
+                let message = format!("range {offset}+{len}: {fail}");
+                *self.failure.lock().unwrap() = Some(fail);
+                Err(io::Error::other(message))
+            }
+            Err(_) => Err(io::Error::other("the runtime dropped a range request")),
+        }
+    }
+}
+
+/// The ODIM decoder: the lowest-tilt DBZH sweep of a volume (S2, `odim.rs`).
+pub type Decode = fn(RangeReader) -> Result<Sweep, String>;
+
+enum VolumeError {
+    /// SMHI failed to answer: back off.
+    Net(Fail),
+    /// The bytes arrived and did not decode.
+    Decode(String),
+}
+
+/// Read and decode one volume with ranged requests, holding the engine's
+/// single fetch permit. Returns the sweep and its provenance.
+async fn fetch_volume(
+    http: &Http,
+    volume: &Volume,
+    decode: Decode,
+) -> Result<(Sweep, String), VolumeError> {
+    let permit = FETCHER
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| VolumeError::Decode(e.to_string()))?;
+    let failure = Arc::new(Mutex::new(None));
+    let source = HttpRanges {
+        http: http.clone(),
+        url: volume.url.clone(),
+        runtime: Handle::current(),
+        failure: failure.clone(),
+    };
+    let joined = spawn_blocking(move || {
+        let _permit = permit;
+        let reader = RangeReader::open(Box::new(source)).map_err(|e| e.to_string())?;
+        let traffic = reader.traffic();
+        decode(reader).map(|sweep| (sweep, traffic))
+    })
+    .await;
+    match joined {
+        Ok(Ok((sweep, traffic))) => {
+            let provenance = format!(
+                "SMHI {PRODUCT} {}: {} range requests, {} of {} bytes",
+                volume.key,
+                traffic.requests(),
+                traffic.bytes(),
+                traffic.total()
+            );
+            Ok((sweep, provenance))
+        }
+        Ok(Err(e)) => Err(match failure.lock().unwrap().take() {
+            Some(fail) => VolumeError::Net(fail),
+            None => VolumeError::Decode(e),
+        }),
+        Err(e) => Err(VolumeError::Decode(format!("the decoder failed: {e}"))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The poller
+// ---------------------------------------------------------------------------
+
+/// What the poller needs from its surroundings. `Config::smhi` is the real
+/// one. Tests point `base` at a local server, shorten the waits and fix
+/// the clock.
+#[derive(Clone)]
+pub struct Config {
+    pub base: String,
+    pub poll: Duration,
+    pub max_back_off: Duration,
+    pub backfill_delay: Duration,
+    pub backfill_pace: Duration,
+    pub now_ms: fn() -> i64,
+    pub decode: Decode,
+}
+
+impl Config {
+    pub fn smhi(decode: Decode) -> Self {
+        Config {
+            base: API.to_owned(),
+            poll: POLL,
+            max_back_off: MAX_BACK_OFF,
+            backfill_delay: BACKFILL_DELAY,
+            backfill_pace: BACKFILL_PACE,
+            now_ms,
+            decode,
+        }
+    }
+}
+
+/// Aborts its task when dropped, so a poller that is replaced takes its
+/// backfill with it.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn send(events: &Sender<Event>, event: Event) -> bool {
+    events.send(event).await.is_ok()
+}
+
+/// SMHI's cadence: one volume per site every 5 minutes.
+const CADENCE_MS: i64 = 5 * 60 * 1000;
+/// `qcvol.json` should list a volume about 5 minutes after its valid time,
+/// but it is served through a cache and has been seen 12 minutes behind
+/// the day listing. A volume this far past its valid time is probed
+/// directly at its dated URL. SMHI names volumes predictably, and answers
+/// 404 until one is published.
+const PROBE_AFTER_MS: i64 = 6 * 60 * 1000;
+
+/// The volume SMHI publishes for `site` at `valid_ms`, by its dated URL.
+pub fn next_volume(base: &str, site: &str, valid_ms: i64) -> Volume {
+    let stamp = DateTime::from_timestamp_millis(valid_ms)
+        .map(|t| t.format("%Y%m%d%H%M").to_string())
+        .unwrap_or_default();
+    let key = format!("radar_{site}_{PRODUCT}_{stamp}");
+    Volume {
+        url: volume_url(base, site, &key, valid_ms),
+        key,
+        valid_ms,
+    }
+}
+
+/// The live path's memory between polls.
+struct Live {
+    /// Start times of every frame catalogued or delivered.
+    known: Vec<i64>,
+    /// The newest volume dealt with: fetched, found in the catalog, too old
+    /// to fetch, or given up on.
+    newest: Option<Volume>,
+    decode_failures: HashMap<String, u32>,
+}
+
+enum Outcome {
+    /// Dealt with, with an event for `main.rs` when there is one.
+    Handled(Option<Event>),
+    /// Not published yet (a probe's 404), or a decode failure to retry.
+    Pending,
+    Failed(Fail),
+}
+
+impl Live {
+    fn is_newer(&self, volume: &Volume) -> bool {
+        self.newest
+            .as_ref()
+            .is_none_or(|newest| volume.valid_ms > newest.valid_ms)
+    }
+
+    /// The next volume, once it is overdue and while the station is not
+    /// silent.
+    fn next_due(&self, now: i64, base: &str, site: &str) -> Option<Volume> {
+        let newest = self.newest.as_ref()?;
+        let next_ms = newest.valid_ms + CADENCE_MS;
+        let overdue = now >= next_ms + PROBE_AFTER_MS;
+        let quiet = now - newest.valid_ms >= SILENT_AFTER_MS;
+        (overdue && !quiet).then(|| next_volume(base, site, next_ms))
+    }
+
+    /// Deal with `volume`: nothing to fetch if the catalog has it or it is
+    /// too old, else read it. `probe` marks a volume SMHI has not listed,
+    /// for which a 404 only means "not yet".
+    async fn take(
+        &mut self,
+        cfg: &Config,
+        http: &Http,
+        site: &str,
+        volume: Volume,
+        probe: bool,
+    ) -> Outcome {
+        let first = self.newest.is_none();
+        let outcome = if covered(volume.valid_ms, &self.known) {
+            Outcome::Handled(first.then(|| Event::Current {
+                site: site.to_owned(),
+            }))
+        } else if (cfg.now_ms)() - volume.valid_ms >= HORIZON_MS {
+            Outcome::Handled(None)
+        } else {
+            match fetch_volume(http, &volume, cfg.decode).await {
+                Ok((sweep, provenance)) => {
+                    self.known.push(sweep.start_ms);
+                    Outcome::Handled(Some(Event::Sweep {
+                        site: site.to_owned(),
+                        sweep,
+                        complete: true,
+                        provenance,
+                    }))
+                }
+                Err(VolumeError::Net(Fail::Status(404, _))) if probe => Outcome::Pending,
+                Err(VolumeError::Net(fail)) => Outcome::Failed(fail),
+                Err(VolumeError::Decode(e)) => {
+                    let tries = self.decode_failures.entry(volume.key.clone()).or_default();
+                    *tries += 1;
+                    live_log(site, format_args!("{}: {e} (try {tries})", volume.key));
+                    if *tries >= GIVE_UP_AFTER {
+                        Outcome::Handled(None)
+                    } else {
+                        Outcome::Pending
+                    }
+                }
+            }
+        };
+        if matches!(outcome, Outcome::Handled(_)) {
+            self.newest = Some(volume);
+        }
+        outcome
+    }
+}
+
+/// Poll `site` until the task is aborted or the event channel closes.
+/// `cached` holds the start times of the frames already catalogued for the
+/// station, so neither the live path nor the backfill fetches them again.
+///
+/// Each round reads the listing and deals with its newest volume, then,
+/// if the listing lags, probes the next volume by its dated URL (one
+/// download per round). Once the live path has caught up with what SMHI
+/// has published, the backfill starts.
+pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached: Vec<i64>) {
+    let http = match Http::new() {
+        Ok(http) => http,
+        Err(e) => {
+            send(&events, Event::Offline { site, reason: e }).await;
+            return;
+        }
+    };
+    let url = listing_url(&cfg.base, &site);
+    let mut live = Live {
+        known: cached,
+        newest: None,
+        decode_failures: HashMap::new(),
+    };
+    let mut modified: Option<String> = None;
+    // The last listing's newest volume, and whether it listed none at all.
+    let mut listed: Option<Volume> = None;
+    let mut lists_nothing = false;
+    let mut failures = 0u32;
+    let mut silent = false;
+    let mut backfilling: Option<AbortOnDrop> = None;
+    loop {
+        let mut wait = cfg.poll;
+        let mut failed: Option<Fail> = None;
+        let mut listed_at = None;
+        match http.get(&url, modified.as_deref()).await {
+            Ok(Fetched::NotModified) => {}
+            Ok(Fetched::Body(body, stamp_)) => match newest_volume(&body, &cfg.base, &site) {
+                Ok(newest) => {
+                    lists_nothing = newest.is_none();
+                    listed = newest;
+                    listed_at = Some(stamp_);
+                }
+                Err(e) => failed = Some(Fail::Answer(e)),
+            },
+            Err(fail) => failed = Some(fail),
+        }
+
+        // The listing's newest volume, when it is newer than anything dealt
+        // with.
+        if let Some(volume) = listed.clone().filter(|v| live.is_newer(v)) {
+            match live.take(&cfg, &http, &site, volume, false).await {
+                Outcome::Handled(Some(event)) => {
+                    if !send(&events, event).await {
+                        return;
+                    }
+                }
+                Outcome::Handled(None) | Outcome::Pending => {}
+                Outcome::Failed(fail) => failed = Some(fail),
+            }
+        }
+
+        // A lagging listing: probe the next volume once it is overdue.
+        // Catalogued volumes cost nothing and are skipped through; one
+        // download per round.
+        let mut caught_up = false;
+        if failed.is_none() {
+            let now = (cfg.now_ms)();
+            loop {
+                let Some(next) = live.next_due(now, &cfg.base, &site) else {
+                    caught_up = true;
+                    break;
+                };
+                let free = covered(next.valid_ms, &live.known);
+                match live.take(&cfg, &http, &site, next, true).await {
+                    Outcome::Handled(Some(event)) => {
+                        if !send(&events, event).await {
+                            return;
+                        }
+                    }
+                    Outcome::Handled(None) => {}
+                    Outcome::Pending => {
+                        caught_up = true;
+                        break;
+                    }
+                    Outcome::Failed(fail) => {
+                        failed = Some(fail);
+                        break;
+                    }
+                }
+                if !free {
+                    break;
+                }
+            }
+        }
+
+        // Only a listing whose newest volume is dealt with may be answered
+        // 304 next time; otherwise a failed read would never be retried.
+        if let Some(stamp_) = listed_at
+            && listed.as_ref().is_none_or(|v| !live.is_newer(v))
+        {
+            modified = stamp_;
+        }
+
+        // Silence is judged after any fetch, so a station that went quiet
+        // an hour ago shows its last volume, then `unavailable`.
+        let latest_ms = listed
+            .iter()
+            .chain(live.newest.iter())
+            .map(|v| v.valid_ms)
+            .max();
+        let quiet_since = match latest_ms {
+            Some(ms) if (cfg.now_ms)() - ms >= SILENT_AFTER_MS => Some(Some(ms)),
+            None if lists_nothing => Some(None),
+            _ => None,
+        };
+        if let Some(since) = quiet_since
+            && !silent
+        {
+            let reason = match since {
+                Some(ms) => format!("{site} has published nothing since {}", stamp(ms)),
+                None => format!("SMHI lists no {PRODUCT} volume for {site}"),
+            };
+            let event = Event::Silent {
+                site: site.clone(),
+                reason,
+            };
+            if !send(&events, event).await {
+                return;
+            }
+        }
+        silent = quiet_since.is_some();
+
+        if backfilling.is_none()
+            && caught_up
+            && let Some(newest) = &live.newest
+            && (cfg.now_ms)() - newest.valid_ms < HORIZON_MS
+        {
+            backfilling = Some(AbortOnDrop(tokio::spawn(backfill(
+                cfg.clone(),
+                http.clone(),
+                site.clone(),
+                events.clone(),
+                newest.valid_ms,
+                live.known.clone(),
+            ))));
+        }
+
+        // A round counts as a failure if the listing or a volume failed, so
+        // a volume throttled over and over still backs off.
+        if let Some(fail) = failed {
+            failures += 1;
+            wait = back_off(cfg.poll, cfg.max_back_off, failures, fail.retry_after());
+            let reason = format!("SMHI: {fail}");
+            if failures < OFFLINE_AFTER {
+                live_log(
+                    &site,
+                    format_args!("{reason}; retrying in {}s", wait.as_secs()),
+                );
+            } else if !send(
+                &events,
+                Event::Offline {
+                    site: site.clone(),
+                    reason,
+                },
+            )
+            .await
+            {
+                return;
+            }
+        } else {
+            failures = 0;
+        }
+        sleep(wait).await;
+    }
+}
+
+/// The day listing(s) around `live_ms`, then each target volume in turn,
+/// newest first, as `Event::Backfill`. A network failure ends the backfill
+/// (the live poller backs off on its own); a volume that does not decode is
+/// skipped.
+async fn backfill(
+    cfg: Config,
+    http: Http,
+    site: String,
+    events: Sender<Event>,
+    live_ms: i64,
+    known: Vec<i64>,
+) {
+    sleep(cfg.backfill_delay).await;
+    let day = async |day_ms: i64| -> Result<Vec<Volume>, Fail> {
+        match http
+            .get(&day_listing_url(&cfg.base, &site, day_ms), None)
+            .await
+        {
+            Ok(Fetched::Body(body, _)) => {
+                day_volumes(&body, &cfg.base, &site).map_err(Fail::Answer)
+            }
+            Ok(Fetched::NotModified) => Ok(Vec::new()),
+            Err(Fail::Status(404, _)) => Ok(Vec::new()),
+            Err(fail) => Err(fail),
+        }
+    };
+    let mut listed = match day(live_ms).await {
+        Ok(listed) => listed,
+        Err(fail) => {
+            live_log(&site, format_args!("backfill listing: {fail}"));
+            return;
+        }
+    };
+    if needs_yesterday(listed.len(), BACKFILL) {
+        match day(live_ms - 24 * 60 * 60 * 1000).await {
+            Ok(earlier) => listed.extend(earlier),
+            Err(fail) => live_log(&site, format_args!("backfill listing (yesterday): {fail}")),
+        }
+    }
+    let targets = backfill_targets(listed, live_ms, &known, BACKFILL);
+    let wanted = targets.len();
+    let mut fetched = 0;
+    for volume in targets {
+        match fetch_volume(&http, &volume, cfg.decode).await {
+            Ok((sweep, provenance)) => {
+                let event = Event::Backfill {
+                    site: site.clone(),
+                    sweep,
+                    provenance,
+                };
+                if !send(&events, event).await {
+                    return;
+                }
+                fetched += 1;
+            }
+            Err(VolumeError::Net(fail)) => {
+                live_log(
+                    &site,
+                    format_args!("backfill {}: {fail}; stopping", volume.key),
+                );
+                break;
+            }
+            Err(VolumeError::Decode(e)) => {
+                live_log(&site, format_args!("backfill {}: {e}", volume.key));
+            }
+        }
+        sleep(cfg.backfill_pace).await;
+    }
+    live_log(
+        &site,
+        format_args!("backfilled {fetched} of {wanted} earlier volumes"),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sweep::Ray;
+    use chrono::NaiveDate;
+    use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::AtomicU32;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::mpsc;
+
+    const VARA: &str = include_str!("../tests/smhi/vara-qcvol-20260913T1656Z.json");
+    const VARA_DAY: &str = include_str!("../tests/smhi/vara-day-20260913.json");
+    const LEKSAND: &str = include_str!("../tests/smhi/leksand-qcvol-20260913T1656Z.json");
+    const LEKSAND_DAY: &str = include_str!("../tests/smhi/leksand-day-20260913.json");
+    /// `Last-Modified` of the recorded vara listing.
+    const VARA_MODIFIED: &str = "Sun, 13 Sep 2026 16:56:01 GMT";
+
+    fn utc(day: u32, hour: u32, minute: u32, second: u32) -> i64 {
+        NaiveDate::from_ymd_opt(2026, 9, day)
+            .unwrap()
+            .and_hms_opt(hour, minute, second)
+            .unwrap()
+            .and_utc()
+            .timestamp_millis()
+    }
+
+    /// When the fixtures were recorded.
+    fn recorded() -> i64 {
+        utc(13, 16, 56, 30)
+    }
+
+    #[test]
+    fn the_listing_names_the_newest_volume_by_its_dated_url() {
+        let newest = newest_volume(VARA.as_bytes(), API, "vara")
+            .unwrap()
+            .unwrap();
+        // Recorded at 16:56 from a cached copy: it lags the day listing
+        // (which reaches 16:50) by two volumes.
+        assert_eq!(newest.key, "radar_vara_qcvol_202609131640");
+        assert_eq!(newest.valid_ms, utc(13, 16, 40, 0));
+        // Not the listed `latest.h5`, which moves under a ranged reader.
+        assert_eq!(
+            newest.url,
+            "https://opendata-download-radar.smhi.se/api/version/latest/area/vara/product/qcvol/2026/09/13/radar_vara_qcvol_202609131640.h5"
+        );
+        assert!(VARA.contains("/qcvol/latest.h5"));
+    }
+
+    #[test]
+    fn the_next_volume_is_named_the_way_smhi_lists_it() {
+        let listed = day_volumes(VARA_DAY.as_bytes(), API, "vara").unwrap();
+        for pair in listed.windows(2) {
+            assert_eq!(
+                next_volume(API, "vara", pair[0].valid_ms + CADENCE_MS),
+                pair[1]
+            );
+        }
+        // Across midnight, into the next day's directory.
+        let next = next_volume(API, "vara", utc(14, 0, 0, 0));
+        assert_eq!(next.key, "radar_vara_qcvol_202609140000");
+        assert!(
+            next.url
+                .ends_with("/qcvol/2026/09/14/radar_vara_qcvol_202609140000.h5")
+        );
+    }
+
+    #[test]
+    fn built_urls_match_every_link_in_the_day_listing() {
+        let listed = day_volumes(VARA_DAY.as_bytes(), API, "vara").unwrap();
+        assert_eq!(listed.len(), 203);
+        let raw: serde_json::Value = serde_json::from_str(VARA_DAY).unwrap();
+        for (volume, file) in listed.iter().zip(raw["files"].as_array().unwrap()) {
+            assert_eq!(volume.key, file["key"].as_str().unwrap());
+            assert_eq!(volume.url, file["formats"][0]["link"].as_str().unwrap());
+        }
+        assert_eq!(listed.first().unwrap().valid_ms, utc(13, 0, 0, 0));
+        assert_eq!(listed.last().unwrap().valid_ms, utc(13, 16, 50, 0));
+        assert_eq!(
+            day_listing_url(API, "vara", utc(13, 16, 50, 0)),
+            format!("{API}/area/vara/product/qcvol/2026/09/13.json")
+        );
+    }
+
+    #[test]
+    fn leksand_lists_a_january_volume_and_an_empty_day() {
+        let newest = newest_volume(LEKSAND.as_bytes(), API, "leksand")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            newest.valid_ms,
+            NaiveDate::from_ymd_opt(2026, 1, 13)
+                .unwrap()
+                .and_hms_opt(12, 40, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp_millis()
+        );
+        assert!(recorded() - newest.valid_ms >= HORIZON_MS);
+        assert!(
+            day_volumes(LEKSAND_DAY.as_bytes(), API, "leksand")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            newest_volume(b"{\"lastFiles\":null}", API, "leksand")
+                .unwrap()
+                .is_none()
+        );
+        assert!(newest_volume(b"<html>", API, "leksand").is_err());
+    }
+
+    #[test]
+    fn a_catalogued_sweep_covers_only_its_own_volume() {
+        let valid = utc(13, 16, 50, 0);
+        let start = utc(13, 16, 50, 3);
+        assert!(covered(valid, &[start]));
+        assert!(!covered(valid + 5 * 60_000, &[start]), "the next volume");
+        assert!(
+            !covered(valid - 5 * 60_000, &[start]),
+            "the previous volume"
+        );
+        assert!(!covered(valid, &[]));
+    }
+
+    #[test]
+    fn backfill_takes_the_newest_sixty_the_catalog_lacks() {
+        let listed = day_volumes(VARA_DAY.as_bytes(), API, "vara").unwrap();
+        let live = utc(13, 16, 50, 0);
+        let targets = backfill_targets(listed.clone(), live, &[], BACKFILL);
+        // Sixty frames with the live one: 16:45 back to 11:55.
+        assert_eq!(targets.len(), BACKFILL - 1);
+        assert_eq!(targets.first().unwrap().valid_ms, utc(13, 16, 45, 0));
+        assert_eq!(targets.last().unwrap().valid_ms, utc(13, 11, 55, 0));
+        assert!(targets.windows(2).all(|w| w[0].valid_ms > w[1].valid_ms));
+        // Catalogued volumes are not fetched again, and nothing older than
+        // the loop is fetched in their place.
+        let known = [utc(13, 16, 40, 4), utc(13, 12, 0, 2), utc(13, 9, 0, 3)];
+        let targets = backfill_targets(listed.clone(), live, &known, BACKFILL);
+        assert_eq!(targets.len(), BACKFILL - 3);
+        assert_eq!(targets.last().unwrap().valid_ms, utc(13, 11, 55, 0));
+        // A live volume older than the listing's newest (a lagging
+        // `lastFiles`) keeps the loop behind it.
+        let targets = backfill_targets(listed, utc(13, 12, 0, 0), &[], BACKFILL);
+        assert_eq!(targets.first().unwrap().valid_ms, utc(13, 11, 55, 0));
+    }
+
+    #[test]
+    fn after_midnight_yesterday_fills_the_loop() {
+        let yesterday = day_volumes(VARA_DAY.as_bytes(), API, "vara").unwrap();
+        // Just after midnight: the 14th lists 00:00 and 00:05.
+        let today: Vec<Volume> = [(0, "0000"), (5, "0005")]
+            .iter()
+            .map(|&(minute, hhmm)| {
+                let key = format!("radar_vara_qcvol_20260914{hhmm}");
+                let valid_ms = utc(14, 0, minute, 0);
+                Volume {
+                    url: volume_url(API, "vara", &key, valid_ms),
+                    key,
+                    valid_ms,
+                }
+            })
+            .collect();
+        assert!(today[1].url.contains("/qcvol/2026/09/14/"));
+        assert!(needs_yesterday(today.len(), BACKFILL));
+        assert!(!needs_yesterday(yesterday.len(), BACKFILL));
+        let live = utc(14, 0, 5, 0);
+        let mut listed = today;
+        listed.extend(yesterday);
+        let targets = backfill_targets(listed, live, &[], BACKFILL);
+        assert_eq!(targets.len(), BACKFILL - 1);
+        assert_eq!(targets[0].valid_ms, utc(14, 0, 0, 0));
+        assert_eq!(targets[1].valid_ms, utc(13, 16, 50, 0));
+        // Today's 00:00 and 58 of the 13th, which was recorded at 16:56 and
+        // ends at 16:50.
+        assert_eq!(targets.last().unwrap().valid_ms, utc(13, 12, 5, 0));
+    }
+
+    #[test]
+    fn failures_back_off_doubling_and_honour_retry_after() {
+        let (poll, max) = (POLL, MAX_BACK_OFF);
+        assert_eq!(back_off(poll, max, 1, None), Duration::from_secs(120));
+        assert_eq!(back_off(poll, max, 2, None), Duration::from_secs(240));
+        assert_eq!(back_off(poll, max, 3, None), Duration::from_secs(480));
+        assert_eq!(back_off(poll, max, 4, None), max);
+        assert_eq!(back_off(poll, max, 40, None), max);
+        let after = Some(Duration::from_secs(900));
+        assert_eq!(back_off(poll, max, 1, after), Duration::from_secs(900));
+        let after = Some(Duration::from_secs(86_400));
+        assert_eq!(back_off(poll, max, 1, after), RETRY_AFTER_CAP);
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, "120".parse().unwrap());
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(120)));
+        headers.insert(
+            RETRY_AFTER,
+            "Wed, 21 Oct 2015 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(retry_after(&headers), None);
+        assert_eq!(
+            parse_content_range("bytes 0-65535/14701179"),
+            Some((0, 14_701_179))
+        );
+        assert_eq!(parse_content_range("bytes */14701179"), None);
+    }
+
+    /// A file served from memory, recording each request.
+    struct Local {
+        bytes: Vec<u8>,
+        log: Arc<StdMutex<Vec<(u64, u64)>>>,
+    }
+    impl RangeSource for Local {
+        fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, u64)> {
+            self.log.lock().unwrap().push((offset, len));
+            let total = self.bytes.len() as u64;
+            let end = (offset + len).min(total);
+            Ok((self.bytes[offset as usize..end as usize].to_vec(), total))
+        }
+    }
+
+    fn pattern(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 7 % 251) as u8).collect()
+    }
+
+    /// DEC-2's measured read of vara 10:55Z, replayed: the prefetch and the
+    /// six block runs cost 7 requests and 98,304 bytes.
+    #[test]
+    fn the_reader_reproduces_dec2s_request_count() {
+        let bytes = pattern(14_701_179);
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let source = Local {
+            bytes: bytes.clone(),
+            log: log.clone(),
+        };
+        let mut reader = RangeReader::open(Box::new(source)).unwrap();
+        assert_eq!(reader.total(), 14_701_179);
+        for (offset, len) in [
+            (40_000u64, 2_000usize),
+            (425_984, 4096),
+            (372_736, 4096),
+            (266_240, 4096),
+            (159_744, 4096),
+            (479_232, 4096),
+            (532_480, 12_288),
+            (425_990, 100),
+        ] {
+            reader.seek(SeekFrom::Start(offset)).unwrap();
+            let mut buf = vec![0; len];
+            reader.read_exact(&mut buf).unwrap();
+            assert_eq!(buf, bytes[offset as usize..offset as usize + len]);
+        }
+        let traffic = reader.traffic();
+        assert_eq!((traffic.requests(), traffic.bytes()), (7, 98_304));
+        assert_eq!(log.lock().unwrap()[0], (0, PREFETCH));
+        assert_eq!(log.lock().unwrap()[6], (532_480, 12_288));
+        // Seeks relative to the end and past it.
+        assert_eq!(reader.seek(SeekFrom::End(-10)).unwrap(), 14_701_169);
+        let mut tail = Vec::new();
+        reader.read_to_end(&mut tail).unwrap();
+        assert_eq!(tail, bytes[14_701_169..]);
+        assert!(reader.seek(SeekFrom::Current(-20_000_000)).is_err());
+    }
+
+    #[test]
+    fn a_file_smaller_than_the_prefetch_costs_one_request() {
+        let bytes = pattern(10_000);
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let mut reader = RangeReader::open(Box::new(Local {
+            bytes: bytes.clone(),
+            log: log.clone(),
+        }))
+        .unwrap();
+        let mut all = Vec::new();
+        reader.read_to_end(&mut all).unwrap();
+        assert_eq!(all, bytes);
+        assert_eq!(reader.traffic().requests(), 1, "the prefetch holds it all");
+    }
+
+    /// The file changes length between requests: SMHI replaced it.
+    struct Moving(u64);
+    impl RangeSource for Moving {
+        fn get(&mut self, _offset: u64, len: u64) -> io::Result<(Vec<u8>, u64)> {
+            self.0 += 1;
+            Ok((vec![0; len as usize], 1_000_000 + self.0))
+        }
+    }
+
+    #[test]
+    fn a_volume_that_changes_or_wanders_is_abandoned() {
+        let mut reader = RangeReader::open(Box::new(Moving(0))).unwrap();
+        reader.seek(SeekFrom::Start(500_000)).unwrap();
+        let err = reader.read(&mut [0; 16]).unwrap_err();
+        assert!(err.to_string().contains("changed"), "{err}");
+
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let mut reader = RangeReader::open(Box::new(Local {
+            bytes: pattern(15_000_000),
+            log,
+        }))
+        .unwrap();
+        // A decoder reading every other block of the whole file.
+        let mut spent = None;
+        for n in 0..2000u64 {
+            reader
+                .seek(SeekFrom::Start(PREFETCH + n * 2 * BLOCK))
+                .unwrap();
+            if let Err(e) = reader.read(&mut [0; 16]) {
+                spent = Some(e);
+                break;
+            }
+        }
+        assert!(spent.unwrap().to_string().contains("budget"));
+        assert!(reader.traffic().requests() <= MAX_REQUESTS);
+    }
+
+    // -----------------------------------------------------------------------
+    // The poller against a local server serving the recorded listings.
+    // -----------------------------------------------------------------------
+
+    struct Request {
+        path: String,
+        headers: HashMap<String, String>,
+    }
+
+    struct Response {
+        status: u16,
+        headers: Vec<(&'static str, String)>,
+        body: Vec<u8>,
+    }
+
+    impl Response {
+        fn new(status: u16, body: impl Into<Vec<u8>>) -> Self {
+            Response {
+                status,
+                headers: Vec::new(),
+                body: body.into(),
+            }
+        }
+    }
+
+    type Handler = Arc<dyn Fn(&Request) -> Response + Send + Sync>;
+    type Served = Arc<StdMutex<Vec<String>>>;
+
+    /// A minimal HTTP/1.1 server, one request per connection. The log
+    /// records `path` plus `range=` and `since=` where present.
+    async fn serve(handler: Handler) -> (String, Served) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let served: Served = Arc::default();
+        let log = served.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let handler = handler.clone();
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => head.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&head).into_owned();
+                    let mut lines = text.lines();
+                    let path = lines
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or_default()
+                        .to_owned();
+                    let headers = lines
+                        .filter_map(|l| l.split_once(':'))
+                        .map(|(k, v)| (k.trim().to_lowercase(), v.trim().to_owned()))
+                        .collect::<HashMap<_, _>>();
+                    let request = Request { path, headers };
+                    let mut entry = request.path.clone();
+                    if let Some(range) = request.headers.get("range") {
+                        entry += &format!(" range={range}");
+                    }
+                    if let Some(since) = request.headers.get("if-modified-since") {
+                        entry += &format!(" since={since}");
+                    }
+                    log.lock().unwrap().push(entry);
+                    let response = handler(&request);
+                    let mut out = format!(
+                        "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+                        response.status,
+                        response.body.len()
+                    );
+                    for (k, v) in &response.headers {
+                        out += &format!("{k}: {v}\r\n");
+                    }
+                    out += "\r\n";
+                    let _ = stream.write_all(out.as_bytes()).await;
+                    let _ = stream.write_all(&response.body).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (base, served)
+    }
+
+    const VOLUME_BYTES: usize = 600_000;
+
+    /// A stand-in volume: its key at the start, a pattern after.
+    fn fake_volume(key: &str) -> Vec<u8> {
+        let mut bytes = pattern(VOLUME_BYTES);
+        bytes[..key.len()].copy_from_slice(key.as_bytes());
+        bytes[key.len()] = 0;
+        bytes
+    }
+
+    /// Serve `bytes` for a `Range: bytes=a-b` request.
+    fn ranged(request: &Request, bytes: &[u8]) -> Response {
+        let Some((a, b)) = request
+            .headers
+            .get("range")
+            .and_then(|r| r.strip_prefix("bytes="))
+            .and_then(|r| r.split_once('-'))
+        else {
+            return Response::new(200, bytes.to_vec());
+        };
+        let total = bytes.len();
+        let a: usize = a.parse().unwrap();
+        let b = b.parse::<usize>().unwrap().min(total - 1);
+        let mut response = Response::new(206, bytes[a..=b].to_vec());
+        response
+            .headers
+            .push(("Content-Range", format!("bytes {a}-{b}/{total}")));
+        response
+    }
+
+    /// SMHI for one site from the recorded listings: `qcvol.json` answers
+    /// 304 to its own `Last-Modified`, the day listing is the recorded day,
+    /// and every dated volume URL serves a stand-in volume.
+    fn smhi(site: &'static str, listing: &'static str, day: &'static str) -> Handler {
+        Arc::new(move |request: &Request| {
+            let prefix = format!("/area/{site}/product/qcvol");
+            let Some(rest) = request.path.strip_prefix(&prefix) else {
+                return Response::new(404, "no such area");
+            };
+            match rest {
+                ".json" => {
+                    if request.headers.get("if-modified-since").map(String::as_str)
+                        == Some(VARA_MODIFIED)
+                    {
+                        return Response::new(304, "");
+                    }
+                    let mut response = Response::new(200, listing);
+                    response
+                        .headers
+                        .push(("Last-Modified", VARA_MODIFIED.into()));
+                    response
+                }
+                "/2026/09/13.json" => Response::new(200, day),
+                _ => match rest
+                    .strip_prefix("/2026/09/13/")
+                    .and_then(|f| f.strip_suffix(".h5"))
+                {
+                    Some(key) => ranged(request, &fake_volume(key)),
+                    None => Response::new(404, "not found"),
+                },
+            }
+        })
+    }
+
+    /// The stand-in decoder: reads the key back from the volume's first
+    /// bytes, touches two blocks deeper in (as a real decode would), and
+    /// reports a sweep that starts 3 s after the key's valid time.
+    fn stub_decode(mut reader: RangeReader) -> Result<Sweep, String> {
+        let mut head = [0u8; 64];
+        reader.read_exact(&mut head).map_err(|e| e.to_string())?;
+        let key = head.split(|&b| b == 0).next().unwrap();
+        let key = std::str::from_utf8(key).map_err(|e| e.to_string())?;
+        let digits = key.rsplit('_').next().unwrap_or_default();
+        let valid = NaiveDateTime::parse_from_str(digits, "%Y%m%d%H%M")
+            .map_err(|e| format!("{key}: {e}"))?
+            .and_utc()
+            .timestamp_millis();
+        for (offset, len) in [(425_984, 100), (532_480, 12_000)] {
+            reader
+                .seek(SeekFrom::Start(offset))
+                .map_err(|e| e.to_string())?;
+            let mut buf = vec![0; len];
+            reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
+        }
+        let start_ms = valid + 3_000;
+        Ok(Sweep {
+            rays: vec![Ray {
+                azimuth_deg: 0.5,
+                elevation_deg: 0.5,
+                time_ms: start_ms,
+                codes: vec![0; 4],
+            }],
+            start_ms,
+            end_ms: start_ms + 30_000,
+            gates: 4,
+            first_gate_m: 250,
+            gate_spacing_m: 500,
+            scale: 2.0,
+            offset: 66.0,
+        })
+    }
+
+    fn config(base: String) -> Config {
+        Config {
+            base,
+            poll: Duration::from_millis(40),
+            max_back_off: Duration::from_millis(200),
+            backfill_delay: Duration::ZERO,
+            backfill_pace: Duration::ZERO,
+            now_ms: recorded,
+            decode: stub_decode,
+        }
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// A readable summary of one event.
+    fn describe(event: &Event) -> String {
+        match event {
+            Event::Sweep {
+                sweep, complete, ..
+            } => format!("sweep {} {complete}", stamp(sweep.start_ms)),
+            Event::Backfill { sweep, .. } => format!("backfill {}", stamp(sweep.start_ms)),
+            Event::Current { .. } => "current".into(),
+            Event::Offline { reason, .. } => format!("offline {reason}"),
+            Event::Silent { reason, .. } => format!("silent {reason}"),
+        }
+    }
+
+    /// Run a poller until `until` holds for the events so far (or 10 s),
+    /// then `linger` longer, collecting anything more.
+    fn run(
+        site: &'static str,
+        handler: Handler,
+        cached: Vec<i64>,
+        until: impl Fn(&[Event]) -> bool,
+        linger: Duration,
+    ) -> (Vec<Event>, Vec<String>) {
+        runtime().block_on(async {
+            let (base, served) = serve(handler).await;
+            let (tx, mut rx) = mpsc::channel(16);
+            let poller = tokio::spawn(poll_with(config(base), site.into(), tx, cached));
+            let mut events = Vec::new();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while !until(&events) {
+                match tokio::time::timeout_at(deadline, rx.recv()).await {
+                    Ok(Some(event)) => events.push(event),
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            let deadline = tokio::time::Instant::now() + linger;
+            while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+                events.push(event);
+            }
+            poller.abort();
+            let served = served.lock().unwrap().clone();
+            (events, served)
+        })
+    }
+
+    /// The poller test against the recorded listings. The listing names
+    /// 16:40 while the day listing already reaches 16:50, so the poller
+    /// publishes 16:40, overtakes the lagging listing by probing 16:45 and
+    /// 16:50, then backfills the rest of the 60-frame loop. After that,
+    /// conditional polls fetch nothing more.
+    #[test]
+    fn the_poller_publishes_the_newest_volume_then_backfills_sixty_frames() {
+        let (events, served) = run(
+            "vara",
+            smhi("vara", VARA, VARA_DAY),
+            Vec::new(),
+            |events| events.len() >= BACKFILL,
+            Duration::from_millis(300),
+        );
+        let seen: Vec<String> = events.iter().map(describe).collect();
+        assert_eq!(seen.len(), BACKFILL, "{seen:?}");
+        assert_eq!(
+            seen[..3],
+            [
+                "sweep 2026-09-13 16:40Z true",
+                "sweep 2026-09-13 16:45Z true",
+                "sweep 2026-09-13 16:50Z true"
+            ]
+        );
+        assert_eq!(seen[3], "backfill 2026-09-13 16:35Z");
+        assert_eq!(seen[BACKFILL - 1], "backfill 2026-09-13 11:55Z");
+        let Event::Sweep { provenance, .. } = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            provenance,
+            "SMHI qcvol radar_vara_qcvol_202609131640: 3 range requests, 81920 of 600000 bytes"
+        );
+        // Only ranged reads of dated volumes, each read once, 3 requests
+        // apiece here (the real decoder's 7 are the reader test above). One
+        // day listing: the 13th holds 203 volumes, so yesterday is not
+        // asked for.
+        let volumes: Vec<&String> = served.iter().filter(|s| s.contains(".h5")).collect();
+        assert_eq!(volumes.len(), BACKFILL * 3, "{volumes:?}");
+        assert!(
+            volumes
+                .iter()
+                .all(|s| s.contains(" range=bytes=") && !s.contains("latest"))
+        );
+        assert_eq!(
+            served
+                .iter()
+                .filter(|s| s.contains("202609131640.h5"))
+                .count(),
+            3
+        );
+        assert_eq!(
+            served
+                .iter()
+                .filter(|s| s.ends_with("/2026/09/13.json"))
+                .count(),
+            1
+        );
+        assert!(!served.iter().any(|s| s.contains("/2026/09/12")));
+        // Every poll after the first is conditional, and a 304 fetches
+        // nothing.
+        let listings: Vec<&String> = served.iter().filter(|s| s.contains("qcvol.json")).collect();
+        assert!(listings.len() >= 3, "{listings:?}");
+        assert!(listings[0].ends_with("/area/vara/product/qcvol.json"));
+        assert!(
+            listings[1..]
+                .iter()
+                .all(|s| s.ends_with(&format!("since={VARA_MODIFIED}")))
+        );
+    }
+
+    #[test]
+    fn a_catalogued_newest_volume_is_current_and_not_fetched() {
+        // The catalog holds the newest volume and the half hour of the loop
+        // before it: 16:50 back to 14:25.
+        let cached: Vec<i64> = (0..30).map(|i| utc(13, 16, 50, 3) - i * 300_000).collect();
+        let (events, served) = run(
+            "vara",
+            smhi("vara", VARA, VARA_DAY),
+            cached,
+            |events| events.len() > 30,
+            Duration::from_millis(100),
+        );
+        let seen: Vec<String> = events.iter().map(describe).collect();
+        assert_eq!(seen.len(), 31, "{seen:?}");
+        assert_eq!(seen[0], "current");
+        assert_eq!(seen[1], "backfill 2026-09-13 14:20Z");
+        assert_eq!(seen[30], "backfill 2026-09-13 11:55Z");
+        assert!(!served.iter().any(|s| s.contains("202609131650.h5")));
+    }
+
+    #[test]
+    fn leksand_is_silent_and_costs_one_listing() {
+        let (events, served) = run(
+            "leksand",
+            smhi("leksand", LEKSAND, LEKSAND_DAY),
+            Vec::new(),
+            |events| !events.is_empty(),
+            Duration::from_millis(150),
+        );
+        let seen: Vec<String> = events.iter().map(describe).collect();
+        assert_eq!(
+            seen,
+            ["silent leksand has published nothing since 2026-01-13 12:40Z"]
+        );
+        // Reported once, while polls go on. Neither the January volume nor
+        // any day listing is fetched.
+        assert!(served.len() >= 2, "{served:?}");
+        assert!(
+            served
+                .iter()
+                .all(|s| s.contains("/area/leksand/product/qcvol.json")),
+            "{served:?}"
+        );
+    }
+
+    #[test]
+    fn a_failing_listing_backs_off_and_reports_offline_on_the_second_failure() {
+        let handler: Handler = Arc::new(|_: &Request| {
+            let mut response = Response::new(503, "busy");
+            response.headers.push(("Retry-After", "0".into()));
+            response
+        });
+        let (events, served) = run(
+            "vara",
+            handler,
+            Vec::new(),
+            |events| !events.is_empty(),
+            Duration::ZERO,
+        );
+        let seen: Vec<String> = events.iter().map(describe).collect();
+        assert_eq!(seen, ["offline SMHI: HTTP 503 (retry after 0s)"]);
+        assert_eq!(served.len(), 2, "one quiet retry, then offline");
+    }
+
+    #[test]
+    fn a_throttled_volume_backs_off_and_is_read_on_the_next_poll() {
+        let volume_hits = Arc::new(AtomicU32::new(0));
+        let hits = volume_hits.clone();
+        let inner = smhi("vara", VARA, "{\"files\":[]}");
+        let handler: Handler = Arc::new(move |request: &Request| {
+            if request.path.ends_with(".h5") && hits.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Response::new(429, "slow down");
+            }
+            inner(request)
+        });
+        let (events, served) = run(
+            "vara",
+            handler,
+            Vec::new(),
+            |events| !events.is_empty(),
+            Duration::ZERO,
+        );
+        let seen: Vec<String> = events.iter().map(describe).collect();
+        assert_eq!(seen, ["sweep 2026-09-13 16:40Z true"]);
+        let listing_polls = served.iter().filter(|s| s.contains("qcvol.json")).count();
+        assert_eq!(listing_polls, 2, "{served:?}");
+    }
+
+    #[test]
+    fn a_probe_answered_404_is_not_a_failure() {
+        // SMHI has published up to 16:45 and the listing still says 16:40.
+        let inner = smhi("vara", VARA, "{\"files\":[]}");
+        let handler: Handler = Arc::new(move |request: &Request| {
+            if request.path.ends_with("_202609131650.h5") {
+                return Response::new(404, "not yet");
+            }
+            inner(request)
+        });
+        let (events, served) = run(
+            "vara",
+            handler,
+            Vec::new(),
+            |events| events.len() >= 2,
+            Duration::from_millis(300),
+        );
+        let seen: Vec<String> = events.iter().map(describe).collect();
+        assert_eq!(
+            seen,
+            [
+                "sweep 2026-09-13 16:40Z true",
+                "sweep 2026-09-13 16:45Z true"
+            ]
+        );
+        // One probe per poll, each a single prefetch request.
+        let probes = served
+            .iter()
+            .filter(|s| s.contains("_202609131650.h5"))
+            .count();
+        let polls = served.iter().filter(|s| s.contains("qcvol.json")).count();
+        assert!(probes >= 2 && probes <= polls, "{served:?}");
+        // Caught up with what is published, so the backfill ran.
+        assert!(served.iter().any(|s| s.ends_with("/2026/09/13.json")));
+    }
+}

@@ -4,6 +4,7 @@ mod live_index;
 mod odim;
 mod osm;
 mod protocol;
+mod smhi_live;
 mod sweep;
 mod tiles;
 
@@ -59,8 +60,10 @@ const RETIRE_AFTER: Duration = Duration::from_secs(30);
 /// client that still falls behind is dropped by the next broadcast.
 const QUEUE: usize = 128;
 /// A reachable feed whose newest radial for the station is this old or older
-/// is `stale`, and `unavailable` at three times that.
-const STALE_AFTER: Duration = Duration::from_secs(600);
+/// is `stale`, and `unavailable` at 30 minutes. 15, not upstream's 10: SMHI's
+/// 5-minute cadence plus ~5 minutes to publish makes a healthy frame 5–10
+/// minutes old, so 10 would flap (DEC-9).
+const STALE_AFTER: Duration = Duration::from_secs(900);
 const UNAVAILABLE_AFTER: Duration = Duration::from_secs(1800);
 /// Playback advances one frame per tick and loops (DESIGN.md, timeline).
 const PLAY_LOOP: Duration = Duration::from_secs(10);

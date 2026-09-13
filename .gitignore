@@ -41,4 +41,5 @@ mise.local.toml
 # omastorm-se: spike scratch and live coordination state (the logs ARE committed)
 spike/
 coord/.lock
+coord/.git.lock
 coord/locks/

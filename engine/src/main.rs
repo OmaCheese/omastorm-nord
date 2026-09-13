@@ -382,19 +382,39 @@ fn empty_frame(template: &Frame, station: &Station) -> Frame {
     }
 }
 /// The frame a lean daemon starts on before any `select_site`: the loading
-/// placeholder for no station at all, sited at the middle of the contiguous
-/// network so the map shows the whole set of markers until a station is
-/// chosen. `site.id` is empty, so any home the UI names differs from it.
+/// placeholder for no station at all, sited at the middle of Sweden so the
+/// map shows the whole set of markers until a station is chosen. `site.id`
+/// is empty, so any home the UI names differs from it.
 fn startup_frame(template: &Frame) -> Frame {
     let nowhere = Station {
         id: String::new(),
         name: String::new(),
         state: String::new(),
-        lat: 39.8,
-        lon: -98.6,
+        lat: 62.0,
+        lon: 16.0,
         alt_m: 0.0,
     };
     empty_frame(template, &nowhere)
+}
+/// Development only: the daemon's own station table when it starts on an
+/// archived volume whose station the table lacks (the NEXRAD KTLX scan the
+/// checks use until an ODIM fixture replaces it). The archive's station joins
+/// it from the frame's geometry, so following keeps the archive's home view
+/// instead of handing off to the nearest SMHI radar, and `select_site` still
+/// reaches it. `hello` never lists it: the picker shows the SMHI sites alone.
+fn with_archived_station(mut sites: Vec<Station>, frame: &Frame) -> Vec<Station> {
+    let id = frame.id.split('-').next().unwrap_or_default();
+    if !id.is_empty() && !sites.iter().any(|s| s.id == id) {
+        sites.push(Station {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            state: String::new(),
+            lat: frame.site.lat,
+            lon: frame.site.lon,
+            alt_m: frame.site.alt_m,
+        });
+    }
+    sites
 }
 /// The textures behind a loading placeholder: one blank gate, so the
 /// shader draws nothing, and an azimuth lookup for it.
@@ -1566,6 +1586,10 @@ fn serve(dir: PathBuf) -> io::Result<()> {
     let osm = Arc::new(osm::Osm::open()?);
     // The frame ring buffer; live frames are written here as they complete.
     let catalog = Arc::new(catalog::Catalog::open(osm::cache_root()?.join("frames"))?);
+    let sites = match source {
+        Source::Archived => with_archived_station(hello().sites, &frame),
+        Source::Live => hello().sites,
+    };
     let (events, event_rx) = mpsc::channel(16);
     let wake = Arc::new(Notify::new());
     let shared = Arc::new(Mutex::new(Shared {
@@ -1574,7 +1598,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         clients: Vec::new(),
         next_client: 0,
         template,
-        sites: hello().sites,
+        sites,
         dir: dir.clone(),
         catalog,
         live: None,
@@ -2111,7 +2135,7 @@ mod tests {
 }
 #[cfg(test)]
 mod handoff_tests {
-    use super::{great_circle_km, handoff, site_table};
+    use super::{fixture_frame, great_circle_km, handoff, site_table, with_archived_station};
     use crate::protocol::Station;
 
     fn station(id: &str, lat: f64, lon: f64) -> Station {
@@ -2173,8 +2197,13 @@ mod handoff_tests {
     #[test]
     fn co_located_stations_need_a_kilometre_to_swap() {
         // KOUN and KCRI are 300 m apart; near them the ratio alone would flap.
-        let sites = site_table().sites;
-        let koun = sites.iter().find(|s| s.id == "KOUN").unwrap();
+        // SMHI has no such pair, so the NEXRAD positions stand in.
+        let sites = [
+            station("KTLX", 35.333361, -97.277761),
+            station("KOUN", 35.236058, -97.46235),
+            station("KCRI", 35.238333, -97.46),
+        ];
+        let koun = &sites[1];
         assert!(handoff(&sites, "KCRI", koun.lat, koun.lon).is_none());
         assert!(handoff(&sites, "KOUN", koun.lat + 0.002, koun.lon).is_none());
         // From Oklahoma City's radar the Norman pair is a real hand-off.
@@ -2183,7 +2212,9 @@ mod handoff_tests {
 
     #[test]
     fn the_fixture_home_view_stays_on_ktlx() {
-        let sites = site_table().sites;
+        // The archived KTLX scan joins the daemon's table, not hello's.
+        let sites = with_archived_station(site_table().sites, &fixture_frame());
+        assert_eq!(sites.len(), site_table().sites.len() + 1);
         // The window's home view sits 5 km west and 15 km north of the site.
         assert!(handoff(&sites, "KTLX", 35.4681, -97.3326).is_none());
         // A station outside the table (or archived) hands off at once.
@@ -2191,5 +2222,22 @@ mod handoff_tests {
             handoff(&sites, "ZZZZ", 35.333361, -97.277761).map(|s| &s.id[..]),
             Some("KTLX")
         );
+    }
+
+    #[test]
+    fn the_site_table_is_the_smhi_network() {
+        let sites = site_table().sites;
+        assert_eq!(sites.len(), 12);
+        for s in &sites {
+            assert!(
+                (53.0..=71.5).contains(&s.lat) && (3.0..=33.0).contains(&s.lon),
+                "{}",
+                s.id
+            );
+        }
+        // Following from Gothenburg settles on Vara; from Stockholm, Bålsta.
+        let nearest = |lat, lon| handoff(&sites, "", lat, lon).map(|s| s.id.clone());
+        assert_eq!(nearest(57.71, 11.97).as_deref(), Some("vara"));
+        assert_eq!(nearest(59.33, 18.07).as_deref(), Some("balsta"));
     }
 }

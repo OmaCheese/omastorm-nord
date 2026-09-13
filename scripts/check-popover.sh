@@ -13,7 +13,8 @@ export OMASTORM_STATE="$scratch/state.json"
 export OMASTORM_ROOT="$PWD"
 mkdir -p "$XDG_RUNTIME_DIR"
 : > "$OMASTORM_CONFIG"
-jq -c '.sites[] | select(.id=="KTLX") | {lat, lon, span: 210}' engine/data/sites.json > "$OMASTORM_STATE"
+# Archived KTLX is not in the SMHI site table; seed the camera from the scan.
+printf '{"lat":35.333361,"lon":-97.277761,"span":210}\n' > "$OMASTORM_STATE"
 pid=
 cleanup() {
   [[ -z $pid ]] || kill "$pid" 2>/dev/null || true
@@ -89,8 +90,8 @@ call expand
 until_status '.window and .windowFrame == "popover-test-0" and (.windowPlaying | not)'
 # A configured lock applies immediately; subsequently selecting another
 # station must survive expansion, and closing the window leaves it there.
-printf 'locked_radar = "KFCX"\n' > "$OMASTORM_CONFIG"
-until_status '.site == "KFCX"'
+printf 'locked_radar = "balsta"\n' > "$OMASTORM_CONFIG"
+until_status '.site == "balsta"'
 tell '{"type":"select_site","id":"KTLX"}' '{"type":"lock","enabled":true}' '{"type":"seek","id":"popover-test-0"}'
 until_status '.frame == "popover-test-0"'
 call step 1
@@ -105,11 +106,11 @@ call closeWindow
 until_status '.window == false and .site == "KTLX"'
 # A stopped daemon followed by ensure must reconnect all surviving clients.
 # Reconnect keeps the session lock and camera; this process never unlocked,
-# so KFCX is selected again.
+# so balsta is selected again.
 target/debug/omastorm-engine stop
 until_status '.connected == false'
 target/debug/omastorm-engine ensure
-until_status '.site == "KFCX" and .connected'
+until_status '.site == "balsta" and .connected'
 call quit
 wait "$pid"
 pid=

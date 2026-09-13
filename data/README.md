@@ -15,6 +15,23 @@ and the window labels it ARCHIVED.
   sweep 0, nearest-neighbor handling of any mixed-resolution rays. They are the
   decoder's answer key (`docs/protocol.md`, golden files).
 
+## SMHI fixture
+
+SMHI **Vara** (`RAD:SE49`, `NOD:sevax`) quality-controlled polar volume
+`qcvol`, nominal time **2026-09-13 10:55 UTC**; the 0.5° sweep runs
+10:55:03–10:55:33 UTC. ODIM_H5 2.2 `PVOL`, 10 tilts. `engine/src/odim.rs` reads
+the lowest tilt's DBZH (`/dataset1/data1`, int16, 360 × 480, 500 m bins).
+
+- [Original volume](https://opendata-download-radar.smhi.se/api/version/latest/area/vara/product/qcvol/2026/09/13/radar_vara_qcvol_202609131055.h5),
+  `radar_vara_qcvol_202609131055.h5`, 14,701,179 bytes. SMHI's listing keeps
+  only about a day of volumes, so the file is vendored as it was downloaded
+  and `refresh-fixtures.sh` cannot fetch it again.
+- [SMHI Open Data](https://www.smhi.se/data/om-smhis-data/villkor-for-anvandning),
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Source: SMHI.
+- Golden files under `golden/vara-20260913/` were produced with h5py 3.16
+  (libhdf5), not the engine's reader, by `golden/vara-20260913/produce.py`,
+  which records its own command line. They are the ODIM decoder's answer key.
+
 ## Geography
 
 Natural Earth coastline, lakes, country boundary lines on land, and

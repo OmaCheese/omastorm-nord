@@ -125,10 +125,14 @@ def main(path):
     # Projection spot checks: lon/lat -> stereographic metres, both ways.
     points = [(float(where[f"{k}_lon"]), float(where[f"{k}_lat"])) for k in ("UL", "UR", "LL", "LR")]
     points += [(11.97, 57.71), (18.07, 59.33), (20.23, 67.86), (14.0, 62.0), (24.0, 55.0), (5.5, 69.0)]
-    projection = [
-        {"lon": lo, "lat": la, "x": round(px, 4), "y": round(py, 4)}
-        for (lo, la), (px, py) in ((p, stere(*p)) for p in points)
-    ]
+    # The inverse assumes height 0 on the projection's ellipsoid, as PROJ
+    # does, so it does not quite return the input under a +towgs84.
+    projection = []
+    for lo, la in points:
+        px, py = stere(lo, la)
+        ilo, ila = stere(px, py, inverse=True)
+        projection.append({"lon": lo, "lat": la, "x": round(px, 4), "y": round(py, 4),
+                           "inverseLon": round(ilo, 10), "inverseLat": round(ila, 10)})
 
     what_root = f["what"].attrs
     dwhat = f["dataset1/what"].attrs

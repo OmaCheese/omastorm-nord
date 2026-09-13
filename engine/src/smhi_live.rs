@@ -24,7 +24,11 @@
 //! - A station whose newest volume is older than `SILENT_AFTER_MS` is
 //!   reported `Silent`, which the UI shows as `unavailable`. Leksand has
 //!   published nothing since January 2026.
+//! - The national composite (area `sweden`, product `comp`, S8) goes through
+//!   the same poller: `product` picks the product from the area, and
+//!   `composite.rs` decodes its files into a `Scan::Grid`.
 
+use crate::composite::Grid;
 use crate::sweep::Sweep;
 use chrono::{DateTime, NaiveDateTime};
 use reqwest::header::{
@@ -125,13 +129,53 @@ fn live_log(site: &str, message: impl fmt::Display) {
     eprintln!("{now} Live {site}: {message}");
 }
 
+/// What a decoder makes of one file: a radar's lowest sweep, or the
+/// national composite reprojected to its grid texture (`composite.rs`).
+pub enum Scan {
+    Polar(Sweep),
+    Grid(Grid),
+}
+
+impl Scan {
+    /// The frame's start: the first radial, or the composite's nominal time.
+    pub fn start_ms(&self) -> i64 {
+        match self {
+            Scan::Polar(sweep) => sweep.start_ms,
+            Scan::Grid(grid) => grid.start_ms,
+        }
+    }
+    pub fn end_ms(&self) -> i64 {
+        match self {
+            Scan::Polar(sweep) => sweep.end_ms,
+            Scan::Grid(grid) => grid.end_ms,
+        }
+    }
+    /// A short description for the log.
+    pub fn describe(&self) -> String {
+        match self {
+            Scan::Polar(sweep) => format!("{} rays", sweep.rays.len()),
+            Scan::Grid(grid) => grid.describe(),
+        }
+    }
+}
+
+/// SMHI's product for an area: the national composite for `sweden`, the
+/// quality-controlled polar volume for each radar.
+pub fn product(site: &str) -> &'static str {
+    if site == crate::composite::AREA {
+        crate::composite::PRODUCT
+    } else {
+        PRODUCT
+    }
+}
+
 /// What the poller reports to `main.rs`.
 pub enum Event {
     /// An earlier volume, fetched after a join. The timeline gains history
     /// and the frame on screen stays.
     Backfill {
         site: String,
-        sweep: Sweep,
+        sweep: Scan,
         provenance: String,
     },
     /// The newest volume. `complete` is always true, because SMHI publishes
@@ -139,7 +183,7 @@ pub enum Event {
     /// serves both sources.
     Sweep {
         site: String,
-        sweep: Sweep,
+        sweep: Scan,
         complete: bool,
         provenance: String,
     },
@@ -209,12 +253,13 @@ fn day_path(ms: i64) -> String {
 }
 
 pub fn listing_url(base: &str, site: &str) -> String {
-    format!("{base}/area/{site}/product/{PRODUCT}.json")
+    format!("{base}/area/{site}/product/{}.json", product(site))
 }
 
 pub fn day_listing_url(base: &str, site: &str, day_ms: i64) -> String {
     format!(
-        "{base}/area/{site}/product/{PRODUCT}/{}.json",
+        "{base}/area/{site}/product/{}/{}.json",
+        product(site),
         day_path(day_ms)
     )
 }
@@ -225,7 +270,8 @@ pub fn day_listing_url(base: &str, site: &str, day_ms: i64) -> String {
 /// matches every link SMHI lists.
 pub fn volume_url(base: &str, site: &str, key: &str, valid_ms: i64) -> String {
     format!(
-        "{base}/area/{site}/product/{PRODUCT}/{}/{key}.h5",
+        "{base}/area/{site}/product/{}/{}/{key}.h5",
+        product(site),
         day_path(valid_ms)
     )
 }
@@ -718,8 +764,9 @@ impl RangeSource for HttpRanges {
     }
 }
 
-/// The ODIM decoder: the lowest-tilt DBZH sweep of a volume (S2, `odim.rs`).
-pub type Decode = fn(RangeReader) -> Result<Sweep, String>;
+/// A file's decoder: the lowest-tilt DBZH sweep of a volume (S2, `odim.rs`)
+/// or the composite's grid (S8, `composite.rs`).
+pub type Decode = fn(RangeReader) -> Result<Scan, String>;
 
 enum VolumeError {
     /// SMHI failed to answer: back off.
@@ -733,9 +780,10 @@ enum VolumeError {
 async fn fetch_volume(
     http: &Http,
     volume: &Volume,
+    product: &str,
     decode: Decode,
     length_pause: Duration,
-) -> Result<(Sweep, String), VolumeError> {
+) -> Result<(Scan, String), VolumeError> {
     let permit = FETCHER
         .clone()
         .acquire_owned()
@@ -759,7 +807,7 @@ async fn fetch_volume(
     match joined {
         Ok(Ok((sweep, traffic))) => {
             let provenance = format!(
-                "SMHI {PRODUCT} {}: {} range requests, {} of {} bytes",
+                "SMHI {product} {}: {} range requests, {} of {} bytes",
                 volume.key,
                 traffic.requests(),
                 traffic.bytes(),
@@ -813,15 +861,24 @@ impl Config {
 }
 
 /// S2's ODIM decoder over the ranged reader.
-fn decode(reader: RangeReader) -> Result<Sweep, String> {
-    crate::odim::decode_lowest_dbzh(reader).map_err(|e| e.to_string())
+fn decode(reader: RangeReader) -> Result<Scan, String> {
+    crate::odim::decode_lowest_dbzh(reader)
+        .map(Scan::Polar)
+        .map_err(|e| e.to_string())
 }
 
 /// Poll SMHI for `site` until the task is aborted or the event channel
-/// closes (`poll_with` has the details). `skip_known` is upstream's respawn
-/// flag, kept so `main.rs` calls both pollers alike. SMHI volumes are never
-/// replayed, and catalogued ones are never fetched, so it changes nothing.
+/// closes (`poll_with` has the details). The composite's area gets the
+/// composite decoder, every radar the ODIM volume decoder. `skip_known` is
+/// upstream's respawn flag, kept so `main.rs` calls both pollers alike.
+/// SMHI volumes are never replayed, and catalogued ones are never fetched,
+/// so it changes nothing.
 pub async fn poll(site: String, events: Sender<Event>, cached: Vec<i64>, _skip_known: bool) {
+    let decode: Decode = if site == crate::composite::AREA {
+        crate::composite::decode_scan
+    } else {
+        decode
+    };
     poll_with(Config::smhi(decode), site, events, cached).await;
 }
 
@@ -852,7 +909,7 @@ pub fn next_volume(base: &str, site: &str, valid_ms: i64) -> Volume {
     let stamp = DateTime::from_timestamp_millis(valid_ms)
         .map(|t| t.format("%Y%m%d%H%M").to_string())
         .unwrap_or_default();
-    let key = format!("radar_{site}_{PRODUCT}_{stamp}");
+    let key = format!("radar_{site}_{}_{stamp}", product(site));
     Volume {
         url: volume_url(base, site, &key, valid_ms),
         key,
@@ -914,9 +971,9 @@ impl Live {
         } else if (cfg.now_ms)() - volume.valid_ms >= HORIZON_MS {
             Outcome::Handled(None)
         } else {
-            match fetch_volume(http, &volume, cfg.decode, cfg.length_pause).await {
+            match fetch_volume(http, &volume, product(site), cfg.decode, cfg.length_pause).await {
                 Ok((sweep, provenance)) => {
-                    self.known.push(sweep.start_ms);
+                    self.known.push(sweep.start_ms());
                     Outcome::Handled(Some(Event::Sweep {
                         site: site.to_owned(),
                         sweep,
@@ -1064,7 +1121,7 @@ pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached:
         {
             let reason = match since {
                 Some(ms) => format!("{site} has published nothing since {}", stamp(ms)),
-                None => format!("SMHI lists no {PRODUCT} volume for {site}"),
+                None => format!("SMHI lists no {} volume for {site}", product(&site)),
             };
             let event = Event::Silent {
                 site: site.clone(),
@@ -1163,7 +1220,7 @@ async fn backfill(
     let wanted = targets.len();
     let mut fetched = 0;
     for volume in targets {
-        match fetch_volume(&http, &volume, cfg.decode, cfg.length_pause).await {
+        match fetch_volume(&http, &volume, product(&site), cfg.decode, cfg.length_pause).await {
             Ok((sweep, provenance)) => {
                 let event = Event::Backfill {
                     site: site.clone(),
@@ -1666,7 +1723,7 @@ mod tests {
     /// The stand-in decoder: reads the key back from the volume's first
     /// bytes, touches two blocks deeper in (as a real decode would), and
     /// reports a sweep that starts 3 s after the key's valid time.
-    fn stub_decode(mut reader: RangeReader) -> Result<Sweep, String> {
+    fn stub_decode(mut reader: RangeReader) -> Result<Scan, String> {
         let mut head = [0u8; 64];
         reader.read_exact(&mut head).map_err(|e| e.to_string())?;
         let key = head.split(|&b| b == 0).next().unwrap();
@@ -1684,7 +1741,7 @@ mod tests {
             reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
         }
         let start_ms = valid + 3_000;
-        Ok(Sweep {
+        Ok(Scan::Polar(Sweep {
             rays: vec![Ray {
                 azimuth_deg: 0.5,
                 elevation_deg: 0.5,
@@ -1699,7 +1756,7 @@ mod tests {
             scale: 2.0,
             offset: 66.0,
             code1_status: crate::sweep::OUTSIDE_COVERAGE,
-        })
+        }))
     }
 
     fn config(base: String) -> Config {
@@ -1727,8 +1784,8 @@ mod tests {
         match event {
             Event::Sweep {
                 sweep, complete, ..
-            } => format!("sweep {} {complete}", stamp(sweep.start_ms)),
-            Event::Backfill { sweep, .. } => format!("backfill {}", stamp(sweep.start_ms)),
+            } => format!("sweep {} {complete}", stamp(sweep.start_ms())),
+            Event::Backfill { sweep, .. } => format!("backfill {}", stamp(sweep.start_ms())),
             Event::Current { .. } => "current".into(),
             Event::Offline { reason, .. } => format!("offline {reason}"),
             Event::Silent { reason, .. } => format!("silent {reason}"),

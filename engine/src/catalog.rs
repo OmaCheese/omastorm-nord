@@ -230,11 +230,12 @@ fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{FrameStatus, Geometry};
+    use crate::protocol::{FrameKind, FrameStatus, Geometry};
 
     fn frame(site: &str, minute: u32) -> Frame {
         Frame {
             id: format!("{site}-20260906T12{minute:02}00Z-e0"),
+            kind: FrameKind::Polar,
             product: "REF".into(),
             product_name: "Reflectivity".into(),
             units: "dBZ".into(),
@@ -257,6 +258,7 @@ mod tests {
             },
             palette: vec!["#000000".into()],
             bounds: vec![0, 10],
+            grid: None,
         }
     }
 

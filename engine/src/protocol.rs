@@ -1,4 +1,4 @@
-//! Wire types for `docs/protocol.md`, version 1. Objects serialize in
+//! Wire types for `docs/protocol.md`, version 2. Objects serialize in
 //! declaration order; clients read keys by name, so order is not significant.
 #![allow(
     dead_code,
@@ -7,7 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 1;
+/// 2 since the composite (S8): `frame.kind`, `frame.grid`, `hello.sites[].kind`.
+pub const VERSION: u32 = 2;
 
 /// Engine to client. Borrows so a snapshot never clones the state tree.
 #[derive(Serialize)]
@@ -117,6 +118,48 @@ pub struct Station {
     pub lat: f64,
     pub lon: f64,
     pub alt_m: f64,
+    /// Always sent. `sites.json` lists radars only, so it defaults to polar.
+    #[serde(default)]
+    pub kind: SiteKind,
+}
+
+/// What a station is: one radar, or the national composite, which has no
+/// antenna and is never a hand-off target (`docs/protocol.md`, `hello`).
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SiteKind {
+    #[default]
+    Polar,
+    Grid,
+}
+
+/// What a frame's texture is (`docs/protocol.md`, `frame.kind`). Always
+/// sent; frames stored before version 2 read back as polar.
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FrameKind {
+    #[default]
+    Polar,
+    Grid,
+}
+
+/// Where a grid frame's Web Mercator texture lies (`frame.grid`). The
+/// edges are the texture's outer edges in degrees; a pixel is
+/// `xscale` × `yscale` Mercator metres.
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GridPlacement {
+    pub projection: String,
+    pub xsize: u32,
+    pub ysize: u32,
+    pub xscale: f64,
+    pub yscale: f64,
+    pub west: f64,
+    pub east: f64,
+    pub north: f64,
+    pub south: f64,
+    /// The grid the engine reprojected from, for display and debugging.
+    pub source_projdef: String,
 }
 
 #[derive(Serialize, PartialEq, Debug)]
@@ -266,6 +309,10 @@ pub struct TimelineEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Frame {
     pub id: String,
+    /// `polar` (sweep texture + azimuth lookup) or `grid` (Web Mercator
+    /// texture placed by `grid`, no lookup, zero polar geometry).
+    #[serde(default)]
+    pub kind: FrameKind,
     pub product: String,
     /// Display name for `product`; the engine owns product vocabulary.
     pub product_name: String,
@@ -298,6 +345,9 @@ pub struct Frame {
     pub site: Geometry,
     pub palette: Vec<String>,
     pub bounds: Vec<i32>,
+    /// The texture's placement on a grid frame; absent on polar frames.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<GridPlacement>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Copy, Debug)]

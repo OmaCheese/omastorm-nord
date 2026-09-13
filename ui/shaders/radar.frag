@@ -25,8 +25,17 @@ layout(std140, binding = 0) uniform buf {
     // Weak-return floor: measured codes 2..weakBelow-1 draw nothing (the
     // legend names the hidden dBZ). 0 draws every measured return.
     int weakBelow;
+    // Frame kind (docs/protocol.md): 0 polar, 1 grid. A grid is the
+    // engine's Web Mercator reprojection of a composite, placed by its
+    // north-west corner's offset from the site and its size, both in
+    // Mercator units, and sized in texels. No azimuth lookup is read for it.
+    int kind;
+    vec2 gridOrigin;
+    vec2 gridSize;
+    vec2 gridTexels;
 };
 // The sweep: one row per radial in ascending azimuth, one texel per gate.
+// For a grid frame, the Web Mercator texture instead, row 0 north.
 // R is palette class + 1 (0 draws nothing), G holds status bits (1 folded,
 // 2 below threshold). Nearest sampling, no mipmaps.
 layout(binding = 1) uniform sampler2D sweep;
@@ -87,11 +96,22 @@ float bearingAtan(float y, float x) {
     if (x < 0.0) a = PI-a;
     return y < 0.0 ? -a : a;
 }
+vec4 shade(vec4 code, vec2 pixel);
 void main() {
     // Every treatment paints 3 px screen cells; each cell samples the gate
     // under its center, so the lookup below runs once per cell, not per texel.
     vec2 pixel = qt_TexCoord0 * viewport;
     vec2 samplePixel = floor(pixel / 3.0) * 3.0 + 1.5;
+    if (kind == 1) {
+        // Grid lookup rule (docs/protocol.md): the cell centre's place in
+        // the texture's Mercator rectangle, row 0 north. Outside the
+        // rectangle draws nothing; inside, the nearest texel.
+        vec2 g = (centerOffset + (samplePixel - viewport * .5) * unitsPerPixel - gridOrigin) / gridSize;
+        if (gridTexels.x < 1.0 || gridTexels.y < 1.0
+            || g.x < 0.0 || g.y < 0.0 || g.x >= 1.0 || g.y >= 1.0) { fragColor=vec4(0); return; }
+        fragColor = shade(texture(sweep, (floor(g * gridTexels) + .5) / gridTexels), pixel);
+        return;
+    }
     if (gates <= 0 || rays <= 0) { fragColor=vec4(0); return; }
     // The cell's Mercator offset from the site: x east, y south (tile rows
     // grow southward). In radians of longitude and of isometric latitude.
@@ -130,11 +150,15 @@ void main() {
     vec4 lut = texture(azimuthLut, vec2((entry + .5) / 3600.0, .5));
     float row = floor(lut.r * 255.0 + .5) + 256.0 * floor(lut.g * 255.0 + .5);
     vec2 uv = vec2((floor(gate + .5) + .5) / float(gates), (row + .5) / float(rays));
-    vec4 code = texture(sweep, uv);
+    fragColor = shade(texture(sweep, uv), pixel);
+}
+// The palette, treatments, folded marker, and weak-return floor, shared by
+// both kinds: `code` is the texel under the cell, `pixel` the fragment.
+vec4 shade(vec4 code, vec2 pixel) {
     // The raw moment byte in B decides the floor, so a floor can sit inside a
     // palette band; folded and below-threshold codes (0, 1) are never weak.
     int raw = int(round(code.b * 255.0));
-    if (weakBelow > 0 && raw >= 2 && raw < weakBelow) { fragColor=vec4(0); return; }
+    if (weakBelow > 0 && raw >= 2 && raw < weakBelow) return vec4(0);
     int value = int(round(code.r * 255.0));
     int status = int(round(code.g * 255.0));
     vec2 phase = mod(pixel,3.0);
@@ -146,14 +170,12 @@ void main() {
             ivec2 p = ivec2(floor(phase));
             bool cross = p.x == p.y || p.x + p.y == 2;
             vec3 color = cross ? vec3(245) : vec3(24);
-            fragColor=vec4(color/255.0,1.0)*qt_Opacity;
-        } else {
-            fragColor=vec4(0);
+            return vec4(color/255.0,1.0)*qt_Opacity;
         }
-        return;
+        return vec4(0);
     }
     int b=value-1;
-    if (b >= bands) { fragColor=vec4(0); return; }
+    if (b >= bands) return vec4(0);
     // Treatments grade coverage by quartile of the palette, whatever its length.
     int group=(b*4)/bands;
     float alpha=1.0;
@@ -167,5 +189,5 @@ void main() {
         alpha=coverage.x*coverage.y;
     }
     vec3 color=texture(swatches, vec2((float(b)+.5)/float(bands), .5)).rgb;
-    fragColor=vec4(color*alpha,alpha)*qt_Opacity;
+    return vec4(color*alpha,alpha)*qt_Opacity;
 }

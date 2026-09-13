@@ -1,4 +1,5 @@
 mod catalog;
+mod composite;
 mod odim;
 mod osm;
 mod protocol;
@@ -9,12 +10,13 @@ mod tiles;
 use catalog::Entry;
 use chrono::{DateTime, Utc};
 use protocol::{
-    Basemap, Command, Connection, ConnectionStatus, Frame, FrameStatus, Geometry, Handshake, Hello,
-    Message, NaturalEarth, Places, Rejection, SiteSelection, SiteTable, Source, State, Station,
-    TileReady, TimelineEntry, VERSION, is_texture_path,
+    Basemap, Command, Connection, ConnectionStatus, Frame, FrameKind, FrameStatus, Geometry,
+    Handshake, Hello, Message, NaturalEarth, Places, Rejection, SiteKind, SiteSelection, SiteTable,
+    Source, State, Station, TileReady, TimelineEntry, VERSION, is_texture_path,
 };
 use serde::Deserialize;
 use serde_json::Value;
+use smhi_live::Scan;
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -93,9 +95,13 @@ fn fingerprint() -> io::Result<String> {
 fn build_id() -> &'static str {
     BUILD.get().expect("fingerprint is computed before use")
 }
-/// The embedded station snapshot (`engine/data/sites.json`).
+/// The embedded station snapshot (`engine/data/sites.json`, the 12 radars
+/// `scripts/fetch-smhi-sites.sh` writes) plus the national composite, which
+/// that script does not know about (`composite.rs`).
 fn site_table() -> SiteTable {
-    serde_json::from_str(include_str!("../data/sites.json")).unwrap()
+    let mut table: SiteTable = serde_json::from_str(include_str!("../data/sites.json")).unwrap();
+    table.sites.push(composite::station());
+    table
 }
 fn hello() -> Hello {
     let table = site_table();
@@ -325,6 +331,7 @@ fn known_sweep_clears_loading(status: ConnectionStatus) -> bool {
 fn live_frame(template: &Frame, station: &Station, sweep: &sweep::Sweep, complete: bool) -> Frame {
     Frame {
         id: format!("{}-{}-e0", station.id, compact(sweep.start_ms)),
+        kind: FrameKind::Polar,
         product: template.product.clone(),
         product_name: template.product_name.clone(),
         units: template.units.clone(),
@@ -351,6 +358,7 @@ fn live_frame(template: &Frame, station: &Station, sweep: &sweep::Sweep, complet
         },
         palette: template.palette.clone(),
         bounds: template.bounds.clone(),
+        grid: None,
     }
 }
 /// The frame shown while a station's first live sweep loads and nothing is
@@ -359,6 +367,8 @@ fn live_frame(template: &Frame, station: &Station, sweep: &sweep::Sweep, complet
 fn empty_frame(template: &Frame, station: &Station) -> Frame {
     Frame {
         id: format!("{}-loading", station.id),
+        // Always polar, the composite's too: one blank gate draws nothing.
+        kind: FrameKind::Polar,
         product: template.product.clone(),
         product_name: template.product_name.clone(),
         units: template.units.clone(),
@@ -381,6 +391,7 @@ fn empty_frame(template: &Frame, station: &Station) -> Frame {
         },
         palette: template.palette.clone(),
         bounds: template.bounds.clone(),
+        grid: None,
     }
 }
 /// The frame a lean daemon starts on before any `select_site`: the loading
@@ -395,6 +406,7 @@ fn startup_frame(template: &Frame) -> Frame {
         lat: 62.0,
         lon: 16.0,
         alt_m: 0.0,
+        kind: SiteKind::Polar,
     };
     empty_frame(template, &nowhere)
 }
@@ -414,6 +426,7 @@ fn with_archived_station(mut sites: Vec<Station>, frame: &Frame) -> Vec<Station>
             lat: frame.site.lat,
             lon: frame.site.lon,
             alt_m: frame.site.alt_m,
+            kind: SiteKind::Polar,
         });
     }
     sites
@@ -448,10 +461,21 @@ fn great_circle_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 /// beats it by the hysteresis rule. `None` keeps the current station, so a
 /// centre between two stations does not flap. Nothing about the camera is
 /// decided here: the centre is the user's.
+///
+/// The composite covers the whole view already, so it is never a target,
+/// and while it is selected nothing is handed off to (`docs/protocol.md`,
+/// `view_center`).
 fn handoff<'a>(sites: &'a [Station], current: &str, lat: f64, lon: f64) -> Option<&'a Station> {
+    if sites
+        .iter()
+        .any(|s| s.id == current && s.kind == SiteKind::Grid)
+    {
+        return None;
+    }
     let distance = |s: &Station| great_circle_km(lat, lon, s.lat, s.lon);
     let nearest = sites
         .iter()
+        .filter(|s| s.kind == SiteKind::Polar)
         .min_by(|a, b| distance(a).total_cmp(&distance(b)))?;
     if nearest.id == current {
         return None;
@@ -935,11 +959,15 @@ fn publish(dir: &Path, stem: &str, frame: &str, bytes: &[u8]) -> io::Result<Stri
     fs::rename(temporary, dir.join(&name))?;
     Ok(name)
 }
-/// Publish a frame's sweep texture and azimuth lookup under `tex/` and set
-/// its paths.
+/// Publish a frame's texture under `tex/` and set its path, and for a polar
+/// frame its azimuth lookup's too. A grid frame has no lookup: its
+/// `azimuthLut` is empty (`docs/protocol.md`, `frame.kind`).
 fn publish_frame(dir: &Path, frame: &mut Frame, texture: &[u8], lut: &[u8]) -> io::Result<()> {
     frame.texture = publish(dir, "sweep", &frame.id, texture)?;
-    frame.azimuth_lut = publish(dir, "azlut", &frame.id, lut)?;
+    frame.azimuth_lut = match frame.kind {
+        FrameKind::Polar => publish(dir, "azlut", &frame.id, lut)?,
+        FrameKind::Grid => String::new(),
+    };
     Ok(())
 }
 /// Encode a sweep's texture and lookup as PNGs.
@@ -948,6 +976,21 @@ fn encode(sweep: &sweep::Sweep, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)>
     let texture = sweep::png(u32::from(sweep.gates), sweep.rows(), &pixels)?;
     let lut = sweep::png(3600, 1, &sweep.azimuth_lut())?;
     Ok((texture, lut))
+}
+/// A poller's scan as a frame: a sweep like any live frame, the composite
+/// as a grid frame (`composite.rs`).
+fn scan_frame(template: &Frame, station: &Station, scan: &Scan, complete: bool) -> Frame {
+    match scan {
+        Scan::Polar(sweep) => live_frame(template, station, sweep, complete),
+        Scan::Grid(grid) => composite::frame(template, station, grid),
+    }
+}
+/// A scan's texture and azimuth lookup as PNGs; a grid's lookup is empty.
+fn encode_scan(scan: &Scan, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    match scan {
+        Scan::Polar(sweep) => encode(sweep, frame),
+        Scan::Grid(grid) => composite::encode(grid, frame),
+    }
 }
 /// The station an archived ODIM volume came from: the nearest table site
 /// within 5 km of the volume's position, else one named by its `PLC`.
@@ -967,6 +1010,7 @@ fn odim_station(site: &odim::OdimSite) -> Station {
                 lat: site.lat,
                 lon: site.lon,
                 alt_m: site.alt_m,
+                kind: SiteKind::Polar,
             }
         })
 }
@@ -1025,27 +1069,27 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<smhi_live:
                         continue;
                     };
                     (
-                        live_frame(&shared.template, station, &sweep, complete),
+                        scan_frame(&shared.template, station, &sweep, complete),
                         shared.catalog.clone(),
                     )
                 };
                 let encoded = spawn_blocking(move || -> io::Result<Arrival> {
                     let started = Instant::now();
-                    let (texture, lut) = encode(&sweep, &frame)?;
+                    let (texture, lut) = encode_scan(&sweep, &frame)?;
                     if complete {
                         catalog.store(
                             &site,
                             &frame,
-                            sweep.start_ms,
+                            sweep.start_ms(),
                             &texture,
                             &lut,
                             &provenance,
                         )?;
                     }
                     eprintln!(
-                        "{} Live {site}: {} rays {} in {:.0?}",
+                        "{} Live {site}: {} {} in {:.0?}",
                         iso(now_ms()),
-                        sweep.rays.len(),
+                        sweep.describe(),
                         if complete { "complete" } else { "partial" },
                         started.elapsed()
                     );
@@ -1053,8 +1097,8 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<smhi_live:
                         frame,
                         texture,
                         lut,
-                        start_ms: sweep.start_ms,
-                        end_ms: sweep.end_ms,
+                        start_ms: sweep.start_ms(),
+                        end_ms: sweep.end_ms(),
                     })
                 })
                 .await
@@ -1091,13 +1135,13 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<smhi_live:
                         continue;
                     };
                     (
-                        live_frame(&shared.template, station, &sweep, true),
+                        scan_frame(&shared.template, station, &sweep, true),
                         shared.catalog.clone(),
                     )
                 };
                 let stored = spawn_blocking(move || -> io::Result<Entry> {
-                    let (texture, lut) = encode(&sweep, &frame)?;
-                    catalog.store(&site, &frame, sweep.start_ms, &texture, &lut, &provenance)?;
+                    let (texture, lut) = encode_scan(&sweep, &frame)?;
+                    catalog.store(&site, &frame, sweep.start_ms(), &texture, &lut, &provenance)?;
                     eprintln!(
                         "{} Live {site}: backfilled {} from {}",
                         iso(now_ms()),
@@ -1107,7 +1151,7 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<smhi_live:
                     Ok(Entry {
                         id: frame.id,
                         scan_time: frame.scan_time,
-                        start_ms: sweep.start_ms,
+                        start_ms: sweep.start_ms(),
                     })
                 })
                 .await
@@ -2182,7 +2226,7 @@ mod tests {
 #[cfg(test)]
 mod handoff_tests {
     use super::{fixture_frame, great_circle_km, handoff, site_table, with_archived_station};
-    use crate::protocol::Station;
+    use crate::protocol::{SiteKind, Station};
 
     fn station(id: &str, lat: f64, lon: f64) -> Station {
         Station {
@@ -2192,6 +2236,7 @@ mod handoff_tests {
             lat,
             lon,
             alt_m: 0.0,
+            kind: SiteKind::Polar,
         }
     }
     /// A point `fraction` of the way from `a` to `b` along the parallel.
@@ -2273,7 +2318,20 @@ mod handoff_tests {
     #[test]
     fn the_site_table_is_the_smhi_network() {
         let sites = site_table().sites;
-        assert_eq!(sites.len(), 12);
+        // The 12 radars of sites.json, then the composite (S8).
+        assert_eq!(sites.len(), 13);
+        assert_eq!(
+            sites.iter().filter(|s| s.kind == SiteKind::Polar).count(),
+            12
+        );
+        assert_eq!(
+            sites
+                .iter()
+                .filter(|s| s.kind == SiteKind::Grid)
+                .map(|s| &s.id[..])
+                .collect::<Vec<_>>(),
+            ["sweden"]
+        );
         for s in &sites {
             assert!(
                 (53.0..=71.5).contains(&s.lat) && (3.0..=33.0).contains(&s.lon),
@@ -2285,5 +2343,15 @@ mod handoff_tests {
         let nearest = |lat, lon| handoff(&sites, "", lat, lon).map(|s| s.id.clone());
         assert_eq!(nearest(57.71, 11.97).as_deref(), Some("vara"));
         assert_eq!(nearest(59.33, 18.07).as_deref(), Some("balsta"));
+        // The composite sits at the middle of Sweden but is never a target,
+        // and while it is selected nothing is handed off to.
+        assert!(nearest(62.0, 16.0).is_some_and(|id| id != "sweden"));
+        assert!(handoff(&sites, "sweden", 57.71, 11.97).is_none());
+        assert!(handoff(&sites, "sweden", 62.0, 16.0).is_none());
+        // Leaving a radar still hands off to the next radar.
+        assert_eq!(
+            handoff(&sites, "vara", 59.33, 18.07).map(|s| &s.id[..]),
+            Some("balsta")
+        );
     }
 }

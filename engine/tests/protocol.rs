@@ -114,10 +114,23 @@ fn fixture_transport_and_shared_commands() {
     let mut first = engine.connect();
     let hello = read(&mut first);
     assert_eq!(hello["type"], "hello");
-    assert_eq!(hello["v"], 1);
+    assert_eq!(hello["v"], 2);
     assert_eq!(hello["build"].as_str().unwrap().len(), 16);
     let sites = hello["sites"].as_array().unwrap();
-    assert_eq!(sites.len(), 12);
+    // The 12 SMHI radars and the national composite (protocol v2): every
+    // station says its kind, and the composite is the one grid.
+    assert_eq!(sites.len(), 13);
+    assert!(
+        sites
+            .iter()
+            .all(|s| s["kind"] == "polar" || s["kind"] == "grid")
+    );
+    let grids: Vec<&str> = sites
+        .iter()
+        .filter(|s| s["kind"] == "grid")
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(grids, ["sweden"]);
     let mut ids = std::collections::HashSet::new();
     for site in sites {
         assert!(ids.insert(site["id"].as_str().unwrap()));
@@ -146,6 +159,7 @@ fn fixture_transport_and_shared_commands() {
     // texture with an azimuth lookup and gate geometry, and nothing else that
     // describes radar placement.
     let frame = &initial["frame"];
+    assert_eq!(frame["kind"], "polar");
     assert!(frame.get("grid").is_none());
     assert!(frame.get("sweep").is_none());
     assert_eq!(frame["rays"], 720);
@@ -195,7 +209,7 @@ fn fixture_transport_and_shared_commands() {
     send(&mut second, json!({"type":"select_site","id":"XXXX"}));
     let e = read(&mut second);
     assert_eq!(e["type"], "error");
-    assert_eq!(e["v"], 1);
+    assert_eq!(e["v"], 2);
     assert_eq!(e["command"], "select_site");
     assert!(e["message"].as_str().unwrap().contains("XXXX"));
     first
@@ -257,7 +271,7 @@ fn fixture_transport_and_shared_commands() {
     );
     let places = read(&mut first);
     assert_eq!(places["type"], "places");
-    assert_eq!(places["v"], 1);
+    assert_eq!(places["v"], 2);
     assert_eq!(places["query"], "göteborg");
     let results = places["results"].as_array().unwrap();
     assert_eq!(results[0]["name"], "Göteborg");
@@ -479,7 +493,7 @@ fn tiles_needed_is_answered_tile_by_tile_to_the_sender() {
     for _ in 0..4 {
         let tile = read(&mut asker);
         assert_eq!(tile["type"], "tile_ready", "{tile}");
-        assert_eq!(tile["v"], 1);
+        assert_eq!(tile["v"], 2);
         assert_eq!(tile["set"], "ne");
         assert_eq!(tile["z"], 5);
         let (x, y) = (tile["x"].as_u64().unwrap(), tile["y"].as_u64().unwrap());

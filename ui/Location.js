@@ -79,7 +79,8 @@ function configCenter(values) {
 
 function configLock(values) {
     if (!values || typeof values.locked_radar !== "string") return "";
-    return values.locked_radar.trim().toUpperCase();
+    // Keep the id's case: SMHI area keys are lowercase (vara); NEXRAD were upper.
+    return values.locked_radar.trim();
 }
 
 function configErrors(values) {
@@ -115,7 +116,7 @@ function parseState(raw) {
             lat: validLat(lat) ? lat : undefined,
             lon: validLon(lon) ? lon : undefined,
             span: typeof span === "number" && isFinite(span) && span > 0 ? span : undefined,
-            lock: typeof json.lock === "string" ? json.lock.trim().toUpperCase() : "",
+            lock: typeof json.lock === "string" ? json.lock.trim() : "",
             name: typeof json.name === "string" ? json.name : ""
         };
     } catch (e) { return empty; }

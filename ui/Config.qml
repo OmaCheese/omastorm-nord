@@ -26,7 +26,7 @@ QtObject {
     property bool locationRead: false
     readonly property var centerLat: typeof values.center_lat === "number" ? values.center_lat : undefined
     readonly property var centerLon: typeof values.center_lon === "number" ? values.center_lon : undefined
-    readonly property string lockedRadar: typeof values.locked_radar === "string" ? values.locked_radar.trim().toUpperCase() : ""
+    readonly property string lockedRadar: typeof values.locked_radar === "string" ? values.locked_radar.trim() : ""
     // The raw value; the window judges it against the three treatments.
     readonly property var treatment: values.treatment
     // The raw value; the window judges it: a dBZ number, false, or unset.

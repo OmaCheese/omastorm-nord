@@ -2135,9 +2135,7 @@ mod tests {
 }
 #[cfg(test)]
 mod handoff_tests {
-    use super::{
-        fixture_frame, great_circle_km, handoff, site_table, with_archived_station,
-    };
+    use super::{fixture_frame, great_circle_km, handoff, site_table, with_archived_station};
     use crate::protocol::Station;
 
     fn station(id: &str, lat: f64, lon: f64) -> Station {

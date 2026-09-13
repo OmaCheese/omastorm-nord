@@ -793,7 +793,10 @@ mod tests {
         assert_eq!(goteborg[0].name, "Göteborg");
         assert_eq!(goteborg[0].region, "Västra Götaland");
         assert_eq!(search_places("göt", None, 4)[0].name, "Göteborg");
-        assert_eq!(search_places("vara", Some((58.26, 12.83)), 4)[0].name, "Vara");
+        assert_eq!(
+            search_places("vara", Some((58.26, 12.83)), 4)[0].name,
+            "Vara"
+        );
         let kiruna = search_places("kiruna", None, 4);
         assert_eq!(kiruna[0].name, "Kiruna");
         assert!(search_places("   ", None, 8).is_empty());

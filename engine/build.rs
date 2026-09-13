@@ -1,9 +1,9 @@
 //! Converts the Natural Earth GeoJSON that `scripts/extract-fixtures.sh`
 //! extracts into the geography the binary embeds (DESIGN.md, basemap tiles,
 //! shipped geography): one polyline blob holding the 1:50m world set and the
-//! 1:10m set clipped to the NEXRAD network envelope, and the populated places
-//! for low-zoom labels. GeoNames cities with population ≥ 5000, clipped to
-//! the same envelope, become the location-picker gazetteer. Reruns only when
+//! 1:10m set clipped to the SMHI network's Nordic envelope, and the populated
+//! places for low-zoom labels. GeoNames cities with population ≥ 5000, clipped
+//! to the same envelope, become the location-picker gazetteer. Reruns only when
 //! an input changes.
 //!
 //! Blob layout (`ne.bin`, read by `src/tiles.rs`): the magic `OMNE\x01`, then
@@ -23,11 +23,21 @@ const THEMES: [(&str, usize); 4] = [
     ("coastline", 1),
     ("lakes", 1),
 ];
-/// Everything the site table reaches (DESIGN.md): 5–75° N, west of 20° W or
-/// east of 120° E, holding Lajes, Guam, Kunsan, and Kadena with their range.
+/// Everything the SMHI site table reaches with its 240 km range: the Nordic
+/// box, 3–33° E and 53–71.5° N, from Denmark and the Baltics to North Cape.
+/// `scripts/extract-fixtures.sh --regenerate` pre-clips the vendored 1:10m
+/// lines to the same box.
 fn in_envelope(lon: f64, lat: f64) -> bool {
-    (5.0..=75.0).contains(&lat) && (lon <= -20.0 || lon >= 120.0)
+    (53.0..=71.5).contains(&lat) && (3.0..=33.0).contains(&lon)
 }
+/// The gazetteer's countries (GeoNames codes): Sweden, Norway, Finland with
+/// Åland, Denmark, and the Baltics. The box alone would also take in north
+/// Germany, Poland, Belarus and north-west Russia.
+const COUNTRIES: [&str; 8] = ["SE", "NO", "FI", "AX", "DK", "EE", "LV", "LT"];
+/// GeoNames primary names that are English exonyms for SE; prefer the local
+/// spelling in the location picker. Alternatenames also hold archaic forms
+/// (Hälsingborg, Döderhultsvik), so this stays an explicit list.
+const SE_LOCAL_NAMES: &[(&str, &str)] = &[("Gothenburg", "Göteborg")];
 const SCALE: f64 = 1e5;
 
 fn main() {
@@ -144,8 +154,8 @@ fn main() {
     write_gazetteer(&raw, Path::new(&out));
 }
 
-/// GeoNames `cities5000` clipped to the NEXRAD envelope, for the location
-/// picker only. Map labels stay on Natural Earth (`places.json`).
+/// GeoNames `cities5000` clipped to the Nordic envelope and countries, for
+/// the location picker only. Map labels stay on Natural Earth (`places.json`).
 fn write_gazetteer(raw: &Path, out: &Path) {
     let mut admin1 = std::collections::HashMap::new();
     for line in fs::read_to_string(raw.join("admin1CodesASCII.txt"))
@@ -180,9 +190,18 @@ fn write_gazetteer(raw: &Path, out: &Path) {
         else {
             continue;
         };
-        if !in_envelope(lon, lat) {
+        if !in_envelope(lon, lat) || !COUNTRIES.contains(&country) {
             continue;
         }
+        let name = if country == "SE" {
+            SE_LOCAL_NAMES
+                .iter()
+                .find(|(en, _)| *en == name)
+                .map(|(_, local)| *local)
+                .unwrap_or(name)
+        } else {
+            name
+        };
         let class = if fcode == "PPLC" {
             "capital"
         } else if pop >= 100_000.0 {
@@ -223,6 +242,17 @@ fn write_gazetteer(raw: &Path, out: &Path) {
             "country": country,
         }));
     }
+    // Vara hosts the golden SMHI radar but sits under GeoNames' 5000 cut.
+    // Coords are the town (GeoNames 2664996), not the radar mast.
+    gazetteer.push(serde_json::json!({
+        "name": "Vara",
+        "lat": 58.2627,
+        "lon": 12.9541,
+        "class": "village",
+        "rank": 8,
+        "region": "Västra Götaland",
+        "country": "SE",
+    }));
     fs::write(
         out.join("gazetteer.json"),
         serde_json::to_vec(&gazetteer).expect("serialize gazetteer"),

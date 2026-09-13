@@ -38,6 +38,8 @@ Item {
     // Every station, product, and source string on screen comes from the engine.
     readonly property string siteId: state ? state.site.id : ""
     readonly property string siteName: engine.site ? engine.site.name.toUpperCase() : ""
+    // True when the id is only the town folded to ASCII (every SMHI site).
+    readonly property bool idIsName: !!engine.site && !!siteId && Sites.fold(engine.site.name) === siteId
     readonly property string sourceBadge: state ? state.source.toUpperCase() : ""
     // The timeline (DESIGN.md): the station's frames oldest
     // first with the sweep in progress last; the engine owns the position.
@@ -279,7 +281,7 @@ Item {
     readonly property string mockGps: Quickshell.env("OMASTORM_MOCK_GPS") || ""
     readonly property string placeState: mockGps === "following" || mockGps === "home" ? "FOLLOWING" : mockGps === "nofix" ? "NO FIX" : ""
     readonly property string placeLabel: {
-        if (mockGps === "home") return "STOKESDALE";
+        if (mockGps === "home") return "GÖTEBORG";
         if (mockGps && mockGps !== "paused") return "GPS";
         var t = app.resetTarget;
         if (t && Location.distanceKm(map.centerLat, map.centerLon, t.lat, t.lon) < 2) return (t.name || "OMARCHY'S LOCATION").toUpperCase();
@@ -566,8 +568,10 @@ Item {
                     Layout.alignment: Qt.AlignTop
                     contentItem: RowLayout {
                         spacing: 8
-                        LabelText { text: app.siteId || "—"; font.pixelSize: app.theme.baseSize + 7; font.bold: true }
-                        LabelText { text: app.siteName; visible: !win.compact; opacity: .65 }
+                        // SMHI ids are the town folded to ASCII ("angelholm" for
+                        // Ängelholm): the name alone is the title, never "vara VARA".
+                        LabelText { text: app.idIsName ? app.siteName : app.siteId || "—"; font.pixelSize: app.theme.baseSize + 7; font.bold: true }
+                        LabelText { text: app.siteName; visible: !win.compact && !app.idIsName; opacity: .65 }
                         Glyph { glyph: "chevron"; implicitWidth: 12; fade: .5 }
                     }
                     background: Item {}

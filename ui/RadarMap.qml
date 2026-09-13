@@ -347,10 +347,18 @@ Item {
         font.family: map.theme.font
         font.pixelSize: map.labelSize
     }
+    // A station's map label: NEXRAD ids (KTLX) are the label; SMHI ids are
+    // the town folded to lowercase ASCII, so show the town, capitalised
+    // like an id ("ÅTVIDABERG", not "atvidaberg"). Inline, not Sites.js:
+    // the map harness loads this file alone.
+    function stationLabel(s) {
+        return s && s.name && s.id === s.id.toLowerCase() ? s.name.toUpperCase() : s ? s.id : "";
+    }
+    readonly property string activeLabel: stationLabel(sites.find(s => s.id === siteId) || {id: siteId})
     function rebuildLabels() {
         var started = Date.now();
         if (!scan) { labels = []; siteLabels = []; return; }
-        labelMetrics.text = siteId;
+        labelMetrics.text = activeLabel;
         var occupied = [{x:-7, y:-7, w:14, h:14},
                         {x:7, y:4, w:labelMetrics.advanceWidth+6, h:16}], result = [], stations = [];
         // Station IDs take priority over place names. Reserve every marker
@@ -366,7 +374,7 @@ Item {
         for (var s of candidates) {
             var tx = (mercatorX(s.lon) - siteMx) * worldPixels;
             var ty = (mercatorY(s.lat) - siteMy) * worldPixels;
-            labelMetrics.text = s.id;
+            labelMetrics.text = stationLabel(s);
             var tw = labelMetrics.advanceWidth, chosen = null;
             for (var q of [{x:tx+10,y:ty+4}, {x:tx-tw-16,y:ty+4},
                            {x:tx+10,y:ty-20}, {x:tx-tw-16,y:ty-20}]) {
@@ -375,7 +383,7 @@ Item {
             }
             if (!chosen) continue;
             occupied.push({x:chosen.x,y:chosen.y,w:tw+6,h:16});
-            stations.push({name:s.id, x:chosen.x, y:chosen.y, width:tw+6});
+            stations.push({name:stationLabel(s), x:chosen.x, y:chosen.y, width:tw+6});
         }
         siteLabels = stations;
         for (var p of places) {
@@ -643,7 +651,7 @@ Item {
             Text {
                 id: siteTag
                 x: 3; anchors.verticalCenter: parent.verticalCenter
-                text: map.siteId; color: map.theme.foreground
+                text: map.activeLabel; color: map.theme.foreground
                 font.family: map.theme.font; font.pixelSize: map.labelSize
             }
         }

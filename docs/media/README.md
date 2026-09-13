@@ -7,7 +7,7 @@ Release (`v0.1.0`), and the README links to them by URL.
 Regenerate from a working desktop OpenGL session:
 
 ```sh
-bash scripts/capture-readme.sh   # window-live.png, popover.png (live KTLX)
+bash scripts/capture-readme.sh   # window-live.png, popover.png (archived Vara volume, no SMHI polling)
 bash scripts/capture-demo.sh     # omastorm-demo.mp4 and omastorm-preview.gif (live KJAX; SITE=KXXX for another)
 ```
 
@@ -21,12 +21,16 @@ time and is not a latency measurement.
   the home view, the loop, a pan and zoom to the coast, the three
   treatments, weak returns, the picker switching station, the keys sheet.
 - `omastorm-preview.gif`: the home view and the zoom, cut from the video.
-- `window-live.png`, `popover.png`: live KTLX with the actual scan time.
+- `window-live.png`, `popover.png`: Vara over Västra Götaland, from the vendored
+  SMHI volume `data/raw/radar_vara_qcvol_202609131055.h5` (13 Sep 2026 12:55
+  CEST), in the C.UTF-8 locale for km and a 24-hour clock. Archive mode keeps
+  the pictures reproducible and SMHI unpolled; the badge reads ARCHIVED.
+  `capture-demo.sh` is still the upstream live KJAX take, not yet ported.
 
 Upload only the generated media files with `gh release upload <tag> <files...>`
 and point the README URLs at that tag. For immutable releases, upload media
 while the release is still a draft; published assets cannot be replaced.
 
-Radar: NOAA NEXRAD. Map: © OpenStreetMap contributors
+Radar: SMHI, CC BY 4.0. Map: © OpenStreetMap contributors
 ([ODbL](https://opendatacommons.org/licenses/odbl/1-0/)); Natural Earth, public
 domain.

@@ -1,7 +1,14 @@
 # Engine to UI protocol
 
-Version 1. The Rust engine (`omastorm-engine`) is the server. The Quickshell UI is a thin client. Radar values never
+Version 2. The Rust engine (`omastorm-engine`) is the server. The Quickshell UI is a thin client. Radar values never
 travel over this protocol; they go to the GPU as texture files.
+
+Version 2 adds SMHI's national composite beside the polar radars. Every frame
+says which `kind` of texture it carries (`polar` or `grid`), and every `hello`
+station says which kind of radar it is. A version 1 client latches "unknown
+version" at the first message. That is intended, because it would otherwise
+draw a grid texture as a polar sweep. [Changes from version 1](#changes-from-version-1)
+lists every difference.
 
 ## Transport
 
@@ -9,7 +16,7 @@ travel over this protocol; they go to the GPU as texture files.
 - Newline-delimited JSON, UTF-8, one object per line, no pretty printing.
 - Multiple clients may connect (window and popover). Every client receives every
   broadcast. Commands from any client apply to the shared state.
-- Every message has `"type"`. Engine messages also carry `"v": 1`. A client that
+- Every message has `"type"`. Engine messages also carry `"v": 2`. A client that
   sees an unknown `v` shows an error and stops rendering radar.
 - Key order within an object is not significant; clients read keys by name.
 
@@ -18,20 +25,28 @@ travel over this protocol; they go to the GPU as texture files.
 `hello` is sent once on connect, followed immediately by a full `state`.
 
 ```json
-{"type":"hello","v":1,"engine":"0.1.1",
+{"type":"hello","v":2,"engine":"0.1.1",
  "sites":[{"id":"KTLX","name":"Oklahoma City","state":"OK",
-           "lat":35.33306,"lon":-97.27748,"altM":388.0}]}
+           "lat":35.33306,"lon":-97.27748,"altM":388.0,"kind":"polar"},
+          {"id":"sweden","name":"Sweden","state":"",
+           "lat":62.0,"lon":16.0,"altM":0.0,"kind":"grid"}]}
 ```
+
+Each station has a `kind`. `polar` is a single radar. `grid` is the national
+composite (`sweden`), which covers every radar at once. A grid station's
+`lat` and `lon` mark the middle of its coverage, for the picker and for
+centring the map. It has no antenna, so a client draws no station marker,
+range ring, or coverage circle for it.
 
 `state` is the complete current state, re-sent whenever anything in it changes.
 It is small (a few KB) so clients replace rather than merge.
 
 ```json
-{"type":"state","v":1,
+{"type":"state","v":2,
  "source":"archived",
  "connection":{"status":"ok","ageSeconds":0},
  "site":{"id":"KTLX","follow":true,"locked":false},
- "frame":{"id":"KTLX-20130520T201643Z-e0",
+ "frame":{"id":"KTLX-20130520T201643Z-e0","kind":"polar",
           "product":"REF","productName":"Reflectivity","units":"dBZ","elevationDeg":0.48,
           "scanTime":"2013-05-20T20:16:43Z","sweepEnd":"2013-05-20T20:17:00Z",
           "status":"complete",
@@ -106,6 +121,32 @@ It is small (a few KB) so clients replace rather than merge.
   weak-return floor, a view setting in `units`, in code units for the shader
   (lookup rule, below). Both are 0 on the loading placeholder, which
   therefore has no floor.
+- `frame.kind` is `polar` or `grid`, and is always present. A client that
+  gets any other value rejects the `state`, as it would a bad texture path.
+  - `polar`: a sweep texture and its azimuth lookup, placed by `rays`,
+    `gates`, `firstGateM`, `gateSpacingM`, and `elevationDeg` (texture
+    files, below). The loading placeholder is always `polar`.
+  - `grid`: a national composite that the engine has already reprojected
+    to Web Mercator, so a client draws it as one textured rectangle.
+    `texture` is the grid texture and `azimuthLut` is empty (`""`). `rays`,
+    `gates`, `firstGateM`, and `gateSpacingM` are 0. `elevationDeg` is the
+    elevation the composite is built from (0.5 for SMHI). `frame.grid`
+    places the texture:
+
+    ```json
+    "grid":{"projection":"EPSG:3857","xsize":1364,"ysize":1983,"xscale":2000,"yscale":2000,
+            "west":5.323958,"east":29.829999,"north":70.033942,"south":53.701215,
+            "sourceProjdef":"+proj=stere +ellps=bessel +lat_0=90 +lon_0=14 +lat_ts=60 +towgs84=0,0,0"}
+    ```
+
+    `xsize` × `ysize` is the texture's size in pixels, and `xscale` ×
+    `yscale` is one pixel's size in Web Mercator metres (sphere radius
+    6,378,137 m). `west`, `east`, `north`, and `south` are the texture's
+    outer edges in degrees. `sourceProjdef` names the grid the engine
+    reprojected from; it is for display and debugging only. `frame.site` is
+    the composite's table position, and a client uses it only as the
+    reference point for the camera's Mercator offset, as it does for a
+    polar frame. `frame.grid` is absent from polar frames.
 
 `error` answers one command from one client. It goes only to the client that
 sent the command, `state` does not change, and nothing is broadcast, so a
@@ -116,7 +157,7 @@ its next command, ahead of any `connection` condition; a `tiles_needed` the
 map sends on its own does not count as the user's next command.
 
 ```json
-{"type":"error","v":1,"command":"select_site",
+{"type":"error","v":2,"command":"select_site",
  "message":"Unknown site XXXX; stations are listed in hello."}
 ```
 
@@ -129,7 +170,7 @@ Earth) otherwise, in which case the tile is announced again under a new path
 when `osm` becomes available. `labels` are the tile's places for the overlay.
 
 ```json
-{"type":"tile_ready","v":1,"set":"osm","z":11,"x":470,"y":808,
+{"type":"tile_ready","v":2,"set":"osm","z":11,"x":470,"y":808,
  "path":"tiles/osm/11/470/808-3f9a1c2e.png",
  "labels":[{"name":"Moore","lat":35.3395,"lon":-97.4867,"class":"city","rank":8}]}
 ```
@@ -186,7 +227,10 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
   nothing changes and nothing is sent. The engine never moves the camera:
   the centre is the user's. A latitude outside ±90 or a longitude outside
   ±180 is answered with an `error`. `lock` and `follow` are shared flags;
-  releasing the lock hands off on the next settle, not at once.
+  releasing the lock hands off on the next settle, not at once. A `grid`
+  station is never a hand-off target. While one is selected, `view_center`
+  hands off to nothing: the composite already covers the view, so only a
+  `select_site` leaves it.
 - `search_places` ranks the embedded gazetteer (GeoNames populated places
   with population ≥ 5000, clipped to the NEXRAD network envelope) for the
   location picker and is answered with `places` to the sender only, like
@@ -197,7 +241,7 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
   reply is not shared state:
 
 ```json
-{"type":"places","v":1,"query":"jacksonville",
+{"type":"places","v":2,"query":"jacksonville",
  "results":[{"name":"Jacksonville","lat":30.3322,"lon":-81.6749,"class":"city","rank":8,
              "region":"Florida","country":"US"}]}
 ```
@@ -249,6 +293,16 @@ Entry `i` covers azimuth `i / 10` degrees and names the row whose azimuth is
 nearest the entry's center, wrapping at 360, or the blank row when none is
 within 0.75°; R and G hold the row index as a little-endian 16-bit value.
 
+**Grid texture (`frame.texture` of a `grid` frame):** PNG, RGBA, width
+`grid.xsize`, height `grid.ysize`, with the sweep texture's channels (R class
++ 1, G status bits, B raw code, A 255). Row 0 is the north edge. Texel
+(c, r) covers Web Mercator x from `west` + c·`xscale` to `west` +
+(c + 1)·`xscale`, and y from r·`yscale` to (r + 1)·`yscale` south of
+`north`. Rows are therefore evenly spaced in Mercator y, not in latitude.
+Each texel holds the source pixel that contains its centre (nearest
+neighbour). Texels outside the source grid are marked like `nodata`: code 1,
+G bit 4 (outside coverage). No lookup table goes with a grid texture.
+
 **Lookup rule (UI shader, `ui/shaders/radar.frag`):** each 3 px screen cell
 becomes a site-relative ground distance and an azimuth clockwise from north:
 the cell's centre goes from Web Mercator to longitude and latitude and then,
@@ -267,6 +321,15 @@ derives from `frame.scale` and `frame.offset` for the floor in `units`
 (`ceil(floor × scale + offset)`), and a measured code (2 and up) below it
 draws nothing, exactly as a blank cell does; 0 is no floor. Folded and
 below-threshold codes are never weak, and the legend names the hidden range.
+
+**Grid lookup rule:** the centre of each 3 px screen cell, in Web Mercator
+units, becomes a texture position `u = (x − x(west)) / (x(east) − x(west))`,
+`v = (y − y(north)) / (y(south) − y(north))`. Outside `[0, 1)` draws
+nothing. The texel is sampled nearest at `((floor(u·xsize) + 0.5) / xsize,
+(floor(v·ysize) + 0.5) / ysize)`. The palette, treatments, folded marker,
+and weak-return floor then apply exactly as for a polar sweep. The shader
+gets `kind` as a uniform, plus the grid's rectangle as its north-west
+corner's offset from `frame.site` and its size, both in Mercator units.
 
 **Tiles:** `$XDG_RUNTIME_DIR/omastorm-se/tiles/<set>/<z>/<x>/<y>-<gen>.png`,
 Web Mercator XYZ numbering, 512 px, RGBA antialiased masks tinted by the
@@ -331,6 +394,16 @@ catalogued frame while the poller replays the current volume's lowest cut
 from the bucket, so a picture arrives within seconds and the next volume
 paints live.
 
+**The composite.** Selecting `sweden` polls `area/sweden/product/comp.json`
+in place of a radar's `qcvol.json`, with the same cadence, back-off,
+catalog, and 60-frame backfill. Each frame is one ODIM `COMP` file. The
+engine reads its `DBZH` layer (DEC-11), requantizes it with the polar byte
+convention (`scale` 2, `offset` 66), and reprojects it to the grid texture.
+`id` is `sweden-<time compact>-e0`, `scanTime` is the file's nominal time
+(the listing's `valid`), `sweepEnd` is its end time, and `status` is always
+`complete`. `connection` judges the composite's age against the same
+thresholds as a radar's.
+
 ## Configuration
 
 `~/.config/omastorm-se/config.toml` and
@@ -366,3 +439,13 @@ The 163-site snapshot includes archived/test sites, not an availability list.
 
 On disconnect the UI hides radar and retries; on an unknown version it
 hides radar and latches the error until relaunch.
+
+## Changes from version 1
+
+- Every engine message carries `"v": 2`.
+- `hello.sites[].kind` (`polar` or `grid`) is new and always sent. The table
+  gains the composite, `sweden`.
+- `state.frame.kind` (`polar` or `grid`) is new and always sent. Polar
+  frames are otherwise unchanged. A `grid` frame carries `frame.grid`, an
+  empty `azimuthLut`, and zero polar geometry.
+- `view_center` never hands off to or from a `grid` station.

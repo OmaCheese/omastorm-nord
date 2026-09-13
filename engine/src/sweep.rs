@@ -2,6 +2,10 @@
 //! the lowest sweep of an Archive II volume as sorted rays of raw moment
 //! codes, the RGBA sweep texture, and the azimuth lookup table.
 //!
+//! `Sweep`, its texture and its lookup are source-agnostic: `odim.rs` builds
+//! the same `Sweep` from SMHI volumes. Level II decoding stays for archive
+//! mode (`OMASTORM_ARCHIVE`, the KTLX volume the checks use; DEC-10).
+//!
 //! Only the first elevation cut is decoded. Records are decompressed one at a
 //! time and decoding stops at the first radial of the next cut, which is the
 //! shape live chunks take (`live.rs` assembles the same `Sweep` from the
@@ -49,6 +53,9 @@ pub struct Sweep {
     /// Measured value = (code - offset) / scale.
     pub scale: f32,
     pub offset: f32,
+    /// The G status bit code 1 carries: `FOLDED` for Level II (range
+    /// folded), `OUTSIDE_COVERAGE` for ODIM (`nodata`, `odim.rs`).
+    pub code1_status: u8,
 }
 
 /// Decode the reflectivity of the first elevation cut in `archive`, a gzip
@@ -144,6 +151,7 @@ impl Sweep {
             gate_spacing_m,
             scale,
             offset,
+            code1_status: FOLDED,
         })
     }
 
@@ -212,6 +220,7 @@ fn meters(km: f64) -> u32 {
 /// Status bits in the texture's G channel (`docs/protocol.md`).
 pub const FOLDED: u8 = 1;
 pub const BELOW_THRESHOLD: u8 = 2;
+pub const OUTSIDE_COVERAGE: u8 = 4;
 
 impl Sweep {
     /// The palette class of a measured code: the band of `bounds` it falls
@@ -231,7 +240,7 @@ impl Sweep {
             for &code in &ray.codes {
                 let (class, status) = match code {
                     0 => (0, BELOW_THRESHOLD),
-                    1 => (0, FOLDED),
+                    1 => (0, self.code1_status),
                     _ => (self.class(code, bounds, classes) + 1, 0),
                 };
                 pixels.extend_from_slice(&[class, status, code, 255]);

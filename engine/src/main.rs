@@ -1,6 +1,7 @@
 mod catalog;
 mod live;
 mod live_index;
+mod odim;
 mod osm;
 mod protocol;
 mod sweep;
@@ -428,6 +429,7 @@ fn blank_textures(frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)> {
         gate_spacing_m: frame.gate_spacing_m,
         scale: 1.0,
         offset: 0.0,
+        code1_status: sweep::FOLDED,
     };
     let texture = sweep::png(1, 1, &sweep.texture(&frame.bounds, frame.palette.len()))?;
     let lut = sweep::png(3600, 1, &sweep.azimuth_lut())?;
@@ -946,13 +948,43 @@ fn encode(sweep: &sweep::Sweep, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)>
     let lut = sweep::png(3600, 1, &sweep.azimuth_lut())?;
     Ok((texture, lut))
 }
+/// The station an archived ODIM volume came from: the nearest table site
+/// within 5 km of the volume's position, else one named by its `PLC`.
+fn odim_station(site: &odim::OdimSite) -> Station {
+    let km = |s: &Station| great_circle_km(s.lat, s.lon, site.lat, site.lon);
+    site_table()
+        .sites
+        .into_iter()
+        .filter(|s| km(s) < 5.0)
+        .min_by(|a, b| km(a).total_cmp(&km(b)))
+        .unwrap_or_else(|| {
+            let name = site.source_item("PLC").unwrap_or("odim");
+            Station {
+                id: name.to_lowercase(),
+                name: name.to_owned(),
+                state: String::new(),
+                lat: site.lat,
+                lon: site.lon,
+                alt_m: site.alt_m,
+            }
+        })
+}
 /// Decode the fixture's lowest sweep and publish the sweep texture and the
 /// azimuth lookup for the initial frame; also its `scanTime` in milliseconds.
+/// An ODIM volume is framed like a live frame of its station (DEC-10); any
+/// other file is read as Level II over the fixture frame.
 fn decode_and_publish(dir: &Path, template: &Frame, archive: &[u8]) -> io::Result<(Frame, i64)> {
     let started = Instant::now();
     let mut frame = template.clone();
-    let sweep = sweep::lowest_reflectivity(archive)
-        .map_err(|e| io::Error::other(format!("Decoding the archive: {e}")))?;
+    let failed = |e: &dyn std::fmt::Display| io::Error::other(format!("Decoding the archive: {e}"));
+    let sweep = if odim::is_odim(archive) {
+        let (sweep, site) = odim::decode_lowest_dbzh_with_site(io::Cursor::new(archive.to_vec()))
+            .map_err(|e| failed(&e))?;
+        frame = live_frame(template, &odim_station(&site), &sweep, true);
+        sweep
+    } else {
+        sweep::lowest_reflectivity(archive).map_err(|e| failed(&e))?
+    };
     let decoded = started.elapsed();
     frame.rays = sweep.rows();
     frame.gates = u32::from(sweep.gates);

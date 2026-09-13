@@ -265,7 +265,7 @@ impl Geography {
     }
 }
 
-/// GeoNames cities with population ≥ 5000, clipped to the NEXRAD envelope.
+/// GeoNames cities with population ≥ 5000, clipped to the Nordic envelope.
 /// Location search uses this; map labels stay on Natural Earth `places`.
 fn gazetteer() -> &'static [Place] {
     static GAZETTEER_PLACES: OnceLock<Vec<Place>> = OnceLock::new();
@@ -742,10 +742,12 @@ mod tests {
                 .map(|p| p.points.len())
                 .sum()
         };
-        // DESIGN.md measured about 116 k vertices for the 1:50m world and
-        // 324 k for the 1:10m envelope.
-        assert!((90_000..200_000).contains(&vertices(&geography.sets[0])));
-        assert!((250_000..450_000).contains(&vertices(&geography.sets[1])));
+        // DESIGN.md measured about 116 k vertices for the 1:50m world; the
+        // Nordic 1:10m envelope measures about 61 k (was ~324 k for NEXRAD).
+        let v0 = vertices(&geography.sets[0]);
+        let v1 = vertices(&geography.sets[1]);
+        assert!((90_000..200_000).contains(&v0), "1:50m vertices {v0}");
+        assert!((40_000..100_000).contains(&v1), "1:10m vertices {v1}");
         for scale in &geography.sets {
             for polyline in scale.layers.iter().flat_map(|l| &l.polylines) {
                 assert!(polyline.points.len() >= 2);
@@ -762,7 +764,7 @@ mod tests {
                 .iter()
                 .map(|&(x, y)| {
                     let (lon, lat) = (f64::from(x) * QUANTUM, f64::from(y) * QUANTUM);
-                    (5.0..=75.0).contains(&lat) && (lon <= -20.0 || lon >= 120.0)
+                    (53.0..=71.5).contains(&lat) && (3.0..=33.0).contains(&lon)
                 })
                 .collect();
             for i in 0..inside.len() {
@@ -786,28 +788,28 @@ mod tests {
 
     #[test]
     fn place_search_ranks_word_starts_and_nearer_matches() {
-        let oklahoma = search_places("oklahoma", Some((35.47, -97.52)), 8);
-        assert_eq!(oklahoma[0].name, "Oklahoma City");
-        assert!(
-            oklahoma
-                .iter()
-                .all(|p| p.name.to_lowercase().contains("oklahoma"))
-        );
-        let norman = search_places("norman", None, 4);
-        assert_eq!(norman[0].name, "Norman");
+        // SE local spellings (Göteborg) and hand-added Vara (under 5000).
+        let goteborg = search_places("göteborg", Some((58.26, 12.83)), 8);
+        assert_eq!(goteborg[0].name, "Göteborg");
+        assert_eq!(goteborg[0].region, "Västra Götaland");
+        assert_eq!(search_places("göt", None, 4)[0].name, "Göteborg");
+        assert_eq!(search_places("vara", Some((58.26, 12.83)), 4)[0].name, "Vara");
+        let kiruna = search_places("kiruna", None, 4);
+        assert_eq!(kiruna[0].name, "Kiruna");
         assert!(search_places("   ", None, 8).is_empty());
-        assert_eq!(search_places("city", Some((35.47, -97.52)), 3).len(), 3);
-        let jacksonville = search_places("jacksonville", None, 8);
-        let regions: Vec<&str> = jacksonville.iter().map(|p| p.region.as_str()).collect();
+        assert_eq!(search_places("stad", Some((58.26, 12.83)), 3).len(), 3);
+        // Å, ä and ö start words like any letter.
+        assert_eq!(search_places("öre", None, 4)[0].name, "Örebro");
+        let skare = search_places("skåre", None, 8);
+        let regions: Vec<&str> = skare.iter().map(|p| p.region.as_str()).collect();
         assert!(
-            regions.contains(&"Florida") && regions.contains(&"North Carolina"),
-            "Jacksonville results name their states: {regions:?}"
+            regions.contains(&"Värmland") && regions.contains(&"Skåne"),
+            "Skåre results name their counties: {regions:?}"
         );
-        let stokesdale = search_places("stokesdale", None, 4);
-        assert_eq!(stokesdale[0].name, "Stokesdale");
-        assert_eq!(stokesdale[0].region, "North Carolina");
-        assert!(gazetteer().len() > 15_000);
-        assert!(gazetteer().len() > Geography::embedded().places.len());
+        let jonkoping = search_places("jönköping", None, 4);
+        assert_eq!(jonkoping[0].name, "Jönköping");
+        assert_eq!(jonkoping[0].region, "Jönköping");
+        assert!((1_000..5_000).contains(&gazetteer().len()));
     }
 
     #[test]
@@ -886,11 +888,14 @@ mod tests {
         fs::create_dir_all(REVIEW).unwrap();
         let world = TileKey { z: 1, x: 0, y: 0 };
         let ktlx5 = TileKey::containing(5, KTLX.0, KTLX.1);
-        let ktlx8 = TileKey::containing(8, KTLX.0, KTLX.1);
+        // The 1:10m set, drawn from z5, covers the SMHI network only: Vara's
+        // z5 tile holds the Kattegat coast, lakes and the Norwegian border.
+        let vara5 = TileKey::containing(5, 12.826024, 58.255646);
+        let vara8 = TileKey::containing(8, 12.826024, 58.255646);
         for (name, key, expect_boundaries, expect_coast) in [
             ("world-z1", world, true, true),
-            ("ktlx-z5", ktlx5, true, true),
-            ("ktlx-z8", ktlx8, false, false),
+            ("vara-z5", vara5, true, true),
+            ("vara-z8", vara8, false, true),
         ] {
             let started = std::time::Instant::now();
             let png_bytes = render(geography, key).unwrap();

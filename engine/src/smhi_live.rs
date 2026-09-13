@@ -465,6 +465,39 @@ fn parse_content_range(value: &str) -> Option<(u64, Option<u64>)> {
     Some((start.trim().parse().ok()?, total))
 }
 
+/// The signature an HDF5 superblock starts with. SMHI's volumes have no
+/// user block, so it sits at offset 0.
+const HDF5_SIGNATURE: &[u8; 8] = b"\x89HDF\r\n\x1a\n";
+
+/// The file length an HDF5 superblock records (its end-of-file address),
+/// for an answer whose `Content-Range` names none. It equals the file size
+/// on SMHI's vara 2026-09-13 10:55 volume (14,701,179 bytes).
+fn hdf5_eof(head: &[u8]) -> Option<u64> {
+    if !head.starts_with(HDF5_SIGNATURE) {
+        return None;
+    }
+    // Where the size of offsets sits, and where the base address starts;
+    // the end-of-file address follows the base and free-space addresses.
+    let (offsets, base) = match *head.get(8)? {
+        0 => (*head.get(13)?, 24),
+        1 => (*head.get(13)?, 28),
+        2 | 3 => (*head.get(9)?, 12),
+        _ => return None,
+    };
+    let size = usize::from(offsets);
+    if !matches!(size, 2 | 4 | 8) {
+        return None;
+    }
+    let at = base + 2 * size;
+    let bytes = head.get(at..at + size)?;
+    if bytes.iter().all(|&b| b == 0xff) {
+        return None; // the undefined address
+    }
+    let mut value = [0u8; 8];
+    value[..size].copy_from_slice(bytes);
+    Some(u64::from_le_bytes(value)).filter(|&eof| eof > 0)
+}
+
 // ---------------------------------------------------------------------------
 // Range reader
 // ---------------------------------------------------------------------------
@@ -517,8 +550,10 @@ impl RangeReader {
         Self::open_with(source, LENGTH_PAUSE)
     }
 
-    /// Read the prefetch. While its answer names no total length, ask
-    /// again after `pause`, twice that, and four times that
+    /// Read the prefetch. The file's length comes from `Content-Range`, or,
+    /// when SMHI's cache answers `bytes 0-65535/*` (a volume it is still
+    /// fetching), from the HDF5 superblock's end-of-file address. Failing
+    /// both, ask again after `pause`, twice that, and four times that
     /// (`LENGTH_RETRIES`), then give up on the volume.
     pub fn open_with(mut source: Box<dyn RangeSource>, pause: Duration) -> io::Result<Self> {
         let mut requests = 0u32;
@@ -527,7 +562,7 @@ impl RangeReader {
             let (head, total) = source.get(0, PREFETCH)?;
             requests += 1;
             fetched += head.len() as u64;
-            match total {
+            match total.or_else(|| hdf5_eof(&head)) {
                 Some(len) => break (head, len),
                 None if requests > LENGTH_RETRIES => {
                     return Err(io::Error::other(format!(
@@ -1966,6 +2001,56 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.to_string().contains("still unknown after 4"), "{err}");
+    }
+
+    /// The first 44 bytes of an SMHI volume: superblock version 1, 4-byte
+    /// offsets, and the end-of-file address at byte 36.
+    fn superblock(eof: [u8; 4]) -> Vec<u8> {
+        let mut bytes = HDF5_SIGNATURE.to_vec();
+        bytes.extend_from_slice(&[1, 0, 0, 0, 0, 4, 4, 0, 1, 0, 1, 0, 0, 0, 0, 0]);
+        bytes.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+        bytes.extend_from_slice(&eof);
+        bytes.extend_from_slice(&[0xff; 4]);
+        bytes
+    }
+
+    #[test]
+    fn the_superblock_names_the_length_a_cold_cache_does_not() {
+        // vara 2026-09-13 10:55, whose file is 14,701,179 bytes.
+        assert_eq!(
+            hdf5_eof(&superblock([0x7b, 0x52, 0xe0, 0x00])),
+            Some(14_701_179)
+        );
+        // vara 2026-09-12 18:00, read cold as `bytes 0-65535/*`.
+        assert_eq!(
+            hdf5_eof(&superblock([0x08, 0x46, 0x38, 0x01])),
+            Some(20_465_160)
+        );
+        assert_eq!(hdf5_eof(&superblock([0xff; 4])), None, "undefined address");
+        assert_eq!(hdf5_eof(&pattern(64)), None, "not HDF5");
+        assert_eq!(hdf5_eof(&superblock([1, 2, 3, 4])[..30]), None, "cut short");
+        // Version 2: 8-byte offsets, the address after base and extension.
+        let mut v2 = HDF5_SIGNATURE.to_vec();
+        v2.extend_from_slice(&[2, 8, 8, 0]);
+        v2.extend_from_slice(&[0; 16]);
+        v2.extend_from_slice(&123_456_789u64.to_le_bytes());
+        assert_eq!(hdf5_eof(&v2), Some(123_456_789));
+        // A cold answer for an HDF5 volume opens at once, on the
+        // superblock's word, and later blocks without a total still read.
+        let mut bytes = superblock([0x40, 0x0d, 0x03, 0x00]); // 200,000
+        bytes.resize(200_000, 7);
+        let cold = Warming {
+            unknown: u32::MAX,
+            inner: Local {
+                bytes,
+                log: Arc::default(),
+            },
+        };
+        let mut reader = RangeReader::open_with(Box::new(cold), Duration::ZERO).unwrap();
+        let traffic = reader.traffic();
+        assert_eq!((traffic.requests(), traffic.total()), (1, 200_000));
+        reader.seek(SeekFrom::Start(150_000)).unwrap();
+        reader.read_exact(&mut [0; 16]).unwrap();
     }
 
     /// Backfill volumes whose length SMHI's cache does not know yet: 16:30

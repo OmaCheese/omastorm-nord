@@ -93,6 +93,11 @@ const MAX_REQUESTS: u32 = 64;
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// Decode failures of one volume before the poller stops retrying it.
 const GIVE_UP_AFTER: u32 = 2;
+/// A prefetch answered `bytes 0-65535/*` (SMHI's cache still fetching the
+/// volume) is asked again after this pause, then twice and four times it...
+const LENGTH_PAUSE: Duration = Duration::from_secs(1);
+/// ...this many times, before the volume is given up on.
+const LENGTH_RETRIES: u32 = 3;
 
 /// One volume download at a time in the whole engine. The permit travels
 /// into the blocking decode, so an aborted poller's in-flight read still
@@ -400,8 +405,14 @@ impl Http {
     }
 
     /// `len` bytes of `url` from `offset` (fewer at the end of the file),
-    /// and the file's total length from `Content-Range`.
-    async fn range(&self, url: &str, offset: u64, len: u64) -> Result<(Vec<u8>, u64), Fail> {
+    /// and the file's total length from `Content-Range` when the answer
+    /// names one.
+    async fn range(
+        &self,
+        url: &str,
+        offset: u64,
+        len: u64,
+    ) -> Result<(Vec<u8>, Option<u64>), Fail> {
         let response = self
             .client
             .get(url)
@@ -429,7 +440,7 @@ impl Http {
             .bytes()
             .await
             .map_err(|e| Fail::Transport(e.to_string()))?;
-        let expected = len.min(total.saturating_sub(offset));
+        let expected = total.map_or(len, |total| len.min(total.saturating_sub(offset)));
         if body.len() as u64 != expected {
             return Err(Fail::Answer(format!(
                 "short range: {} of {expected} bytes at {offset}",
@@ -440,12 +451,18 @@ impl Http {
     }
 }
 
-/// `bytes 0-65535/14701179` as (0, 14701179).
-fn parse_content_range(value: &str) -> Option<(u64, u64)> {
+/// `bytes 0-65535/14701179` as (0, Some(14701179)). `bytes 0-65535/*`, a
+/// length the server does not know yet, is (0, None): SMHI's cache answers
+/// that way while it is still fetching a volume it did not hold.
+fn parse_content_range(value: &str) -> Option<(u64, Option<u64>)> {
     let rest = value.trim().strip_prefix("bytes ")?;
     let (span, total) = rest.split_once('/')?;
     let (start, _) = span.split_once('-')?;
-    Some((start.trim().parse().ok()?, total.trim().parse().ok()?))
+    let total = match total.trim() {
+        "*" => None,
+        total => Some(total.parse().ok()?),
+    };
+    Some((start.trim().parse().ok()?, total))
 }
 
 // ---------------------------------------------------------------------------
@@ -453,9 +470,9 @@ fn parse_content_range(value: &str) -> Option<(u64, u64)> {
 // ---------------------------------------------------------------------------
 
 /// Something that answers one ranged request: the bytes, and the file's
-/// total length.
+/// total length when the answer names it.
 pub trait RangeSource: Send {
-    fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, u64)>;
+    fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, Option<u64>)>;
 }
 
 /// What a reader has fetched so far. Shared, so it can be read after the
@@ -494,8 +511,32 @@ pub struct RangeReader {
 }
 
 impl RangeReader {
-    pub fn open(mut source: Box<dyn RangeSource>) -> io::Result<Self> {
-        let (head, len) = source.get(0, PREFETCH)?;
+    /// `open_with` and the real pause; the poller passes its config's.
+    #[cfg(test)]
+    pub fn open(source: Box<dyn RangeSource>) -> io::Result<Self> {
+        Self::open_with(source, LENGTH_PAUSE)
+    }
+
+    /// Read the prefetch. While its answer names no total length, ask
+    /// again after `pause`, twice that, and four times that
+    /// (`LENGTH_RETRIES`), then give up on the volume.
+    pub fn open_with(mut source: Box<dyn RangeSource>, pause: Duration) -> io::Result<Self> {
+        let mut requests = 0u32;
+        let mut fetched = 0u64;
+        let (head, len) = loop {
+            let (head, total) = source.get(0, PREFETCH)?;
+            requests += 1;
+            fetched += head.len() as u64;
+            match total {
+                Some(len) => break (head, len),
+                None if requests > LENGTH_RETRIES => {
+                    return Err(io::Error::other(format!(
+                        "the volume's length is still unknown after {requests} requests"
+                    )));
+                }
+                None => std::thread::sleep(pause * (1 << (requests - 1))),
+            }
+        };
         if head.len() as u64 != PREFETCH.min(len) {
             return Err(io::Error::other(format!(
                 "short prefetch: {} of {} bytes",
@@ -504,8 +545,8 @@ impl RangeReader {
             )));
         }
         let traffic = Arc::new(Traffic::default());
-        traffic.requests.store(1, Ordering::Relaxed);
-        traffic.bytes.store(head.len() as u64, Ordering::Relaxed);
+        traffic.requests.store(requests, Ordering::Relaxed);
+        traffic.bytes.store(fetched, Ordering::Relaxed);
         traffic.len.store(len, Ordering::Relaxed);
         let mut reader = RangeReader {
             source,
@@ -551,7 +592,9 @@ impl RangeReader {
                 )));
             }
             let (got, total) = self.source.get(start, end - start)?;
-            if total != self.len {
+            if let Some(total) = total
+                && total != self.len
+            {
                 return Err(io::Error::other(format!(
                     "the volume changed while it was read ({} bytes, now {total})",
                     self.len
@@ -621,7 +664,7 @@ struct HttpRanges {
 }
 
 impl RangeSource for HttpRanges {
-    fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, u64)> {
+    fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, Option<u64>)> {
         let (tx, rx) = oneshot::channel();
         let http = self.http.clone();
         let url = self.url.clone();
@@ -646,7 +689,7 @@ pub type Decode = fn(RangeReader) -> Result<Sweep, String>;
 enum VolumeError {
     /// SMHI failed to answer: back off.
     Net(Fail),
-    /// The bytes arrived and did not decode.
+    /// The answer or the bytes were unusable: give up on that volume only.
     Decode(String),
 }
 
@@ -656,6 +699,7 @@ async fn fetch_volume(
     http: &Http,
     volume: &Volume,
     decode: Decode,
+    length_pause: Duration,
 ) -> Result<(Sweep, String), VolumeError> {
     let permit = FETCHER
         .clone()
@@ -671,7 +715,8 @@ async fn fetch_volume(
     };
     let joined = spawn_blocking(move || {
         let _permit = permit;
-        let reader = RangeReader::open(Box::new(source)).map_err(|e| e.to_string())?;
+        let reader =
+            RangeReader::open_with(Box::new(source), length_pause).map_err(|e| e.to_string())?;
         let traffic = reader.traffic();
         decode(reader).map(|sweep| (sweep, traffic))
     })
@@ -688,8 +733,10 @@ async fn fetch_volume(
             Ok((sweep, provenance))
         }
         Ok(Err(e)) => Err(match failure.lock().unwrap().take() {
-            Some(fail) => VolumeError::Net(fail),
-            None => VolumeError::Decode(e),
+            Some(fail @ (Fail::Status(..) | Fail::Transport(_))) => VolumeError::Net(fail),
+            // An answer that was not what was asked for (a length that
+            // stays unknown, a short range) spoils this volume alone.
+            _ => VolumeError::Decode(e),
         }),
         Err(e) => Err(VolumeError::Decode(format!("the decoder failed: {e}"))),
     }
@@ -709,6 +756,8 @@ pub struct Config {
     pub max_back_off: Duration,
     pub backfill_delay: Duration,
     pub backfill_pace: Duration,
+    /// The first pause before re-asking for a volume's unknown length.
+    pub length_pause: Duration,
     pub now_ms: fn() -> i64,
     pub decode: Decode,
 }
@@ -721,6 +770,7 @@ impl Config {
             max_back_off: MAX_BACK_OFF,
             backfill_delay: BACKFILL_DELAY,
             backfill_pace: BACKFILL_PACE,
+            length_pause: LENGTH_PAUSE,
             now_ms,
             decode,
         }
@@ -829,7 +879,7 @@ impl Live {
         } else if (cfg.now_ms)() - volume.valid_ms >= HORIZON_MS {
             Outcome::Handled(None)
         } else {
-            match fetch_volume(http, &volume, cfg.decode).await {
+            match fetch_volume(http, &volume, cfg.decode, cfg.length_pause).await {
                 Ok((sweep, provenance)) => {
                     self.known.push(sweep.start_ms);
                     Outcome::Handled(Some(Event::Sweep {
@@ -1078,7 +1128,7 @@ async fn backfill(
     let wanted = targets.len();
     let mut fetched = 0;
     for volume in targets {
-        match fetch_volume(&http, &volume, cfg.decode).await {
+        match fetch_volume(&http, &volume, cfg.decode, cfg.length_pause).await {
             Ok((sweep, provenance)) => {
                 let event = Event::Backfill {
                     site: site.clone(),
@@ -1308,9 +1358,11 @@ mod tests {
         assert_eq!(retry_after(&headers), None);
         assert_eq!(
             parse_content_range("bytes 0-65535/14701179"),
-            Some((0, 14_701_179))
+            Some((0, Some(14_701_179)))
         );
         assert_eq!(parse_content_range("bytes */14701179"), None);
+        // Seen from SMHI on 2026-09-13 while its cache fetched a volume.
+        assert_eq!(parse_content_range("bytes 0-65535/*"), Some((0, None)));
     }
 
     /// A file served from memory, recording each request.
@@ -1319,11 +1371,14 @@ mod tests {
         log: Arc<StdMutex<Vec<(u64, u64)>>>,
     }
     impl RangeSource for Local {
-        fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, u64)> {
+        fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, Option<u64>)> {
             self.log.lock().unwrap().push((offset, len));
             let total = self.bytes.len() as u64;
             let end = (offset + len).min(total);
-            Ok((self.bytes[offset as usize..end as usize].to_vec(), total))
+            Ok((
+                self.bytes[offset as usize..end as usize].to_vec(),
+                Some(total),
+            ))
         }
     }
 
@@ -1388,9 +1443,9 @@ mod tests {
     /// The file changes length between requests: SMHI replaced it.
     struct Moving(u64);
     impl RangeSource for Moving {
-        fn get(&mut self, _offset: u64, len: u64) -> io::Result<(Vec<u8>, u64)> {
+        fn get(&mut self, _offset: u64, len: u64) -> io::Result<(Vec<u8>, Option<u64>)> {
             self.0 += 1;
-            Ok((vec![0; len as usize], 1_000_000 + self.0))
+            Ok((vec![0; len as usize], Some(1_000_000 + self.0)))
         }
     }
 
@@ -1619,6 +1674,7 @@ mod tests {
             max_back_off: Duration::from_millis(200),
             backfill_delay: Duration::ZERO,
             backfill_pace: Duration::ZERO,
+            length_pause: Duration::ZERO,
             now_ms: recorded,
             decode: stub_decode,
         }
@@ -1868,5 +1924,85 @@ mod tests {
         assert!(probes >= 2 && probes <= polls, "{served:?}");
         // Caught up with what is published, so the backfill ran.
         assert!(served.iter().any(|s| s.ends_with("/2026/09/13.json")));
+    }
+
+    /// Answers without a total length `unknown` times, then like `Local`.
+    struct Warming {
+        unknown: u32,
+        inner: Local,
+    }
+    impl RangeSource for Warming {
+        fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, Option<u64>)> {
+            let (bytes, total) = self.inner.get(offset, len)?;
+            if self.unknown > 0 {
+                self.unknown -= 1;
+                return Ok((bytes, None));
+            }
+            Ok((bytes, total))
+        }
+    }
+
+    #[test]
+    fn an_unknown_length_is_asked_again_then_given_up_on() {
+        let local = || Local {
+            bytes: pattern(200_000),
+            log: Arc::default(),
+        };
+        let warming = Warming {
+            unknown: 2,
+            inner: local(),
+        };
+        let mut reader = RangeReader::open_with(Box::new(warming), Duration::ZERO).unwrap();
+        assert_eq!(reader.traffic().total(), 200_000);
+        assert_eq!(reader.traffic().requests(), 3);
+        // A later block may also arrive without a total.
+        reader.seek(SeekFrom::Start(150_000)).unwrap();
+        reader.read_exact(&mut [0; 16]).unwrap();
+        let cold = Warming {
+            unknown: u32::MAX,
+            inner: local(),
+        };
+        let err = RangeReader::open_with(Box::new(cold), Duration::ZERO)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("still unknown after 4"), "{err}");
+    }
+
+    /// Backfill volumes whose length SMHI's cache does not know yet: 16:30
+    /// once, so it is read on the next ask, and 16:35 always, so it is
+    /// skipped and the backfill carries on to the end of the loop.
+    #[test]
+    fn a_volume_of_unknown_length_does_not_end_the_backfill() {
+        let inner = smhi("vara", VARA, VARA_DAY);
+        let first_1630 = Arc::new(AtomicU32::new(0));
+        let handler: Handler = Arc::new(move |request: &Request| {
+            let mut response = inner(request);
+            let cold = request.path.ends_with("_202609131635.h5")
+                || (request.path.ends_with("_202609131630.h5")
+                    && first_1630.fetch_add(1, Ordering::Relaxed) == 0);
+            if cold {
+                for (name, value) in &mut response.headers {
+                    if *name == "Content-Range" {
+                        *value = value.replace("/600000", "/*");
+                    }
+                }
+            }
+            response
+        });
+        let (events, served) = run(
+            "vara",
+            handler,
+            Vec::new(),
+            |events| events.len() >= BACKFILL - 1,
+            Duration::from_millis(200),
+        );
+        let seen: Vec<String> = events.iter().map(describe).collect();
+        assert_eq!(seen.len(), BACKFILL - 1, "{seen:?}");
+        assert!(seen.contains(&"backfill 2026-09-13 16:30Z".to_owned()));
+        assert!(!seen.contains(&"backfill 2026-09-13 16:35Z".to_owned()));
+        assert_eq!(seen.last().unwrap(), "backfill 2026-09-13 11:55Z");
+        let asked = |key: &str| served.iter().filter(|s| s.contains(key)).count();
+        assert_eq!(asked("_202609131635.h5"), 4, "the prefetch, asked 4 times");
+        assert_eq!(asked("_202609131630.h5"), 4, "2 prefetches and 2 blocks");
     }
 }

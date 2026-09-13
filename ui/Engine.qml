@@ -21,7 +21,10 @@ QtObject {
     signal placesReady(var message)
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-se/"
     readonly property string texture: state && state.frame ? "file://" + runtime + state.frame.texture : ""
-    readonly property string azimuthLut: state && state.frame ? "file://" + runtime + state.frame.azimuthLut : ""
+    /// A grid frame has no azimuth lookup (docs/protocol.md, frame.kind). The
+    /// shader never reads one for a grid, but its sampler still wants an
+    /// image, so the grid texture stands in.
+    readonly property string azimuthLut: state && state.frame ? "file://" + runtime + (state.frame.kind === "grid" ? state.frame.texture : state.frame.azimuthLut) : ""
     /// The selected station's row from `hello`, or null before it arrives.
     readonly property var site: state ? (sites.find(s => s.id === state.site.id) || null) : null
     /// The protocol's one rule for texture paths (`docs/protocol.md`): the
@@ -49,7 +52,7 @@ QtObject {
         if (incompatible) return;
         try {
             var message = JSON.parse(data);
-            if (message.v !== 1) {
+            if (message.v !== 2) {
                 incompatible = true;
                 state = null;
                 error = "Unsupported engine protocol version: " + message.v;
@@ -58,10 +61,23 @@ QtObject {
             }
             if (message.type === "hello") sites = message.sites;
             else if (message.type === "state") {
-                if (!message.frame || !validTexturePath(message.frame.texture))
-                    throw new Error("Invalid texture path: " + JSON.stringify(message.frame.texture));
-                if (!validTexturePath(message.frame.azimuthLut))
-                    throw new Error("Invalid azimuth lookup path: " + JSON.stringify(message.frame.azimuthLut));
+                var frame = message.frame;
+                if (!frame || !validTexturePath(frame.texture))
+                    throw new Error("Invalid texture path: " + JSON.stringify(frame && frame.texture));
+                // Version 2: a polar sweep with its azimuth lookup, or a grid
+                // texture placed by frame.grid with no lookup.
+                if (frame.kind === "polar") {
+                    if (!validTexturePath(frame.azimuthLut))
+                        throw new Error("Invalid azimuth lookup path: " + JSON.stringify(frame.azimuthLut));
+                } else if (frame.kind === "grid") {
+                    var g = frame.grid;
+                    if (frame.azimuthLut !== "")
+                        throw new Error("A grid frame has no azimuth lookup: " + JSON.stringify(frame.azimuthLut));
+                    if (!g || !(g.xsize > 0) || !(g.ysize > 0) || !(g.east > g.west) || !(g.north > g.south))
+                        throw new Error("Invalid grid placement: " + JSON.stringify(g));
+                } else {
+                    throw new Error("Unknown frame kind: " + JSON.stringify(frame.kind));
+                }
                 state = message;
                 error = "";
             } else if (message.type === "error") rejection = message.message;

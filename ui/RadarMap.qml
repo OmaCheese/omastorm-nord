@@ -27,6 +27,13 @@ Item {
     readonly property real nominalCoverageKm: 240
     readonly property real coverageKm: {
         var s = scan;
+        // A composite reaches its farthest corner from the site it is placed by.
+        if (grid) {
+            var g = placement, far = 0;
+            for (var c of [[g.north, g.west], [g.north, g.east], [g.south, g.west], [g.south, g.east]])
+                far = Math.max(far, distanceKm(s.site.lat, s.site.lon, c[0], c[1]));
+            return far;
+        }
         if (!s || !(s.gates > 0) || !(s.gateSpacingM > 0)) return nominalCoverageKm;
         var slantM = (s.firstGateM || 0) + (s.gates - .5) * s.gateSpacingM;
         var e = (s.elevationDeg || 0) * Math.PI / 180, earthM = 6371000 * 4 / 3;
@@ -53,6 +60,11 @@ Item {
     // and tag stay away too.
     readonly property bool drawable: !!scan && scan.scanTime !== ""
     readonly property int bands: scan ? scan.palette.length : 0
+    // A grid frame (docs/protocol.md, frame.kind): the national composite,
+    // reprojected by the engine to Web Mercator and placed by `scan.grid`.
+    // It has no antenna, so no rings, crosshair, footprint, or tag.
+    readonly property bool grid: !!scan && scan.kind === "grid" && !!scan.grid
+    readonly property var placement: grid ? scan.grid : null
     property string error: ""
     signal tilesNeeded(int z, int x0, int y0, int x1, int y1)
     // The view centre once a pan or zoom settles, when it moved since the last
@@ -96,7 +108,10 @@ Item {
     readonly property real wantedY: center ? mercatorY(center.y) : siteMy - home.y / kmPerUnit
     readonly property real viewCenterX: Math.max(width/2*unitsPerPixel, Math.min(1-width/2*unitsPerPixel, wantedX))
     readonly property real viewCenterY: Math.max(height/2*unitsPerPixel, Math.min(1-height/2*unitsPerPixel, wantedY))
-    function reset() { center = null; span = Math.min(210, maxSpan); }
+    // The home span: a radar's neighbourhood, or the whole country for the
+    // composite.
+    readonly property real homeSpan: grid ? 1500 : 210
+    function reset() { center = null; span = Math.min(homeSpan, maxSpan); }
     signal navigated(real lat, real lon, real spanKm)
     function zoom(value, notify) {
         if (!interactive) return;
@@ -148,6 +163,7 @@ Item {
     function nearest() {
         var best = null, bestKm = Infinity;
         for (var s of sites) {
+            if (s.kind === "grid") continue;  // the composite has no antenna
             var km = distanceKm(centerLat, centerLon, s.lat, s.lon);
             if (km < bestKm) { bestKm = km; best = s; }
         }
@@ -363,7 +379,7 @@ Item {
                         {x:7, y:4, w:labelMetrics.advanceWidth+6, h:16}], result = [], stations = [];
         // Station IDs take priority over place names. Reserve every marker
         // first; co-located archived/test stations must not cover each other.
-        var candidates = sites.filter(s => s.id !== siteId
+        var candidates = sites.filter(s => s.id !== siteId && s.kind !== "grid"
             && Math.abs(mercatorX(s.lon)-overlayX) <= overlayHalfX
             && Math.abs(mercatorY(s.lat)-overlayY) <= overlayHalfY).sort((a, b) => a.id.localeCompare(b.id));
         for (var s of candidates) {
@@ -456,7 +472,7 @@ Item {
         return lines;
     }
     readonly property var coverageSites: {
-        if (!drawable || !site) return [];
+        if (!drawable || !site || grid) return [];
         // Only the active radar gets a footprint; overlapping network circles
         // obscure geography at continental zoom. Use the measured scan site.
         return [{id:siteId, lat:site.lat, lon:site.lon}];
@@ -524,6 +540,12 @@ Item {
         property real gateSpacingM: map.scan ? map.scan.gateSpacingM : 1
         property real elevationDeg: map.scan ? map.scan.elevationDeg : 0
         property int weakBelow: map.weakBelow
+        // A grid frame's rectangle: its north-west corner's offset from the
+        // site and its size, in Mercator units, and its size in texels.
+        property int kind: map.grid ? 1 : 0
+        property vector2d gridOrigin: map.grid ? Qt.vector2d(map.mercatorX(map.placement.west) - map.siteMx, map.mercatorY(map.placement.north) - map.siteMy) : Qt.vector2d(0, 0)
+        property vector2d gridSize: map.grid ? Qt.vector2d(map.mercatorX(map.placement.east) - map.mercatorX(map.placement.west), map.mercatorY(map.placement.south) - map.mercatorY(map.placement.north)) : Qt.vector2d(1, 1)
+        property vector2d gridTexels: map.grid ? Qt.vector2d(map.placement.xsize, map.placement.ysize) : Qt.vector2d(0, 0)
         property vector2d viewport: Qt.vector2d(width, height)
         // The camera as the shader wants it: the view centre relative to the
         // site in Mercator units, the scale, and the site's latitude.
@@ -570,7 +592,7 @@ Item {
         // Every 50 km inside the sweep; the dashed footprint marks its edge
         // (240 km for SMHI), so a short-range radar never shows a ring past it.
         Repeater {
-            model: [50, 100, 150, 200].filter(r => r < map.coverageKm)
+            model: map.grid ? [] : [50, 100, 150, 200].filter(r => r < map.coverageKm)
             Rectangle {
                 required property int modelData
                 visible: map.siteId !== ""
@@ -585,7 +607,7 @@ Item {
             }
         }
         Repeater {
-            model: map.sites.filter(s => s.id !== map.siteId)
+            model: map.sites.filter(s => s.id !== map.siteId && s.kind !== "grid")
             Rectangle {
                 required property var modelData
                 x: (map.mercatorX(modelData.lon)-map.siteMx)*map.worldPixels-3
@@ -636,17 +658,17 @@ Item {
                 }
             }
         }
-        Rectangle { x: -7; y: -.5; width: 14; height: 1; color: map.theme.foreground; visible: map.siteId !== "" }
-        Rectangle { x: -.5; y: -7; width: 1; height: 14; color: map.theme.foreground; visible: map.siteId !== "" }
+        Rectangle { x: -7; y: -.5; width: 14; height: 1; color: map.theme.foreground; visible: map.siteId !== "" && !map.grid }
+        Rectangle { x: -.5; y: -7; width: 1; height: 14; color: map.theme.foreground; visible: map.siteId !== "" && !map.grid }
         // The lock: an accent 1 px frame on the marker and the tag.
         Rectangle {
             x: -6; y: -6; width: 12; height: 12; color: "transparent"
-            visible: map.locked
+            visible: map.locked && !map.grid
             border.width: 1; border.color: map.theme.accent
         }
         Rectangle {
             x: 7; y: 4; width: Math.floor(siteTag.implicitWidth) + 6; height: 16; color: map.theme.background
-            visible: map.siteId !== ""
+            visible: map.siteId !== "" && !map.grid
             border.width: map.locked ? 1 : 0; border.color: map.theme.accent
             Text {
                 id: siteTag

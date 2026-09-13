@@ -124,7 +124,7 @@ Item {
                             opacity: .9
                         }
                     }
-                    Word { text: "site id · city · state"; font.pixelSize: 10; opacity: .45; visible: !picker.compact }
+                    Word { text: "town · county"; font.pixelSize: 10; opacity: .45; visible: !picker.compact }
                 }
             }
             ColumnLayout {

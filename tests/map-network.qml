@@ -28,7 +28,7 @@ ShellRoot {
             Text {
                 x: 12; anchors.bottom: parent.bottom; anchors.bottomMargin: 8
                 color: "#eeeeee"; font.family: "monospace"; font.pixelSize: 10
-                text: "Active radar: nominal 460 km · NOAA NEXRAD\nNatural Earth · " + (map.osmOnScreen && engine.state ? engine.state.basemap.osm.attribution : "© OpenStreetMap contributors (ODbL)")
+                text: "Active radar: " + Math.round(map.coverageKm) + " km footprint\nNatural Earth · " + (map.osmOnScreen && engine.state ? engine.state.basemap.osm.attribution : "© OpenStreetMap contributors (ODbL)")
             }
         }
     }

@@ -100,8 +100,13 @@ FocusScope {
         RowLayout {
             Layout.fillWidth: true
             spacing: 6
-            Label { text: card.state ? card.state.site.id : "—"; font.bold: true; font.pixelSize: 14 }
-            Label { Layout.fillWidth: true; text: connection.site ? connection.site.name : ""; opacity: .65 }
+            // SMHI ids are the town folded to lowercase ASCII: show the town
+            // alone ("Vara"), never "vara Vara". NEXRAD ids keep id + name.
+            readonly property string siteId: card.state ? card.state.site.id : ""
+            readonly property string siteName: connection.site ? connection.site.name : ""
+            readonly property bool idIsName: !!siteId && !!siteName && siteId === siteId.toLowerCase()
+            Label { text: parent.idIsName ? parent.siteName : parent.siteId || "—"; font.bold: true; font.pixelSize: 14 }
+            Label { Layout.fillWidth: true; text: parent.idIsName ? "" : parent.siteName; opacity: .65 }
             Rectangle { width: 5; height: 5; radius: 3; color: card.statusColor }
             Label { text: card.statusText; color: card.statusColor; font.pixelSize: 11 }
         }

@@ -28,7 +28,7 @@ Item {
     readonly property real coverageKm: {
         var s = scan;
         // A composite reaches its farthest corner from the site it is placed by.
-        if (grid) {
+        if (placement) {
             var g = placement, far = 0;
             for (var c of [[g.north, g.west], [g.north, g.east], [g.south, g.west], [g.south, g.east]])
                 far = Math.max(far, distanceKm(s.site.lat, s.site.lon, c[0], c[1]));
@@ -63,8 +63,10 @@ Item {
     // A grid frame (docs/protocol.md, frame.kind): the national composite,
     // reprojected by the engine to Web Mercator and placed by `scan.grid`.
     // It has no antenna, so no rings, crosshair, footprint, or tag.
-    readonly property bool grid: !!scan && scan.kind === "grid" && !!scan.grid
-    readonly property var placement: grid ? scan.grid : null
+    // Bindings that read the placement test `placement` itself, never
+    // `grid`: on a frame change one can update before the other.
+    readonly property var placement: scan && scan.kind === "grid" && scan.grid ? scan.grid : null
+    readonly property bool grid: placement !== null
     property string error: ""
     signal tilesNeeded(int z, int x0, int y0, int x1, int y1)
     // The view centre once a pan or zoom settles, when it moved since the last
@@ -542,10 +544,10 @@ Item {
         property int weakBelow: map.weakBelow
         // A grid frame's rectangle: its north-west corner's offset from the
         // site and its size, in Mercator units, and its size in texels.
-        property int kind: map.grid ? 1 : 0
-        property vector2d gridOrigin: map.grid ? Qt.vector2d(map.mercatorX(map.placement.west) - map.siteMx, map.mercatorY(map.placement.north) - map.siteMy) : Qt.vector2d(0, 0)
-        property vector2d gridSize: map.grid ? Qt.vector2d(map.mercatorX(map.placement.east) - map.mercatorX(map.placement.west), map.mercatorY(map.placement.south) - map.mercatorY(map.placement.north)) : Qt.vector2d(1, 1)
-        property vector2d gridTexels: map.grid ? Qt.vector2d(map.placement.xsize, map.placement.ysize) : Qt.vector2d(0, 0)
+        property int kind: map.placement ? 1 : 0
+        property vector2d gridOrigin: map.placement ? Qt.vector2d(map.mercatorX(map.placement.west) - map.siteMx, map.mercatorY(map.placement.north) - map.siteMy) : Qt.vector2d(0, 0)
+        property vector2d gridSize: map.placement ? Qt.vector2d(map.mercatorX(map.placement.east) - map.mercatorX(map.placement.west), map.mercatorY(map.placement.south) - map.mercatorY(map.placement.north)) : Qt.vector2d(1, 1)
+        property vector2d gridTexels: map.placement ? Qt.vector2d(map.placement.xsize, map.placement.ysize) : Qt.vector2d(0, 0)
         property vector2d viewport: Qt.vector2d(width, height)
         // The camera as the shader wants it: the view centre relative to the
         // site in Mercator units, the scale, and the site's latitude.

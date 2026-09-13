@@ -26,7 +26,8 @@ for _ in {1..50}; do [[ $(call matches) != '[]' ]] && break; sleep .1; done
 # Vara first, then the next-nearest SMHI sites (Åtvidaberg, Ängelholm, …).
 m=$(call matches)
 [[ $m == '["vara","atvidaberg",'* || $m == '["vara","angelholm",'* ]] || fail "Empty query did not list the nearest stations first: $m"
-expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":12,"focused":true}' "$(call status)"
+# 13: the 12 radars and the national composite (protocol v2, S8).
+expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":13,"focused":true}' "$(call status)"
 call open vara
 expect 'ID prefix ranks first' '"vara"' "$(call matches | cut -d, -f1 | tr -d '[]')"
 call open ostersund

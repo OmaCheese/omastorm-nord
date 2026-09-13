@@ -1,6 +1,6 @@
 //! The `osm` tile set (DESIGN.md, basemap tiles): OpenMapTiles-schema vector
 //! tiles, one HTTPS GET per tile from OpenFreeMap by default, cached as
-//! fetched under `$XDG_CACHE_HOME/omastorm/vt/`, decoded with `mvt-reader`,
+//! fetched under `$XDG_CACHE_HOME/omastorm-se/vt/`, decoded with `mvt-reader`,
 //! and stroked into the protocol's four masks by the rasterizer `ne` tiles
 //! use, with roads in B (minor) and A (255 minus major). Launch fetches
 //! nothing: the first network call is the first `tiles_needed` at z7 or
@@ -33,7 +33,7 @@ pub const MAX_ZOOM: u32 = 14;
 /// `OMASTORM_TILES_URL` overrides it for development and tests.
 const DEFAULT_URL: &str = "https://tiles.openfreemap.org/planet";
 const USER_AGENT: &str = concat!(
-    "omastorm/",
+    "omastorm-se/",
     env!("CARGO_PKG_VERSION"),
     " (https://omastorm.com)"
 );
@@ -95,7 +95,7 @@ struct TileJson {
     attribution: String,
 }
 /// What TileJSON told us.
-/// `$XDG_CACHE_HOME/omastorm` (default `~/.cache/omastorm`), the one place
+/// `$XDG_CACHE_HOME/omastorm-se` (default `~/.cache/omastorm-se`), the one place
 /// the engine persists anything: vector tiles here, the frame catalog in
 /// `catalog.rs`. Created if missing.
 pub fn cache_root() -> io::Result<PathBuf> {
@@ -107,7 +107,7 @@ pub fn cache_root() -> io::Result<PathBuf> {
             PathBuf::from(home).join(".cache")
         }
     };
-    let root = cache.join("omastorm");
+    let root = cache.join("omastorm-se");
     fs::create_dir_all(&root)?;
     Ok(root)
 }

@@ -53,7 +53,7 @@ call closeWindow
 call reopen
 call capture "$PWD/review/popover-archived.png"
 for _ in {1..50}; do [[ -s review/popover-archived.png ]] && break; sleep .1; done
-sock="$XDG_RUNTIME_DIR/omastorm/engine.sock"
+sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.2 - "UNIX-CONNECT:$sock" >/dev/null; }
 # Two deterministic complete frames, using the archived fixture's metadata
 # and PNGs, exercise the real catalog/transport without waiting two volumes.
@@ -64,7 +64,7 @@ require 'fileutils'
 require 'open3'
 scratch = ARGV.fetch(0)
 frame = JSON.parse(File.read("#{scratch}/engine-state.json")).fetch('frame')
-dir = "#{scratch}/cache/omastorm/frames"
+dir = "#{scratch}/cache/omastorm-se/frames"
 FileUtils.mkdir_p("#{dir}/KTLX")
 sql = []
 2.times do |i|
@@ -73,8 +73,8 @@ sql = []
   f['scanTime'] = "2013-05-20T20:#{10+i*5}:00Z"
   f['sweepEnd'] = f['scanTime']
   tex = "KTLX/test-#{i}-sweep.png"; lut = "KTLX/test-#{i}-lut.png"
-  FileUtils.cp("#{scratch}/r/omastorm/#{frame['texture']}", "#{dir}/#{tex}")
-  FileUtils.cp("#{scratch}/r/omastorm/#{frame['azimuthLut']}", "#{dir}/#{lut}")
+  FileUtils.cp("#{scratch}/r/omastorm-se/#{frame['texture']}", "#{dir}/#{tex}")
+  FileUtils.cp("#{scratch}/r/omastorm-se/#{frame['azimuthLut']}", "#{dir}/#{lut}")
   f['texture'] = ''; f['azimuthLut'] = ''
   values = [f['id'], 'KTLX', 'REF', f['elevationDeg'], 1369080600000+i*300000,
             f['scanTime'], f['sweepEnd'], 'synthetic popover lifecycle test', 0, JSON.generate(f), tex, lut]

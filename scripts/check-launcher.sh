@@ -12,7 +12,7 @@ mkdir -p "$scratch"
 trap 'rm -rf "$scratch"' EXIT
 export XDG_DATA_HOME="$scratch/data"
 apps=$XDG_DATA_HOME/applications
-desktop=$apps/omastorm.desktop
+desktop=$apps/omastorm-se.desktop
 mark=$PWD/branding/mark/omastorm-mark-app.svg
 [[ -f $mark ]] || fail "Omastorm mark missing: $mark"
 
@@ -26,16 +26,16 @@ rg -q 'usage: write-desktop-entry.sh' "$scratch/usage.err" \
 if rg -q 'write-desktop-entry' run.sh scripts/fetch-engine.sh; then
   fail 'run.sh or fetch-engine.sh references write-desktop-entry.sh'
 fi
-[[ ! -e $desktop ]] || fail 'Scratch already had omastorm.desktop'
+[[ ! -e $desktop ]] || fail 'Scratch already had omastorm-se.desktop'
 
 path=$(bash scripts/write-desktop-entry.sh --print-path)
 [[ $path == "$desktop" ]] || fail "--print-path: $path"
-[[ -f $desktop ]] || fail 'write-desktop-entry.sh did not write omastorm.desktop'
+[[ -f $desktop ]] || fail 'write-desktop-entry.sh did not write omastorm-se.desktop'
 
 rg -q '^Type=Application$' "$desktop" || fail 'desktop Type missing'
 rg -q '^Name=Omastorm$' "$desktop" || fail 'desktop Name is not Omastorm'
 exec_line=$(awk -F= '/^Exec=/{print substr($0,6); exit}' "$desktop")
-[[ $exec_line == 'omarchy shell shell toggle com.omastorm.radar "{}"' ]] \
+[[ $exec_line == 'omarchy shell shell toggle rb.omastorm-se "{}"' ]] \
   || fail "desktop Exec is not the shell toggle: $exec_line"
 icon_line=$(awk -F= '/^Icon=/{print substr($0,6); exit}' "$desktop")
 [[ $icon_line == "$mark" ]] || fail "desktop Icon is not this tree's mark: $icon_line"
@@ -44,13 +44,13 @@ rg -q '^Terminal=false$' "$desktop" || fail 'desktop Terminal is not false'
 rg -q '^StartupNotify=false$' "$desktop" || fail 'desktop StartupNotify is not false'
 
 if command -v desktop-file-validate >/dev/null 2>&1; then
-  desktop-file-validate "$desktop" || fail 'desktop-file-validate rejected omastorm.desktop'
+  desktop-file-validate "$desktop" || fail 'desktop-file-validate rejected omastorm-se.desktop'
 fi
 
 # A second run refreshes the file in place.
 printf 'stale' > "$desktop"
 bash scripts/write-desktop-entry.sh
-rg -q '^Name=Omastorm$' "$desktop" || fail 'second run did not refresh omastorm.desktop'
+rg -q '^Name=Omastorm$' "$desktop" || fail 'second run did not refresh omastorm-se.desktop'
 
 # The same DesktopEntries list the Omarchy launcher reads.
 cat > "$scratch/probe.qml" <<'QML'
@@ -60,7 +60,7 @@ ShellRoot {
     IpcHandler {
         target: "probe"
         function entry(): string {
-            var e = DesktopEntries.byId("omastorm")
+            var e = DesktopEntries.byId("omastorm-se")
             return e ? (e.id + "|" + e.name) : ""
         }
     }
@@ -85,7 +85,7 @@ expect_entry 'omastorm|Omastorm'
 
 # Deleting the file is removal.
 rm -f -- "$desktop"
-[[ ! -e $desktop ]] || fail 'rm did not remove omastorm.desktop'
+[[ ! -e $desktop ]] || fail 'rm did not remove omastorm-se.desktop'
 expect_entry ''
 
 echo 'Launcher: opt-in desktop write, shell-toggle Exec, DesktopEntries list/unlist, no install/launch hook PASS'

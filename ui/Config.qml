@@ -3,7 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "Toml.js" as Toml
 
-// ~/.config/omastorm/config.toml (docs/protocol.md, configuration):
+// ~/.config/omastorm-se/config.toml (docs/protocol.md, configuration):
 // deliberate preferences — an explicit map centre, a locked radar, the
 // treatment, the weak-return floor, and the `[keys]` table. Watched like
 // the theme files, so an edit applies to the running window. OMASTORM_CONFIG
@@ -15,7 +15,7 @@ import "Toml.js" as Toml
 // config leaves it alone unless OMASTORM_LOCATION names a location file too.
 QtObject {
     id: root
-    readonly property string path: Quickshell.env("OMASTORM_CONFIG") || (Quickshell.env("HOME") + "/.config/omastorm/config.toml")
+    readonly property string path: Quickshell.env("OMASTORM_CONFIG") || (Quickshell.env("HOME") + "/.config/omastorm-se/config.toml")
     readonly property string locationPath: Quickshell.env("OMASTORM_LOCATION")
         || (Quickshell.env("OMASTORM_CONFIG") ? "" : Quickshell.env("HOME") + "/.local/state/omarchy/settings/weather.json")
     property var values: ({})

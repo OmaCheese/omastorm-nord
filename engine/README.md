@@ -16,8 +16,8 @@ are described in [data/README.md](../data/README.md).
 ## Runtime and storage
 
 `XDG_RUNTIME_DIR` must name an absolute directory. The daemon owns
-`omastorm/engine.sock`, uses `engine.lock` to serialize startup, and logs to
-`omastorm/engine.log`. `ensure` starts a background daemon and waits up to
+`omastorm-se/engine.sock`, uses `engine.lock` to serialize startup, and logs to
+`omastorm-se/engine.log`. `ensure` starts a background daemon and waits up to
 10 seconds for its hello. Concurrent launches share it; it outlives windows.
 
 Hello includes the PID, protocol version, and executable fingerprint.
@@ -73,7 +73,7 @@ unavailable, and an unreachable bucket is offline. Cached frames remain
 usable under every condition.
 
 `src/catalog.rs` stores the newest 60 complete frames per station in
-`$XDG_CACHE_HOME/omastorm/frames/`: a SQLite WAL catalog and PNG files.
+`$XDG_CACHE_HOME/omastorm-se/frames/`: a SQLite WAL catalog and PNG files.
 Entries retain scan geometry, times, and source provenance. The UI never reads
 this store. The timeline serves cached frames through new runtime textures.
 Playback loops complete frames over about ten seconds, bounded to 250 ms–1 s
@@ -98,7 +98,7 @@ concurrent fetches. Transport errors, 429s, and 5xx responses trigger a
 30-second backoff; cached tiles still serve.
 
 Vector tiles persist under
-`$XDG_CACHE_HOME/omastorm/vt/<source>/<version>/<z>/<x>/<y>.pbf`.
+`$XDG_CACHE_HOME/omastorm-se/vt/<source>/<version>/<z>/<x>/<y>.pbf`.
 The two newest data versions are retained. Above 512 MB, eviction removes the
 least recently read tiles until usage falls below 448 MB. Rendered masks are
 runtime files capped at 4,096; their names include build/data generation tags.

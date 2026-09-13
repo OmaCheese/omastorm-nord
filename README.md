@@ -43,11 +43,11 @@ Omarchy 4 on x86_64 and aarch64.
 omarchy plugin add https://github.com/wesleygrimes/omastorm.git --enable
 ```
 
-This clones the plugin into `~/.config/omarchy/plugins/com.omastorm.radar` and
+This clones the plugin into `~/.config/omarchy/plugins/rb.omastorm-se` and
 asks which bar section to use. The first time the popover opens it downloads
 the pinned engine binary from this repository's GitHub Releases, verifies its
 sha256 against `engine/release.pin`, and installs it under
-`~/.local/share/omastorm/bin`. Runtime files, cached data, remembered view state, and configuration stay
+`~/.local/share/omastorm-se/bin`. Runtime files, cached data, remembered view state, and configuration stay
 inside Omastorm's own directories.
 
 On first use, Omastorm uses your Omarchy weather location when available.
@@ -61,16 +61,16 @@ To open the window from the keyboard, add one line to
 `~/.config/hypr/bindings.lua`. Omastorm never writes that file.
 
 ```lua
-o.bind("SUPER + SHIFT + R", "Omastorm", "omarchy shell shell toggle com.omastorm.radar '{}'")
+o.bind("SUPER + SHIFT + R", "Omastorm", "omarchy shell shell toggle rb.omastorm-se '{}'")
 ```
 
 To list Omastorm in the app launcher:
 
 ```sh
-bash ~/.config/omarchy/plugins/com.omastorm.radar/scripts/write-desktop-entry.sh
+bash ~/.config/omarchy/plugins/rb.omastorm-se/scripts/write-desktop-entry.sh
 ```
 
-Update with `omarchy plugin update com.omastorm.radar`.
+Update with `omarchy plugin update rb.omastorm-se`.
 
 ## Use
 
@@ -114,10 +114,10 @@ are hidden by default and the legend says so; `w` shows them.
 
 ## Configuration
 
-`~/.config/omastorm/config.toml` holds deliberate preferences. The app saves
+`~/.config/omastorm-se/config.toml` holds deliberate preferences. The app saves
 last map center, zoom, and UI radar lock separately in
-`$XDG_STATE_HOME/omastorm/state.json` (default
-`~/.local/state/omastorm/state.json`). Navigation never rewrites your config.
+`$XDG_STATE_HOME/omastorm-se/state.json` (default
+`~/.local/state/omastorm-se/state.json`). Navigation never rewrites your config.
 `Shift+H`, or LOCATION, opens the location picker; it writes state, not config.
 
 Explicit center coordinates win on every launch. Without them, Omastorm
@@ -152,7 +152,7 @@ omarchy restart shell
 ```
 
 The engine runs as one shared daemon per login. Its log is
-`$XDG_RUNTIME_DIR/omastorm/engine.log` (usually `/run/user/<uid>/omastorm/`).
+`$XDG_RUNTIME_DIR/omastorm-se/engine.log` (usually `/run/user/<uid>/omastorm-se/`).
 If live polling receives no new chunk for 90 seconds, the engine rediscovers
 the latest volume automatically, keeping cached frames available. Recovery
 attempts are recorded in `engine.log`.
@@ -162,7 +162,7 @@ sha256 check failed; the reason is in `bootstrap.log` in the same directory,
 and opening the popover again retries. To restart the engine by hand:
 
 ```sh
-~/.local/share/omastorm/bin/omastorm-engine stop
+~/.local/share/omastorm-se/bin/omastorm-engine stop
 ```
 
 The next popover or window starts it again. Please attach both logs to a
@@ -171,11 +171,11 @@ The next popover or window starts it again. Please attach both logs to a
 ## Remove
 
 ```sh
-omarchy plugin remove com.omastorm.radar
-~/.local/share/omastorm/bin/omastorm-engine stop
-rm -rf ~/.local/share/omastorm ~/.cache/omastorm ~/.local/state/omastorm
-rm -rf ~/.config/omastorm                            # your config.toml; keep it to reinstall later
-rm -f ~/.local/share/applications/omastorm.desktop   # if you added the launcher entry
+omarchy plugin remove rb.omastorm-se
+~/.local/share/omastorm-se/bin/omastorm-engine stop
+rm -rf ~/.local/share/omastorm-se ~/.cache/omastorm-se ~/.local/state/omastorm-se
+rm -rf ~/.config/omastorm-se                            # your config.toml; keep it to reinstall later
+rm -f ~/.local/share/applications/omastorm-se.desktop   # if you added the launcher entry
 ```
 
 Then delete the `o.bind` line if you added one.

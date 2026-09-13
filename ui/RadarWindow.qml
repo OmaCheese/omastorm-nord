@@ -30,7 +30,7 @@ Item {
     }
     function dismiss() {
         if (!session) Qt.quit();
-        else if (shell) shell.hide("com.omastorm.radar");
+        else if (shell) shell.hide("rb.omastorm-se");
         else close();
     }
     readonly property var state: engine.state

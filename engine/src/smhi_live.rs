@@ -25,10 +25,6 @@
 //!   reported `Silent`, which the UI shows as `unavailable`. Leksand has
 //!   published nothing since January 2026.
 
-// Until S2's ODIM decoder merges, `main.rs` still runs `live.rs` and only the
-// tests here reach this module. Wiring `poll` into `main.rs` removes this.
-#![allow(dead_code)]
-
 use crate::sweep::Sweep;
 use chrono::{DateTime, NaiveDateTime};
 use reqwest::header::{
@@ -522,11 +518,6 @@ impl RangeReader {
         Ok(reader)
     }
 
-    /// The whole file's length.
-    pub fn total(&self) -> u64 {
-        self.len
-    }
-
     pub fn traffic(&self) -> Arc<Traffic> {
         self.traffic.clone()
     }
@@ -734,6 +725,19 @@ impl Config {
             decode,
         }
     }
+}
+
+/// S2's ODIM decoder over the ranged reader.
+fn decode(reader: RangeReader) -> Result<Sweep, String> {
+    crate::odim::decode_lowest_dbzh(reader).map_err(|e| e.to_string())
+}
+
+/// Poll SMHI for `site` until the task is aborted or the event channel
+/// closes (`poll_with` has the details). `skip_known` is upstream's respawn
+/// flag, kept so `main.rs` calls both pollers alike. SMHI volumes are never
+/// replayed, and catalogued ones are never fetched, so it changes nothing.
+pub async fn poll(site: String, events: Sender<Event>, cached: Vec<i64>, _skip_known: bool) {
+    poll_with(Config::smhi(decode), site, events, cached).await;
 }
 
 /// Aborts its task when dropped, so a poller that is replaced takes its
@@ -1338,7 +1342,7 @@ mod tests {
             log: log.clone(),
         };
         let mut reader = RangeReader::open(Box::new(source)).unwrap();
-        assert_eq!(reader.total(), 14_701_179);
+        assert_eq!(reader.traffic().total(), 14_701_179);
         for (offset, len) in [
             (40_000u64, 2_000usize),
             (425_984, 4096),
@@ -1604,6 +1608,7 @@ mod tests {
             gate_spacing_m: 500,
             scale: 2.0,
             offset: 66.0,
+            code1_status: crate::sweep::OUTSIDE_COVERAGE,
         })
     }
 

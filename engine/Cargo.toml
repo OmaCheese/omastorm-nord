@@ -8,10 +8,10 @@ rust-version = "1.89"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
-# Level II decoding uses pinned release candidates. The `aws` feature
-# supplies the pull-based `ChunkIterator` for real-time chunks, sharing
-# the tile fetcher’s `reqwest`/rustls stack.
-nexrad-data = { version = "=1.0.0-rc.7", default-features = false, features = ["nexrad-model", "aws"] }
+# Level II decoding uses pinned release candidates. Only archive mode
+# (`OMASTORM_ARCHIVE`, DEC-10) decodes Level II now; live frames are SMHI's
+# (`smhi_live.rs`), so the NOAA real-time `aws` feature is off.
+nexrad-data = { version = "=1.0.0-rc.7", default-features = false, features = ["nexrad-model"] }
 nexrad-decode = "=1.0.0-rc.3"
 nexrad-model = "=1.0.0-rc.2"
 # SMHI ODIM_H5 volumes (`odim.rs`, DEC-1): pure-Rust HDF5, no C library;
@@ -26,9 +26,6 @@ tiny-skia = { version = "0.12", default-features = false, features = ["std", "si
 # tile. `rustls` shares the TLS stack with `nexrad-data`; disabling default
 # features excludes charset, HTTP/2, and proxy discovery.
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
-# S3's delimiter listing names occupied rotating volume directories in one
-# response; the upstream decoder already uses this XML parser transitively.
-xml = "1.4"
 # Mapbox Vector Tile decoding (prost); default features off, since `wasm` is
 # the only one and it pulls geojson and wasm-bindgen.
 mvt-reader = { version = "2.5", default-features = false }

@@ -1,7 +1,7 @@
 # Verify published assets with mise engine-pin before committing.
+# Omastorm SE has published no engine release yet. Upstream's engine-0.1.5
+# assets were pinned here, but they serve $XDG_RUNTIME_DIR/omastorm/, not
+# omastorm-se/, so this UI could never reach them. Until the fork publishes
+# (S9, OPEN-1), a checkout builds its own engine: bash scripts/cargo.sh build.
 tag=engine-0.1.5
 repo=wesleygrimes/omastorm
-asset_x86_64=omastorm-engine-x86_64-unknown-linux-gnu
-sha256_x86_64=6baebd50584132dd99066a1e7601e0080991ad9c442c558b0d94619145f55b6b
-asset_aarch64=omastorm-engine-aarch64-unknown-linux-gnu
-sha256_aarch64=29f9c50edbdcd3bd478720afc71308d4139fa255ec354c4a18fa2ab264877144

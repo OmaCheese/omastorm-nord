@@ -28,7 +28,9 @@ read_engine_pin() {
       *) die "Unknown key in $file: $key" ;;
     esac
   done < "$file"
-  [[ -n $tag && -n $repo && ${#assets[@]} -gt 0 ]] || die "Incomplete pin in $file"
+  # No assets is a pin for a release not yet published: fetch-engine.sh then
+  # refuses every machine with "No pinned ... engine", and a checkout builds.
+  [[ -n $tag && -n $repo ]] || die "Incomplete pin in $file"
   for arch in x86_64 aarch64; do
     [[ -n ${assets[$arch]:-}${hashes[$arch]:-} ]] || continue
     [[ ${assets[$arch]:-} == "omastorm-engine-$arch-unknown-linux-gnu" ]] \

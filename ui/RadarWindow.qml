@@ -511,7 +511,7 @@ Item {
             //   brand row     — mark, OMASTORM, status light, LIVE/ARCHIVED
             //   site row      — station title, radar lock (yellow when outside coverage)
             //   product stack — product line + meta line (right of site row)
-            //   product line  — REFLECTIVITY / tilt + NOAA NEXRAD
+            //   product line  — REFLECTIVITY / tilt + SMHI
             //   meta line     — age, right-aligned under the product line
             //   map stage     — radar map frame
             //   follow chip   — crosshair (place follow); hidden until GPS

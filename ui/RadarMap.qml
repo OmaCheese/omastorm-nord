@@ -19,7 +19,19 @@ Item {
     property string azimuthLut: ""   // engine-written azimuth lookup (3600 × 1)
     property string siteId: ""
     property var sites: []           // hello.sites; locations, not live availability
-    readonly property real coverageKm: 460 // nominal reflectivity footprint, not measured coverage
+    // How far the sweep reaches on the ground, from the frame's own geometry:
+    // the far edge of the last gate (radar.frag draws up to half a gate past
+    // it), slant range turned into ground distance on the shader's 4/3
+    // effective-radius earth. SMHI volumes reach 240 km, NEXRAD reflectivity
+    // 460 km. With no frame (or the gateless loading placeholder), SMHI's.
+    readonly property real nominalCoverageKm: 240
+    readonly property real coverageKm: {
+        var s = scan;
+        if (!s || !(s.gates > 0) || !(s.gateSpacingM > 0)) return nominalCoverageKm;
+        var slantM = (s.firstGateM || 0) + (s.gates - .5) * s.gateSpacingM;
+        var e = (s.elevationDeg || 0) * Math.PI / 180, earthM = 6371000 * 4 / 3;
+        return earthM * Math.atan2(slantM * Math.cos(e), earthM + slantM * Math.sin(e)) / 1000;
+    }
     property string tileRoot: ""     // file URL of the runtime directory, for tile paths
     property var theme
     property string treatment: "GLYPHS"
@@ -547,8 +559,10 @@ Item {
         }
         // Range rings at the site's Mercator scale; over 200 km the scale
         // drifts by a couple of percent, which a ring drawn as a circle hides.
+        // Every 50 km inside the sweep; the dashed footprint marks its edge
+        // (240 km for SMHI), so a short-range radar never shows a ring past it.
         Repeater {
-            model: [50, 100, 150, 200]
+            model: [50, 100, 150, 200].filter(r => r < map.coverageKm)
             Rectangle {
                 required property int modelData
                 visible: map.siteId !== ""

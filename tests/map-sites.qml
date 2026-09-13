@@ -43,9 +43,15 @@ ShellRoot {
                     check(!map.siteLabels.some(s => s.name === "KTLX"), "Duplicate active marker label");
                     var active = map.coverageSites.filter(s => s.id === "KTLX");
                     check(active.length === 1 && active[0].lat === map.scan.site.lat, "Active coverage did not use measured location");
+                    // The footprint comes from the frame, not a constant: the
+                    // shader's own ground-to-slant formula, run forward from
+                    // coverageKm, lands on the far edge of the last gate.
+                    var s = map.scan, earthM = 6371000*4/3, arc = map.coverageKm*1000/earthM;
+                    var slantM = earthM*Math.sin(arc)/Math.cos(s.elevationDeg*Math.PI/180 + arc);
+                    check(Math.abs(slantM-(s.firstGateM+(s.gates-.5)*s.gateSpacingM)) < 1e-3, "Coverage not derived from gates × gateSpacingM");
+                    check(map.coverageKm > 400 && map.coverageKm < 460, "KTLX footprint out of range: " + map.coverageKm);
                     // Independent inverse-distance check at ordinary, Alaskan,
                     // and date-line coordinates; every destination is coverageKm.
-                    var reach = map.coverageKm;
                     for (var site of [{lat:35,lon:-97}, {lat:65,lon:-165}, {lat:60,lon:179.8}]) {
                         var points = map.coveragePoints(site);
                         check(points.length === 361, "Incomplete circle");
@@ -53,7 +59,7 @@ ShellRoot {
                         for (var i=0; i<points.length; i++) {
                             var p = points[i];
                             var at = {lat:map.latitude(p.y+map.siteMy), lon:map.longitude(p.x+map.siteMx)};
-                            check(Math.abs(distance(site, at)-reach) < 1e-7, "Coverage distance drift");
+                            check(Math.abs(distance(site, at)-map.coverageKm) < 1e-7, "Coverage distance drift");
                             if (i) check(Math.abs(p.x-points[i-1].x)<.01, "Date-line discontinuity");
                         }
                     }
@@ -82,6 +88,7 @@ ShellRoot {
                     map.scan = null;
                 } else if (stage === 3) {
                     check(map.siteLabels.length === 0 && map.coverageSites.length === 0, "Disconnected overlay retained");
+                    check(map.coverageKm === 240, "No frame should fall back to SMHI's 240 km footprint");
                     map.scan = engine.state.frame;
                     map.reset();
                 } else if (stage === 4) {

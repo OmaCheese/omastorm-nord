@@ -24,6 +24,7 @@ Item {
     property bool codes: false
     property string siteId: ""
     property var sites: []           // hello.sites; locations, not live availability
+    property var referenceSites: []  // hello.referenceSites: other radars, faint marks only (S23)
     // How far the sweep reaches on the ground, from the frame's own geometry:
     // the far edge of the last gate (radar.frag draws up to half a gate past
     // it), slant range turned into ground distance on the shader's 4/3
@@ -674,6 +675,19 @@ Item {
                 color: "transparent"
                 border.width: 1
                 border.color: Qt.alpha(map.theme.foreground, .18)
+                antialiasing: true
+            }
+        }
+        // Reference radars (S23): positions only, under the station marks,
+        // no label, no ring; not stations, so nothing here selects them.
+        Repeater {
+            model: map.referenceSites
+            Rectangle {
+                required property var modelData
+                x: (map.mercatorX(modelData.lon)-map.siteMx)*map.worldPixels-2
+                y: (map.mercatorY(modelData.lat)-map.siteMy)*map.worldPixels-2
+                width: 4; height: 4; radius: 2
+                color: Qt.alpha(map.theme.foreground, .35)
                 antialiasing: true
             }
         }

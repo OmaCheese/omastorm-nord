@@ -88,6 +88,8 @@ pub struct Hello {
     pub sites_source: String,
     pub sites_retrieved: String,
     pub sites_notes: String,
+    /// The other European radars, for faint map marks only (S23, additive).
+    pub reference_sites: Vec<crate::reference::ReferenceSite>,
 }
 
 /// The launcher's view of a running daemon's hello. Only the fields needed to

@@ -66,6 +66,32 @@ are additive, so the version stays 2 and an older client ignores them:
   (`SMHI, CC BY 4.0`). While drawing, a client credits the frame on
   screen's own `frame.attribution`.
 
+`hello` also carries `referenceSites` (S23, additive, always sent): the
+other European weather radars, whose positions a client may show for
+orientation. They are **not stations**: no `select_site` accepts their ids,
+the picker does not list them, `view_center` never hands off to them, and a
+client draws no range circle for them, only a small, faint mark with the
+name on tap or hover.
+
+```json
+"referenceSites":[{"id":"frabb","name":"Abbeville","country":"FR",
+                   "lat":50.13,"lon":1.83,"source":"EUMETNET ORD","retrieved":"2026-09-14"}]
+```
+
+- `id`: the radar's ODIM node code, lowercase. It never equals a station's
+  `id` or alias: a radar the engine can show is in `sites`, not here.
+- `name`: the site's name as its source writes it; `country`: ISO 3166-1
+  alpha-2 (`GB` for the United Kingdom).
+- `source`: where the position comes from, shown as the credit while the
+  marks are on screen: `EUMETNET ORD` (the Open Radar Data locations
+  list) or `EUMETNET OPERA database` (OPERA's radar database, for radars
+  ORD does not list). `retrieved` is the snapshot's date.
+- The list is a snapshot embedded in the engine
+  (`engine/data/reference-radars.json`, written by
+  `scripts/fetch-reference-radars.sh`); it says where radars stand, not
+  whether they are running. An engine older than S23 sends no
+  `referenceSites`; a client then draws no marks.
+
 `state` is the complete current state, re-sent whenever anything in it changes.
 It is small (a few KB) so clients replace rather than merge.
 
@@ -171,8 +197,10 @@ It is small (a few KB) so clients replace rather than merge.
     to Web Mercator, so a client draws it as one textured rectangle.
     `texture` is the grid texture and `azimuthLut` is empty (`""`). `rays`,
     `gates`, `firstGateM`, and `gateSpacingM` are 0. `elevationDeg` is the
-    elevation the composite is built from (0.5 for SMHI). `frame.grid`
-    places the texture:
+    elevation the composite is built from (0.5 for SMHI, 0 for OPERA). A
+    composite has no single scan angle, so a client shows none for a grid
+    frame (`Reflectivity · composite`, S23) and must not rely on the
+    value. `frame.grid` places the texture:
 
     ```json
     "grid":{"projection":"EPSG:3857","xsize":1364,"ysize":1983,"xscale":2000,"yscale":2000,
@@ -636,3 +664,10 @@ Additive since (S19, still version 2):
 - A catalogued frame keeps one texture name per file while it is in the
   catalog, instead of a new revision on every show; its files stay
   published while it is in the selected station's timeline.
+
+Additive since (S23, still version 2):
+
+- `hello.referenceSites[]` is new and always sent: the other European
+  radars' positions, for faint map marks only ([`hello`](#engine-messages)).
+- A client shows no angle for a `grid` frame; its `elevationDeg` is not
+  meaningful to display.

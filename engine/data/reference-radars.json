@@ -1,0 +1,1177 @@
+{
+ "source": "https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/locations ; https://www.eumetnet.eu/wp-content/themes/aeron-child/observations-programme/current-activities/opera/database/OPERA_Database/OPERA_RADARS_DB.json",
+ "retrieved": "2026-09-14",
+ "notes": "Reference radars (S23): positions only, drawn as faint marks; not stations. 101 rows are the radars in EUMETNET Open Radar Data's locations list that engine/data/sites.json does not hold (matched by ODIM node code, the Swedish radars' nod included), at ORD's position; 35 of them are unnamed in ORD and take their name from EUMETNET OPERA's radar database. 29 rows are the operational radars (status 1) of the OPERA database for countries ORD does not list: GB 16, HU 5, PT 6, SI 2. The OPERA database states no licence; its rows are credited by source. Written by scripts/fetch-reference-radars.sh.",
+ "radars": [
+  {
+   "id": "behel",
+   "name": "Helchteren",
+   "country": "BE",
+   "lat": 51.0702,
+   "lon": 5.4054,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "bejab",
+   "name": "Jabbeke",
+   "country": "BE",
+   "lat": 51.1917,
+   "lon": 3.0642,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "bewid",
+   "name": "Wideumont",
+   "country": "BE",
+   "lat": 49.9136,
+   "lon": 5.5044,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "chalb",
+   "name": "Albis",
+   "country": "CH",
+   "lat": 47.28433,
+   "lon": 8.512,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "chdol",
+   "name": "La Dole",
+   "country": "CH",
+   "lat": 46.42511,
+   "lon": 6.09941,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "chlem",
+   "name": "Monte Lema",
+   "country": "CH",
+   "lat": 46.04076,
+   "lon": 8.83322,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "chppm",
+   "name": "Plaine Monte",
+   "country": "CH",
+   "lat": 46.37065,
+   "lon": 7.48655,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "chwei",
+   "name": "Weissfluhgiptel",
+   "country": "CH",
+   "lat": 46.83497,
+   "lon": 9.79446,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "czbrd",
+   "name": "Brdy-Praha",
+   "country": "CZ",
+   "lat": 49.6583,
+   "lon": 13.8178,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "czska",
+   "name": "Skalky",
+   "country": "CZ",
+   "lat": 49.5011,
+   "lon": 16.7885,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "deboo",
+   "name": "Boostedt",
+   "country": "DE",
+   "lat": 54.00438,
+   "lon": 10.0469,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "dedrs",
+   "name": "Dresden",
+   "country": "DE",
+   "lat": 51.12464,
+   "lon": 13.76864,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "deeis",
+   "name": "Eisberg",
+   "country": "DE",
+   "lat": 49.54067,
+   "lon": 12.40279,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "deess",
+   "name": "Essen",
+   "country": "DE",
+   "lat": 51.40565,
+   "lon": 6.96711,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "defbg",
+   "name": "Feldberg",
+   "country": "DE",
+   "lat": 47.87361,
+   "lon": 8.00361,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "defld",
+   "name": "Flechtdorf",
+   "country": "DE",
+   "lat": 51.3112,
+   "lon": 8.802,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "dehnr",
+   "name": "Hannover",
+   "country": "DE",
+   "lat": 52.46008,
+   "lon": 9.69453,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "deisn",
+   "name": "Isen/München",
+   "country": "DE",
+   "lat": 48.17471,
+   "lon": 12.10178,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "deasb",
+   "name": "Isle of Borkum",
+   "country": "DE",
+   "lat": 53.56413,
+   "lon": 6.74832,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "demem",
+   "name": "Memmingen",
+   "country": "DE",
+   "lat": 48.04214,
+   "lon": 10.21922,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "deneu",
+   "name": "Neuhaus",
+   "country": "DE",
+   "lat": 50.50011,
+   "lon": 11.13503,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "denhb",
+   "name": "Neuheilenbach",
+   "country": "DE",
+   "lat": 50.10966,
+   "lon": 6.54833,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "deoft",
+   "name": "Offenthal",
+   "country": "DE",
+   "lat": 49.98474,
+   "lon": 8.71293,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "depro",
+   "name": "Protzel/Berlin",
+   "country": "DE",
+   "lat": 52.64867,
+   "lon": 13.85821,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "deros",
+   "name": "Rostock",
+   "country": "DE",
+   "lat": 54.17566,
+   "lon": 12.05808,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "detur",
+   "name": "Tuerkheim",
+   "country": "DE",
+   "lat": 48.58538,
+   "lon": 9.78267,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "deumd",
+   "name": "Ummendorf",
+   "country": "DE",
+   "lat": 52.1601,
+   "lon": 11.17609,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "eehar",
+   "name": "Harku",
+   "country": "EE",
+   "lat": 59.39708,
+   "lon": 24.60213,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "eesur",
+   "name": "Sürgavere",
+   "country": "EE",
+   "lat": 58.48231,
+   "lon": 25.51866,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "esahr",
+   "name": "Alhaurin Grande",
+   "country": "ES",
+   "lat": 36.61343,
+   "lon": -4.65933,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "esatn",
+   "name": "Artenara",
+   "country": "ES",
+   "lat": 28.01879,
+   "lon": -15.61454,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "esbnv",
+   "name": "Buenavista Norte",
+   "country": "ES",
+   "lat": 28.31093,
+   "lon": -16.82384,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "esclg",
+   "name": "Castillo las Guardas",
+   "country": "ES",
+   "lat": 37.68868,
+   "lon": -6.33308,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "esgld",
+   "name": "Gelida",
+   "country": "ES",
+   "lat": 41.40818,
+   "lon": 1.88489,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "esnjr",
+   "name": "Nijar",
+   "country": "ES",
+   "lat": 36.83243,
+   "lon": -2.0821,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "espdg",
+   "name": "Perdiguera",
+   "country": "ES",
+   "lat": 41.73399,
+   "lon": -0.54594,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "essse",
+   "name": "SanSebastian",
+   "country": "ES",
+   "lat": 43.40333,
+   "lon": -2.84194,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "essft",
+   "name": "Sierra Fuentes",
+   "country": "ES",
+   "lat": 39.42883,
+   "lon": -6.28528,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "estjv",
+   "name": "Torrejon Velasco",
+   "country": "ES",
+   "lat": 40.17592,
+   "lon": -3.71368,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "eslid",
+   "name": "Valladolid",
+   "country": "ES",
+   "lat": 41.99556,
+   "lon": -4.60278,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frabb",
+   "name": "Abbeville",
+   "country": "FR",
+   "lat": 50.13595,
+   "lon": 1.8347,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "fraja",
+   "name": "Ajaccio",
+   "country": "FR",
+   "lat": 41.95313,
+   "lon": 8.70054,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frale",
+   "name": "Aleria",
+   "country": "FR",
+   "lat": 42.12971,
+   "lon": 9.49639,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frtro",
+   "name": "Arcis",
+   "country": "FR",
+   "lat": 48.46213,
+   "lon": 4.30932,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frave",
+   "name": "Avesnes",
+   "country": "FR",
+   "lat": 50.12832,
+   "lon": 3.81181,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frbla",
+   "name": "Blaisy",
+   "country": "FR",
+   "lat": 47.35515,
+   "lon": 4.77594,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frbol",
+   "name": "Bollene",
+   "country": "FR",
+   "lat": 44.32305,
+   "lon": 4.76221,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frbor",
+   "name": "Bordeaux",
+   "country": "FR",
+   "lat": 44.83147,
+   "lon": -0.69188,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frbou",
+   "name": "Bourges",
+   "country": "FR",
+   "lat": 47.05861,
+   "lon": 2.35955,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frcol",
+   "name": "Collobrieres",
+   "country": "FR",
+   "lat": 43.21656,
+   "lon": 6.37291,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frcae",
+   "name": "Falaise",
+   "country": "FR",
+   "lat": 48.92716,
+   "lon": -0.14955,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frgre",
+   "name": "Grezes",
+   "country": "FR",
+   "lat": 45.1044,
+   "lon": 1.36967,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frmom",
+   "name": "Momuy",
+   "country": "FR",
+   "lat": 43.62447,
+   "lon": -0.6094,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frmtc",
+   "name": "Montancy",
+   "country": "FR",
+   "lat": 47.36861,
+   "lon": 7.01897,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frmcl",
+   "name": "Montclar",
+   "country": "FR",
+   "lat": 43.9905,
+   "lon": 2.60962,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frnan",
+   "name": "Nancy",
+   "country": "FR",
+   "lat": 48.71576,
+   "lon": 6.58156,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frnim",
+   "name": "Nimes",
+   "country": "FR",
+   "lat": 43.80614,
+   "lon": 4.50269,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "fropo",
+   "name": "Opoul",
+   "country": "FR",
+   "lat": 42.91839,
+   "lon": 2.86499,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frpla",
+   "name": "Plabennec",
+   "country": "FR",
+   "lat": 48.46088,
+   "lon": -4.42983,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frlep",
+   "name": "Sembadel",
+   "country": "FR",
+   "lat": 45.28922,
+   "lon": 3.70948,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frniz",
+   "name": "StNizier",
+   "country": "FR",
+   "lat": 46.06781,
+   "lon": 4.44535,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frtou",
+   "name": "Toulouse",
+   "country": "FR",
+   "lat": 43.57432,
+   "lon": 1.3763,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frtra",
+   "name": "Trappes",
+   "country": "FR",
+   "lat": 48.77457,
+   "lon": 2.00831,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "frtre",
+   "name": "Treillieres",
+   "country": "FR",
+   "lat": 47.33741,
+   "lon": -1.65632,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukcas",
+   "name": "Castor Bay",
+   "country": "GB",
+   "lat": 54.502,
+   "lon": -6.3429,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukche",
+   "name": "Chenies",
+   "country": "GB",
+   "lat": 51.6895,
+   "lon": -0.5302,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukcle",
+   "name": "Clee Hill",
+   "country": "GB",
+   "lat": 52.3986,
+   "lon": -2.5954,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukcob",
+   "name": "Cobbacombe Cross",
+   "country": "GB",
+   "lat": 50.9639,
+   "lon": -3.4521,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukcyg",
+   "name": "Crug y Gorllwyn",
+   "country": "GB",
+   "lat": 51.9798,
+   "lon": -4.4446,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukdea",
+   "name": "Dean Hill",
+   "country": "GB",
+   "lat": 51.0307,
+   "lon": -1.6534,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "uklew",
+   "name": "Druim A'Starraig",
+   "country": "GB",
+   "lat": 58.2117,
+   "lon": -6.1821,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukham",
+   "name": "Hameldon Hill",
+   "country": "GB",
+   "lat": 53.7548,
+   "lon": -2.2892,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukhmy",
+   "name": "High Moorsley",
+   "country": "GB",
+   "lat": 54.8034,
+   "lon": -1.4746,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukdud",
+   "name": "Hill Of Dudwick",
+   "country": "GB",
+   "lat": 57.4304,
+   "lon": -2.0367,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukhhd",
+   "name": "Holehead",
+   "country": "GB",
+   "lat": 56.018,
+   "lon": -4.2171,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "uking",
+   "name": "Ingham",
+   "country": "GB",
+   "lat": 53.3347,
+   "lon": -0.5594,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukjer",
+   "name": "Jersey",
+   "country": "GB",
+   "lat": 49.1772,
+   "lon": -2.2239,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukmun",
+   "name": "Munduff Hill",
+   "country": "GB",
+   "lat": 56.2148,
+   "lon": -3.3118,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukpre",
+   "name": "Predannack",
+   "country": "GB",
+   "lat": 50.0034,
+   "lon": -5.223,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ukthu",
+   "name": "Thurnham",
+   "country": "GB",
+   "lat": 51.2948,
+   "lon": 0.6043,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "hrbil",
+   "name": "Bilogora",
+   "country": "HR",
+   "lat": 45.88353,
+   "lon": 17.20046,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "hrdeb",
+   "name": "Debeljak",
+   "country": "HR",
+   "lat": 44.04516,
+   "lon": 15.37637,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "hrgol",
+   "name": "Goli",
+   "country": "HR",
+   "lat": 45.02048,
+   "lon": 14.12234,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "hrgra",
+   "name": "Gradiste",
+   "country": "HR",
+   "lat": 45.15917,
+   "lon": 18.70333,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "hrpun",
+   "name": "Puntijarka",
+   "country": "HR",
+   "lat": 45.90781,
+   "lon": 15.96838,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "hrulj",
+   "name": "Uljenje",
+   "country": "HR",
+   "lat": 42.89439,
+   "lon": 17.47829,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "hubud",
+   "name": "Budapest",
+   "country": "HU",
+   "lat": 47.4294,
+   "lon": 19.1817,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "huhar",
+   "name": "Harmashegy",
+   "country": "HU",
+   "lat": 46.1775,
+   "lon": 18.3372,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "hunap",
+   "name": "Napkor",
+   "country": "HU",
+   "lat": 47.9622,
+   "lon": 21.8867,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "hupog",
+   "name": "Poganyvar",
+   "country": "HU",
+   "lat": 46.6604,
+   "lon": 17.0624,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "husze",
+   "name": "Szentes",
+   "country": "HU",
+   "lat": 46.6397,
+   "lon": 20.4325,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "iedub",
+   "name": "Dublin",
+   "country": "IE",
+   "lat": 53.4299,
+   "lon": -6.2443,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "iesha",
+   "name": "Shannon",
+   "country": "IE",
+   "lat": 52.69279,
+   "lon": -8.91999,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "isbjo",
+   "name": "Bjolfur",
+   "country": "IS",
+   "lat": 65.26588,
+   "lon": -14.0618,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "iskef",
+   "name": "Keflavik",
+   "country": "IS",
+   "lat": 64.02569,
+   "lon": -22.63536,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "isska",
+   "name": "Skagi",
+   "country": "IS",
+   "lat": 66.05573,
+   "lon": -20.26798,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ltlau",
+   "name": "Laukuva",
+   "country": "LT",
+   "lat": 55.60904,
+   "lon": 22.2395,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ltvil",
+   "name": "Vilnius",
+   "country": "LT",
+   "lat": 54.62622,
+   "lon": 25.10678,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "mtgud",
+   "name": "Gudja",
+   "country": "MT",
+   "lat": 35.85278,
+   "lon": 14.47472,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "nldhl",
+   "name": "Den Helder",
+   "country": "NL",
+   "lat": 52.95279,
+   "lon": 4.79061,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "nlhrw",
+   "name": "Herwijnen",
+   "country": "NL",
+   "lat": 51.8369,
+   "lon": 5.1381,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "plbrz",
+   "name": "Brzuchania",
+   "country": "PL",
+   "lat": 50.39417,
+   "lon": 20.08323,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "plgdy",
+   "name": "Gdynia",
+   "country": "PL",
+   "lat": 54.50092,
+   "lon": 18.27184,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "plgsa",
+   "name": "Gora Sw Anny",
+   "country": "PL",
+   "lat": 50.46386,
+   "lon": 18.15321,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "plleg",
+   "name": "Legionowo",
+   "country": "PL",
+   "lat": 52.40525,
+   "lon": 20.96111,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "plpas",
+   "name": "Pastewnik",
+   "country": "PL",
+   "lat": 50.89246,
+   "lon": 16.03949,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "plpoz",
+   "name": "Poznan",
+   "country": "PL",
+   "lat": 52.41325,
+   "lon": 16.79699,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "plram",
+   "name": "Ramza",
+   "country": "PL",
+   "lat": 50.15133,
+   "lon": 18.72509,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "plrze",
+   "name": "Rzeszow",
+   "country": "PL",
+   "lat": 50.11406,
+   "lon": 22.037,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "plswi",
+   "name": "Swidwin",
+   "country": "PL",
+   "lat": 53.79579,
+   "lon": 15.83683,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "pluzr",
+   "name": "Uzranki",
+   "country": "PL",
+   "lat": 53.85573,
+   "lon": 21.41233,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ptprt",
+   "name": "Arouca/Pico do Gralheiro",
+   "country": "PT",
+   "lat": 40.845,
+   "lon": -8.2797,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ptlis",
+   "name": "Coruche/Cruz do Leão",
+   "country": "PT",
+   "lat": 39.0714,
+   "lon": -8.4001,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ptflr",
+   "name": "Flores/Morro Alto",
+   "country": "PT",
+   "lat": 39.4634,
+   "lon": -31.22,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ptfar",
+   "name": "Loulé/Cavalos do Caldeirão",
+   "country": "PT",
+   "lat": 37.3041,
+   "lon": -7.953,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "ptsmg",
+   "name": "São Miguel/Pico Santos de Cima",
+   "country": "PT",
+   "lat": 37.81913,
+   "lon": -25.75158,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "pttrc",
+   "name": "Terceira/Santa Barbara",
+   "country": "PT",
+   "lat": 38.7302,
+   "lon": -27.3208,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "robar",
+   "name": "Barnova",
+   "country": "RO",
+   "lat": 47.01184,
+   "lon": 27.58255,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "robob",
+   "name": "Bobohalma",
+   "country": "RO",
+   "lat": 46.36022,
+   "lon": 24.22523,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "robuc",
+   "name": "Bucuresti",
+   "country": "RO",
+   "lat": 44.51267,
+   "lon": 26.07735,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "rocra",
+   "name": "Craiova",
+   "country": "RO",
+   "lat": 44.31029,
+   "lon": 23.86743,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "romed",
+   "name": "Medgidia",
+   "country": "RO",
+   "lat": 44.24336,
+   "lon": 28.25059,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "roora",
+   "name": "Oradea",
+   "country": "RO",
+   "lat": 47.09218,
+   "lon": 21.94289,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "rotim",
+   "name": "Timisoara",
+   "country": "RO",
+   "lat": 45.77174,
+   "lon": 21.25773,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "silis",
+   "name": "Lisca",
+   "country": "SI",
+   "lat": 46.068,
+   "lon": 15.285,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "sipas",
+   "name": "Pasja ravan",
+   "country": "SI",
+   "lat": 46.098,
+   "lon": 14.2283,
+   "source": "EUMETNET OPERA database",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "skkoj",
+   "name": "Kojsovska hola",
+   "country": "SK",
+   "lat": 48.78273,
+   "lon": 20.98733,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "skkub",
+   "name": "Kubinska hola",
+   "country": "SK",
+   "lat": 49.27167,
+   "lon": 19.24935,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "skjav",
+   "name": "Maly Javornik",
+   "country": "SK",
+   "lat": 48.25564,
+   "lon": 17.15238,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  },
+  {
+   "id": "sklaz",
+   "name": "Spani laz",
+   "country": "SK",
+   "lat": 48.24041,
+   "lon": 19.25732,
+   "source": "EUMETNET ORD",
+   "retrieved": "2026-09-14"
+  }
+ ]
+}

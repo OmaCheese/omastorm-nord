@@ -23,9 +23,11 @@ for _ in {1..100}; do call status > /dev/null 2>&1 && break; sleep .1; done
 call status > /dev/null || fail "The window's picker IPC never answered"
 call open ""
 for _ in {1..50}; do [[ $(call matches) != '[]' ]] && break; sleep .1; done
-# Vara first, then the next-nearest SMHI sites (Åtvidaberg, Ängelholm, …).
+# The composites first (S17), then Vara and the next-nearest SMHI sites (Åtvidaberg, Ängelholm, …).
 m=$(call matches)
-[[ $m == '["vara","atvidaberg",'* || $m == '["vara","angelholm",'* ]] || fail "Empty query did not list the nearest stations first: $m"
+[[ $m == '["sweden",'* ]] || fail "Empty query did not list the composite first: $m"
+m=$(jq -c 'map(select(. != "sweden" and . != "nordic"))' <<< "$m")
+[[ $m == '["vara","atvidaberg"'* || $m == '["vara","angelholm"'* ]] || fail "Empty query did not list the nearest stations after the composites: $m"
 # 13: the 12 radars and the national composite (protocol v2, S8).
 expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":13,"focused":true}' "$(call status)"
 call open vara

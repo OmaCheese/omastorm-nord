@@ -352,11 +352,22 @@ QtObject {
             engine.send({type: "select_site", id: id});
     }
 
+    // Whether the engine's station is the one `id` names. A configured or
+    // remembered lock may be an alias or another case (`sevax` is Vara,
+    // DEC-12); the engine answers with the canonical id, so a plain compare
+    // would re-send select_site on every navigation.
+    function isStation(id) {
+        var current = engine.state.site.id, want = String(id).toLowerCase();
+        if (id === current) return true;
+        var s = engine.sites.find(s => s.id === current);
+        return !!s && (s.id.toLowerCase() === want || (s.aliases || []).some(a => a.toLowerCase() === want));
+    }
+
     function applyRadar() {
         if (!engine.state || !ready) return;
         if (needsLocation) return;
         if (lockWanted && lockId) {
-            if (engine.state.site.id !== lockId || engine.state.source !== "live")
+            if (!isStation(lockId) || engine.state.source !== "live")
                 engine.send({type: "select_site", id: lockId});
             if (!engine.state.site.locked) engine.send({type: "lock", enabled: true});
             if (!engine.state.site.follow) engine.send({type: "follow", enabled: true});

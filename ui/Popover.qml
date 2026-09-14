@@ -247,7 +247,11 @@ FocusScope {
             font.pixelSize: 8
             opacity: .5
             elide: Text.ElideRight
-            text: map.osmOnScreen ? "SMHI CC BY 4.0 · © OpenStreetMap" : "SMHI CC BY 4.0 · Natural Earth"
+            // The frame's own credit, verbatim (docs/protocol.md,
+            // frame.attribution), then the basemap's.
+            readonly property string radarCredit: card.scan && card.scan.attribution ? card.scan.attribution
+                : connection.site && connection.site.attribution ? connection.site.attribution : ""
+            text: (radarCredit ? radarCredit + " · " : "") + (map.osmOnScreen ? "© OpenStreetMap" : "Natural Earth")
         }
     }
 }

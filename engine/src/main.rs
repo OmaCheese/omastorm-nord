@@ -1795,8 +1795,12 @@ fn handshake(dir: &Path) -> io::Result<Option<Handshake>> {
 /// reconnect within a second, while refusing it left the launch key dead
 /// after every rebuild until a manual `stop`.
 fn ready(dir: &Path) -> io::Result<bool> {
+    Ok(answering(dir)?.is_some())
+}
+/// `ready`, naming the PID of the daemon of this build that answered.
+fn answering(dir: &Path) -> io::Result<Option<u32>> {
     let Some(handshake) = handshake(dir)? else {
-        return Ok(false);
+        return Ok(None);
     };
     if handshake.v != VERSION || handshake.build != build_id() {
         terminate(dir, handshake.pid)?;
@@ -1804,9 +1808,9 @@ fn ready(dir: &Path) -> io::Result<bool> {
             "Stopped engine of another build (PID {}); starting this build.",
             handshake.pid
         );
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(true)
+    Ok(Some(handshake.pid))
 }
 /// Whether no daemon holds `engine.lock`. Taking the lock briefly here is
 /// harmless: only `serve` keeps it, and a `serve` racing us simply waits.
@@ -1881,7 +1885,15 @@ fn ensure(dir: PathBuf) -> io::Result<()> {
     // launch rather than a killed daemon.
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        if ready(&dir)? {
+        if let Some(pid) = answering(&dir)? {
+            // Another daemon answered while ours was still starting: a
+            // concurrent launcher, or one already running whose first hello
+            // was slow. Ours would take the lock once that one exits and
+            // then serve forever on a socket nobody finds, so end it now.
+            if pid != child.id() && child.try_wait()?.is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             return Ok(());
         }
         // A concurrent launcher may have won the lock. If a later probe

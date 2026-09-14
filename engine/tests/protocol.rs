@@ -645,6 +645,19 @@ fn launcher_retries_a_slow_hello_within_its_startup_budget() {
         "{}",
         String::from_utf8_lossy(&started.stderr)
     );
+    // ensure spawned a serve child before the slow hello arrived. Another
+    // daemon answered, so that child must be gone: left running, it takes
+    // the lock as soon as the test lets go and serves on an unlinked socket.
+    drop(lock);
+    thread::sleep(Duration::from_millis(500));
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("engine.lock"))
+        .unwrap();
+    assert!(
+        lock.try_lock().is_ok(),
+        "a serve child outlived ensure and took the lock"
+    );
     drop(lock);
     fs::remove_dir_all(root).unwrap();
 }

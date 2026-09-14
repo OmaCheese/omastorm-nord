@@ -29,6 +29,7 @@
 //!   `composite.rs` decodes its files into a `Scan::Grid`.
 
 use crate::composite::Grid;
+use crate::products::Want;
 use crate::sweep::Sweep;
 use chrono::{DateTime, NaiveDateTime};
 use reqwest::header::{
@@ -117,8 +118,26 @@ pub const DEC2: RangePlan = RangePlan {
     max_requests: MAX_REQUESTS,
     max_bytes: MAX_BYTES,
 };
+/// The plan for a product other than the lowest scan (S20), which reads
+/// DBZH from several tilts spread through the 15 MB volume (all ten for a
+/// pseudo-CAPPI or the column maximum). Measured offline on the whole Vara
+/// volume of 2026-09-13 (`products::tests::range_cost_per_product`): 4 KiB
+/// blocks take 99 requests and 672 KB, 16 KiB blocks 40 requests and
+/// 786 KB, 64 KiB blocks 18 requests and 1.25 MB; one other angle takes 25
+/// requests and 475 KB at 16 KiB. DEC-2's budget of 64 requests stops the
+/// first at the second tilt.
+pub const PRODUCT_PLAN: RangePlan = RangePlan {
+    prefetch: PREFETCH,
+    block: 16 * 1024,
+    max_requests: 96,
+    max_bytes: MAX_BYTES,
+};
 /// Decode failures of one volume before the poller stops retrying it.
 const GIVE_UP_AFTER: u32 = 2;
+/// Volumes in a row that do not decode before a backfill stops (S20): a
+/// failure that repeats is the reader's or the product's, not the volume's,
+/// and every further try would cost a whole read.
+const BACKFILL_GIVE_UP: u32 = 2;
 /// A prefetch answered `bytes 0-65535/*` (SMHI's cache still fetching the
 /// volume) is asked again after this pause, then twice and four times it...
 const LENGTH_PAUSE: Duration = Duration::from_secs(1);
@@ -156,19 +175,22 @@ fn live_log(site: &str, message: impl fmt::Display) {
 pub enum Scan {
     Polar(Sweep),
     Grid(Grid),
+    /// A radar's product other than its lowest scan (S20, `products.rs`):
+    /// one other angle, or one drawn on the lowest scan's rays and gates.
+    Product(Sweep, Want),
 }
 
 impl Scan {
     /// The frame's start: the first radial, or the composite's nominal time.
     pub fn start_ms(&self) -> i64 {
         match self {
-            Scan::Polar(sweep) => sweep.start_ms,
+            Scan::Polar(sweep) | Scan::Product(sweep, _) => sweep.start_ms,
             Scan::Grid(grid) => grid.start_ms,
         }
     }
     pub fn end_ms(&self) -> i64 {
         match self {
-            Scan::Polar(sweep) => sweep.end_ms,
+            Scan::Polar(sweep) | Scan::Product(sweep, _) => sweep.end_ms,
             Scan::Grid(grid) => grid.end_ms,
         }
     }
@@ -176,6 +198,9 @@ impl Scan {
     pub fn describe(&self) -> String {
         match self {
             Scan::Polar(sweep) => format!("{} rays", sweep.rays.len()),
+            Scan::Product(sweep, want) => {
+                format!("{} rays of {}", sweep.rays.len(), want.variant())
+            }
             Scan::Grid(grid) => grid.describe(),
         }
     }
@@ -806,8 +831,9 @@ impl RangeSource for HttpRanges {
 }
 
 /// A file's decoder: the lowest-tilt DBZH sweep of a volume (S2, `odim.rs`)
-/// or the composite's grid (S8, `composite.rs`).
-pub type Decode = fn(RangeReader) -> Result<Scan, String>;
+/// or the composite's grid (S8, `composite.rs`); since S20 the product the
+/// poller follows (`products::Want`), which a composite ignores.
+pub type Decode = fn(RangeReader, Want) -> Result<Scan, String>;
 
 enum VolumeError {
     /// SMHI failed to answer: back off.
@@ -823,6 +849,7 @@ async fn fetch_volume(
     volume: &Volume,
     product: &str,
     decode: Decode,
+    want: Want,
     length_pause: Duration,
 ) -> Result<(Scan, String), VolumeError> {
     let permit = FETCHER
@@ -839,17 +866,24 @@ async fn fetch_volume(
     };
     let joined = spawn_blocking(move || {
         let _permit = permit;
-        let reader =
-            RangeReader::open_with(Box::new(source), length_pause).map_err(|e| e.to_string())?;
+        // The lowest scan keeps DEC-2's plan; any other product reads
+        // several tilts under `PRODUCT_PLAN` (S20).
+        let reader = if want.is_lowest() {
+            RangeReader::open_with(Box::new(source), length_pause)
+        } else {
+            RangeReader::open_planned(Box::new(source), PRODUCT_PLAN, length_pause)
+        }
+        .map_err(|e| e.to_string())?;
         let traffic = reader.traffic();
-        decode(reader).map(|sweep| (sweep, traffic))
+        decode(reader, want).map(|sweep| (sweep, traffic))
     })
     .await;
     match joined {
         Ok(Ok((sweep, traffic))) => {
             let provenance = format!(
-                "SMHI {product} {}: {} range requests, {} of {} bytes",
+                "SMHI {product} {}{}: {} range requests, {} of {} bytes",
                 volume.key,
+                crate::products::provenance_tag(want),
                 traffic.requests(),
                 traffic.bytes(),
                 traffic.total()
@@ -884,6 +918,8 @@ pub struct Config {
     pub length_pause: Duration,
     pub now_ms: fn() -> i64,
     pub decode: Decode,
+    /// The product the poller follows (S20); its backfill depth too.
+    pub want: Want,
 }
 
 impl Config {
@@ -897,30 +933,44 @@ impl Config {
             length_pause: LENGTH_PAUSE,
             now_ms,
             decode,
+            want: Want::Lowest,
         }
     }
 }
 
-/// S2's ODIM decoder over the ranged reader.
-fn decode(reader: RangeReader) -> Result<Scan, String> {
-    crate::odim::decode_lowest_dbzh(reader)
-        .map(Scan::Polar)
-        .map_err(|e| e.to_string())
+/// S2's ODIM decoder over the ranged reader: `/dataset1` for the lowest
+/// scan, the angles a product needs for any other (`products.rs`).
+fn decode(reader: RangeReader, want: Want) -> Result<Scan, String> {
+    crate::products::decode_volume(reader, want, crate::odim::Tilt::First)
+}
+
+/// The composite has no angles: every product is the composite.
+fn decode_composite(reader: RangeReader, _want: Want) -> Result<Scan, String> {
+    crate::composite::decode_scan(reader)
 }
 
 /// Poll SMHI for `site` until the task is aborted or the event channel
 /// closes (`poll_with` has the details). The composite's area gets the
-/// composite decoder, every radar the ODIM volume decoder. `skip_known` is
-/// upstream's respawn flag, kept so `main.rs` calls both pollers alike.
-/// SMHI volumes are never replayed, and catalogued ones are never fetched,
-/// so it changes nothing.
-pub async fn poll(site: String, events: Sender<Event>, cached: Vec<i64>, _skip_known: bool) {
-    let decode: Decode = if site == crate::composite::AREA {
-        crate::composite::decode_scan
+/// composite decoder, every radar the ODIM volume decoder for `want`.
+/// `skip_known` is upstream's respawn flag, kept so `main.rs` calls both
+/// pollers alike. SMHI volumes are never replayed, and catalogued ones are
+/// never fetched, so it changes nothing.
+pub async fn poll(
+    site: String,
+    events: Sender<Event>,
+    cached: Vec<i64>,
+    _skip_known: bool,
+    want: Want,
+) {
+    let cfg = if site == crate::composite::AREA {
+        Config::smhi(decode_composite)
     } else {
-        decode
+        Config {
+            want,
+            ..Config::smhi(decode)
+        }
     };
-    poll_with(Config::smhi(decode), site, events, cached).await;
+    poll_with(cfg, site, events, cached).await;
 }
 
 /// Aborts its task when dropped, so a poller that is replaced takes its
@@ -1012,7 +1062,16 @@ impl Live {
         } else if (cfg.now_ms)() - volume.valid_ms >= HORIZON_MS {
             Outcome::Handled(None)
         } else {
-            match fetch_volume(http, &volume, product(site), cfg.decode, cfg.length_pause).await {
+            match fetch_volume(
+                http,
+                &volume,
+                product(site),
+                cfg.decode,
+                cfg.want,
+                cfg.length_pause,
+            )
+            .await
+            {
                 Ok((sweep, provenance)) => {
                     self.known.push(sweep.start_ms());
                     Outcome::Handled(Some(Event::Sweep {
@@ -1251,17 +1310,29 @@ async fn backfill(
             return;
         }
     };
-    if needs_yesterday(listed.len(), BACKFILL) {
+    // The lowest scan backfills the whole ring, another product two hours.
+    let depth = cfg.want.backfill(BACKFILL);
+    if needs_yesterday(listed.len(), depth) {
         match day(live_ms - 24 * 60 * 60 * 1000).await {
             Ok(earlier) => listed.extend(earlier),
             Err(fail) => live_log(&site, format_args!("backfill listing (yesterday): {fail}")),
         }
     }
-    let targets = backfill_targets(listed, live_ms, &known, BACKFILL);
+    let targets = backfill_targets(listed, live_ms, &known, depth);
     let wanted = targets.len();
     let mut fetched = 0;
+    let mut undecoded = 0;
     for volume in targets {
-        match fetch_volume(&http, &volume, product(&site), cfg.decode, cfg.length_pause).await {
+        match fetch_volume(
+            &http,
+            &volume,
+            product(&site),
+            cfg.decode,
+            cfg.want,
+            cfg.length_pause,
+        )
+        .await
+        {
             Ok((sweep, provenance)) => {
                 let event = Event::Backfill {
                     site: site.clone(),
@@ -1282,6 +1353,16 @@ async fn backfill(
             }
             Err(VolumeError::Decode(e)) => {
                 live_log(&site, format_args!("backfill {}: {e}", volume.key));
+                undecoded += 1;
+                if undecoded >= BACKFILL_GIVE_UP {
+                    live_log(
+                        &site,
+                        format_args!(
+                            "backfill: {undecoded} volumes in a row did not decode; stopping"
+                        ),
+                    );
+                    break;
+                }
             }
         }
         sleep(cfg.backfill_pace).await;
@@ -1764,7 +1845,7 @@ mod tests {
     /// The stand-in decoder: reads the key back from the volume's first
     /// bytes, touches two blocks deeper in (as a real decode would), and
     /// reports a sweep that starts 3 s after the key's valid time.
-    fn stub_decode(mut reader: RangeReader) -> Result<Scan, String> {
+    fn stub_decode(mut reader: RangeReader, _want: Want) -> Result<Scan, String> {
         let mut head = [0u8; 64];
         reader.read_exact(&mut head).map_err(|e| e.to_string())?;
         let key = head.split(|&b| b == 0).next().unwrap();
@@ -1810,6 +1891,7 @@ mod tests {
             length_pause: Duration::ZERO,
             now_ms: recorded,
             decode: stub_decode,
+            want: Want::Lowest,
         }
     }
 

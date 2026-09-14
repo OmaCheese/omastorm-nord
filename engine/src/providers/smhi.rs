@@ -32,7 +32,13 @@ pub const SPEC: Spec = Spec {
 };
 
 /// Poll SMHI for `station`: its qcvol listing, or the composite's for
-/// `sweden`.
-pub async fn poll(station: Station, events: Sender<Event>, cached: Vec<i64>, skip_known: bool) {
-    smhi_live::poll(station.id, events, cached, skip_known).await;
+/// `sweden`, following `want` (S20).
+pub async fn poll(
+    station: Station,
+    events: Sender<Event>,
+    cached: Vec<i64>,
+    skip_known: bool,
+    want: crate::products::Want,
+) {
+    smhi_live::poll(station.id, events, cached, skip_known, want).await;
 }

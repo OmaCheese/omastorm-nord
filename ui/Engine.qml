@@ -8,6 +8,9 @@ QtObject {
     property var sites: []
     /// hello.referenceSites (S23): other radars' positions, marks only.
     property var referenceSites: []
+    /// hello.products (S20): the product vocabulary, in chooser order;
+    /// empty from an older engine, which hides the chooser.
+    property var products: []
     /// Transport and parsing trouble: disconnected, unreadable message,
     /// unknown protocol version. Cleared by the next valid state.
     property string error: ""
@@ -325,6 +328,7 @@ QtObject {
             if (message.type === "hello") {
                 sites = message.sites;
                 referenceSites = message.referenceSites || [];
+                products = message.products || [];
             }
             else if (message.type === "state") {
                 var frame = message.frame;

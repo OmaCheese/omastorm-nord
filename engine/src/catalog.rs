@@ -7,6 +7,11 @@
 //! frame's files are linked into the runtime directory under names derived
 //! from their content (`docs/protocol.md`, texture files), so a client sees
 //! one name per frame for as long as the ring holds it.
+//!
+//! Since S20 every product has a ring of its own per station, keyed by the
+//! frame id's last part (`products::Want::variant`: `e0` for the lowest
+//! scan, which every row catalogued before S20 is), and `prune` keeps a
+//! station's lowest scan and at most two other products.
 
 use crate::protocol::{Frame, FrameKind};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -169,6 +174,11 @@ impl Catalog {
              CREATE INDEX IF NOT EXISTS frames_site_time ON frames (site, start_ms);",
         )
         .map_err(sql)?;
+        // S20: no new column. A frame's product is its id's last part
+        // (`products::variant_of`), so the table keeps its shape: rows from
+        // before S20 are the lowest scan (`-e0`), an older engine sharing the
+        // catalog still writes it, and tools that insert rows positionally
+        // (scripts/check-popover.sh) still can.
         Ok(Catalog {
             conn: Mutex::new(conn),
             dir,
@@ -244,6 +254,7 @@ impl Catalog {
             )
             .optional()
             .map_err(sql)?;
+        let product = crate::products::variant_of(&frame.id);
         conn.execute(
             "INSERT OR REPLACE INTO frames (id, site, product, elevation_deg, start_ms, scan_time,
                  sweep_end, provenance, stored_ms, frame, texture, azimuth_lut)
@@ -270,19 +281,25 @@ impl Catalog {
             .into_iter()
             .filter(|p| *p != texture_path && *p != lut_path && *p != codes_path)
             .collect();
-        // The ring: everything past the newest RING for this station goes.
-        let expired: Vec<(String, String, String)> = conn
+        // The ring: everything past the newest RING of this station's
+        // product goes.
+        let rows: Vec<(String, String, String)> = conn
             .prepare(
                 "SELECT id, texture, azimuth_lut FROM frames WHERE site = ?1
-                 ORDER BY start_ms DESC, id DESC LIMIT -1 OFFSET ?2",
+                 ORDER BY start_ms DESC, id DESC",
             )
             .map_err(sql)?
-            .query_map(params![site, RING as i64], |row| {
+            .query_map(params![site], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .map_err(sql)?
             .collect::<Result<_, _>>()
             .map_err(sql)?;
+        let expired: Vec<(String, String, String)> = rows
+            .into_iter()
+            .filter(|(id, _, _)| crate::products::variant_of(id) == product)
+            .skip(RING)
+            .collect();
         for (id, texture, lut) in expired {
             conn.execute("DELETE FROM frames WHERE id = ?1", params![id])
                 .map_err(sql)?;
@@ -309,9 +326,75 @@ impl Catalog {
         })
     }
 
-    /// The station's frames, oldest first: the ring's contents, at most
-    /// `RING`, as `state.timeline` lists them, each with its record.
+    /// The station's lowest-scan frames (`list_variant` of `e0`); a frame
+    /// catalogued before S20 ends in `-e0` like every lowest scan since.
     pub fn list(&self, site: &str) -> io::Result<Vec<Entry>> {
+        self.list_variant(site, "e0")
+    }
+
+    /// Keep a station's lowest scan (`e0`) and at most `products::KEPT` other
+    /// products: `current` and the most recently stored of the rest, or,
+    /// while `current` is the lowest scan, the two most recently stored (the
+    /// product just left and the one before it). The frames and files of any
+    /// other product go. Returns the products removed.
+    pub fn prune(&self, site: &str, current: &str) -> io::Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        type Row = (String, i64, String, String);
+        let rows: Vec<Row> = conn
+            .prepare("SELECT id, stored_ms, texture, azimuth_lut FROM frames WHERE site = ?1")
+            .map_err(sql)?
+            .query_map(params![site], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .map_err(sql)?
+            .collect::<Result<_, _>>()
+            .map_err(sql)?;
+        // Each product's most recent store.
+        let mut newest: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for (id, stored, _, _) in &rows {
+            let stored = *stored;
+            let held = newest
+                .entry(crate::products::variant_of(id).to_owned())
+                .or_insert(stored);
+            *held = (*held).max(stored);
+        }
+        let mut others: Vec<(String, i64)> = newest.into_iter().collect();
+        others.retain(|(v, _)| v != "e0" && v != current);
+        others.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        // `current` takes one of the places unless it is the lowest scan,
+        // which is kept anyway (a select_site on the lowest scan must not
+        // cost the product the user just left).
+        let keep = if current == "e0" {
+            crate::products::KEPT
+        } else {
+            crate::products::KEPT - 1
+        };
+        let removed: Vec<String> = others.into_iter().skip(keep).map(|(v, _)| v).collect();
+        let mut stale = Vec::new();
+        for (id, _, texture, lut) in rows {
+            if removed
+                .iter()
+                .any(|v| v == crate::products::variant_of(&id))
+            {
+                conn.execute("DELETE FROM frames WHERE id = ?1", params![id])
+                    .map_err(sql)?;
+                stale.extend(with_codes(texture, lut));
+            }
+        }
+        for path in stale {
+            match fs::remove_file(self.dir.join(path)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(removed)
+    }
+
+    /// The station's frames of one product, oldest first: the ring's
+    /// contents, at most `RING`, as `state.timeline` lists them, each with
+    /// its record.
+    pub fn list_variant(&self, site: &str, variant: &str) -> io::Result<Vec<Entry>> {
         type Row = (String, String, i64, String, String, String);
         let rows: Vec<Row> = self
             .conn
@@ -319,10 +402,10 @@ impl Catalog {
             .unwrap()
             .prepare(
                 "SELECT id, scan_time, start_ms, frame, texture, azimuth_lut FROM frames
-                 WHERE site = ?1 ORDER BY start_ms DESC, id DESC LIMIT ?2",
+                 WHERE site = ?1 ORDER BY start_ms DESC, id DESC",
             )
             .map_err(sql)?
-            .query_map(params![site, RING as i64], |row| {
+            .query_map(params![site], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -337,6 +420,8 @@ impl Catalog {
             .map_err(sql)?;
         let mut entries: Vec<Entry> = rows
             .into_iter()
+            .filter(|(id, ..)| crate::products::variant_of(id) == variant)
+            .take(RING)
             .map(|(id, scan_time, start_ms, frame, texture, lut)| {
                 let record = match serde_json::from_str::<Frame>(&frame) {
                     Ok(frame) => Some(Record {
@@ -657,6 +742,87 @@ mod tests {
             tag,
             "stable while the file is unchanged"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// S20: each product has its own ring, a pre-S20 catalog's rows are the
+    /// lowest scan, and pruning keeps the lowest scan, the current product
+    /// and the one before.
+    #[test]
+    fn products_have_rings_of_their_own_and_old_ones_are_pruned() {
+        let dir = scratch("products");
+        // A catalog from before S20: no variant column.
+        {
+            let conn = Connection::open({
+                fs::create_dir_all(&dir).unwrap();
+                dir.join("catalog.sqlite")
+            })
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TABLE frames (id TEXT PRIMARY KEY, site TEXT NOT NULL, product TEXT NOT NULL,
+                 elevation_deg REAL NOT NULL, start_ms INTEGER NOT NULL, scan_time TEXT NOT NULL,
+                 sweep_end TEXT NOT NULL, provenance TEXT NOT NULL, stored_ms INTEGER NOT NULL,
+                 frame TEXT NOT NULL, texture TEXT NOT NULL, azimuth_lut TEXT NOT NULL);",
+            )
+            .unwrap();
+            let f = frame("vara", 1);
+            conn.execute(
+                "INSERT INTO frames VALUES (?1, 'vara', 'REF', 0.5, 1, ?2, ?3, 'old', 1, ?4, 'vara/x-sweep.png', 'vara/x-azlut.png')",
+                params![f.id, f.scan_time, f.sweep_end, serde_json::to_string(&f).unwrap()],
+            )
+            .unwrap();
+        }
+        let catalog = Catalog::open(dir.clone()).unwrap();
+        assert_eq!(
+            catalog.list("vara").unwrap().len(),
+            1,
+            "the old row is the lowest scan"
+        );
+        let product = |variant: &str, minute: u32| {
+            let mut f = frame("vara", minute);
+            f.id = f.id.replace("-e0", &format!("-{variant}"));
+            f
+        };
+        let mut stamp = 10;
+        for variant in ["cappi1", "cmax", "a40"] {
+            for minute in 0..(RING as u32 + 2) {
+                stamp += 1;
+                catalog
+                    .store(
+                        "vara",
+                        &product(variant, minute),
+                        i64::from(minute),
+                        &[stamp as u8, 1],
+                        &[2],
+                        "p",
+                    )
+                    .unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(3));
+        }
+        for variant in ["cappi1", "cmax", "a40"] {
+            let listed = catalog.list_variant("vara", variant).unwrap();
+            assert_eq!(listed.len(), RING, "{variant}: its own ring");
+            assert!(listed.iter().all(|e| e.id.ends_with(variant)));
+        }
+        assert_eq!(
+            catalog.list("vara").unwrap().len(),
+            1,
+            "the lowest scan untouched"
+        );
+        // Choosing CMAX again: the lowest scan, cmax and the most recent
+        // other (a40) stay; cappi1 goes, files and all.
+        let before = files(&dir.join("vara")).len();
+        assert_eq!(catalog.prune("vara", "cmax").unwrap(), ["cappi1"]);
+        assert!(catalog.list_variant("vara", "cappi1").unwrap().is_empty());
+        assert_eq!(catalog.list_variant("vara", "cmax").unwrap().len(), RING);
+        assert_eq!(catalog.list_variant("vara", "a40").unwrap().len(), RING);
+        assert_eq!(files(&dir.join("vara")).len(), before - 2 * RING);
+        // Back to the lowest scan: both other products stay.
+        assert!(catalog.prune("vara", "e0").unwrap().is_empty());
+        assert_eq!(catalog.list_variant("vara", "a40").unwrap().len(), RING);
+        assert_eq!(catalog.list_variant("vara", "cmax").unwrap().len(), RING);
+        assert_eq!(catalog.list("vara").unwrap().len(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 }

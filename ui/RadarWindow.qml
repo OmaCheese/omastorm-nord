@@ -240,6 +240,32 @@ Item {
     }
     Component.onCompleted: applySettings()
     readonly property bool overlayOpen: picker.open || locationPicker.open || sheet.open
+    // The product chooser (S20, docs/protocol.md products): the selected
+    // radar's products (hello.sites[].products, named by hello.products),
+    // then its angles with the beam centre's height at 50 and 100 km. Empty
+    // for a composite, an archive, or an engine older than S20, which hides
+    // the chip. The choice is the engine's, shared with every client.
+    readonly property var productRows: {
+        var st = engine.state;
+        var site = engine.sites.find(s => s.id === app.siteId);
+        if (!st || !st.product || st.source !== "live" || !site || site.kind === "grid" || !(site.products || []).length || !engine.products.length) return [];
+        var names = {};
+        for (var p of engine.products) names[p.id] = p.name;
+        var rows = site.products.map(id => ({product: id, index: 0, label: (names[id] || id).toUpperCase(), note: ""}));
+        if (site.products.indexOf("REF") >= 0)
+            (site.elevations || []).forEach((e, i) => { if (i > 0) rows.push({product: "REF", index: i, label: e.deg.toFixed(1) + "°", note: e.beamKm50 + " / " + e.beamKm100 + " KM"}); });
+        return rows;
+    }
+    readonly property string productLabel: {
+        var st = engine.state;
+        if (!st || !st.product) return "";
+        var row = productRows.find(r => r.product === st.product.id && r.index === st.product.elevationIndex);
+        return row ? row.label : st.product.id;
+    }
+    function chooseProduct(row) {
+        productMenu.close();
+        engine.send({type: "set_product", product: row.product, elevationIndex: row.index});
+    }
     function run(action) {
         switch (action) {
         case "search": treatmentMenu.close(); picker.show(""); break;
@@ -272,6 +298,8 @@ Item {
         function bindings(): string { return JSON.stringify(app.bindings); }
         function errors(): string { return JSON.stringify(app.configErrors); }
         function menu(open: bool): void { if (open) treatmentMenu.show(); else treatmentMenu.close(); }
+        function productChooser(open: bool): void { if (open) productMenu.show(); else productMenu.close(); }
+        function products(): string { return JSON.stringify({label: app.productLabel, rows: app.productRows, menu: productMenu.opened}); }
         function field(name: string): string { var value = JSON.parse(status())[name]; return value === undefined ? "" : String(value); }
         function status(): string {
             return JSON.stringify({sheet: sheet.open, menu: treatmentMenu.opened, treatment: app.treatment, weakFloor: app.weakFloor === null ? "off" : app.weakFloor, error: app.configError,
@@ -636,7 +664,9 @@ Item {
                         spacing: 8
                         visible: !!app.scan
                         LabelText {
-                            text: !app.scan ? "" : app.scan.productName.toUpperCase() + (app.scan.scanTime ? " / " + (app.scan.kind === "grid" ? "COMPOSITE" : app.scan.elevationDeg.toFixed(1) + "°") : "")
+                            // An angle only for one scan angle (REF, S20); a
+                            // product built from several has none to show.
+                            text: !app.scan ? "" : app.scan.productName.toUpperCase() + (!app.scan.scanTime ? "" : app.scan.kind === "grid" ? " / COMPOSITE" : (app.scan.product || "REF") === "REF" ? " / " + app.scan.elevationDeg.toFixed(1) + "°" : "")
                         }
                         // The source's credit, verbatim (SMHI, MET Norway, FMI, DMI, OPERA).
                         LabelText {
@@ -1011,6 +1041,30 @@ Item {
                 }
                 Item { width: 6 }
                 Item { Layout.fillWidth: true }
+                // The product chip (S20): the engine's product for a live
+                // radar; click opens the station's products and angles.
+                Button {
+                    id: productChip
+                    visible: app.productRows.length > 0
+                    implicitHeight: 30
+                    implicitWidth: contentItem.implicitWidth + 18
+                    padding: 0
+                    opacity: productMenu.opened || hovered || activeFocus ? 1 : .7
+                    onClicked: productMenu.opened ? productMenu.close() : productMenu.show()
+                    contentItem: RowLayout {
+                        spacing: 6
+                        Item { Layout.fillWidth: true }
+                        LabelText { text: app.productLabel }
+                        Glyph { glyph: "chevron"; implicitWidth: 12 }
+                        Item { Layout.fillWidth: true }
+                    }
+                    background: Rectangle {
+                        color: productMenu.opened || productChip.hovered || productChip.activeFocus ? Qt.alpha(app.theme.accent, .18) : "transparent"
+                        border.width: 1
+                        border.color: productMenu.opened || productChip.activeFocus ? app.theme.accent : Qt.alpha(app.theme.foreground, .22)
+                    }
+                }
+                Item { width: 6; visible: productChip.visible }
                 // The treatment chip (DESIGN.md, treatment control): one
                 // low-emphasis control naming the treatment; click opens the
                 // three in the picker's row style above it, 1 2 3 choose.
@@ -1135,6 +1189,78 @@ Item {
                                 }
                             }
                             MouseArea { id: rowArea; anchors.fill: parent; hoverEnabled: true; onClicked: app.run(treatmentRow.modelData.toLowerCase()) }
+                        }
+                    }
+                }
+            }
+          }
+          // The product menu (S20), like the treatment menu: a card above
+          // the product chip, the current and the hovered row in accent; a
+          // click outside or Escape closes it, Up, Down and Return choose.
+          Item {
+            id: productMenu
+            anchors.fill: parent
+            property bool opened: false
+            property int cursor: -1
+            visible: opened && app.productRows.length > 0
+            focus: opened
+            function show() { cursor = -1; opened = true; forceActiveFocus(); }
+            function close() { opened = false; }
+            Keys.onPressed: event => {
+                if (!opened) return;
+                event.accepted = true;
+                var n = app.productRows.length;
+                if (event.key === Qt.Key_Escape) close();
+                else if (event.key === Qt.Key_Up) cursor = Math.max(0, (cursor < 0 ? 0 : cursor) - 1);
+                else if (event.key === Qt.Key_Down) cursor = Math.min(n - 1, cursor + 1);
+                else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && cursor >= 0 && cursor < n) app.chooseProduct(app.productRows[cursor]);
+                else event.accepted = false;
+            }
+            MouseArea { anchors.fill: parent; onClicked: productMenu.close() }
+            Rectangle {
+                readonly property point anchor: productMenu.opened ? productChip.mapToItem(productMenu, productChip.width, 0) : Qt.point(0, 0)
+                x: Math.max(4, Math.round(anchor.x - width))
+                y: Math.max(4, Math.round(anchor.y - height - 6))
+                width: 196
+                height: productRowsColumn.implicitHeight + 12
+                color: Qt.alpha(app.theme.background, .95)
+                border.width: 1
+                border.color: app.theme.foreground
+                MouseArea { anchors.fill: parent } // a click on the card stays on the card
+                ColumnLayout {
+                    id: productRowsColumn
+                    anchors.fill: parent
+                    anchors.margins: 6
+                    spacing: 0
+                    Repeater {
+                        model: app.productRows
+                        Rectangle {
+                            id: productRow
+                            required property var modelData
+                            required property int index
+                            readonly property var st: engine.state
+                            readonly property bool current: !!st && !!st.product && st.product.id === modelData.product && st.product.elevationIndex === modelData.index
+                            readonly property bool hot: productArea.containsMouse || productMenu.cursor === index
+                            readonly property color ink: current || hot ? app.theme.accent : app.theme.foreground
+                            // The first angle row opens the advanced part.
+                            readonly property bool firstAngle: modelData.note !== "" && (index === 0 || app.productRows[index - 1].note === "")
+                            Layout.fillWidth: true
+                            implicitHeight: 24 + (firstAngle ? 18 : 0)
+                            color: hot ? Qt.alpha(app.theme.foreground, .08) : "transparent"
+                            LabelText {
+                                visible: productRow.firstAngle
+                                anchors.left: parent.left; anchors.leftMargin: 10; anchors.top: parent.top; anchors.topMargin: 4
+                                text: "SCAN ANGLE · BEAM 50 / 100 KM"; font.pixelSize: 9; opacity: .55
+                            }
+                            RowLayout {
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                                height: 24
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                LabelText { text: productRow.modelData.label; color: productRow.ink; Layout.fillWidth: true }
+                                LabelText { text: productRow.modelData.note; color: productRow.ink; font.pixelSize: 10; opacity: .6 }
+                            }
+                            MouseArea { id: productArea; anchors.fill: parent; hoverEnabled: true; onClicked: app.chooseProduct(productRow.modelData) }
                         }
                     }
                 }

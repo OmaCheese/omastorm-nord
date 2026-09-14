@@ -106,12 +106,19 @@ pub fn spec(id: ProviderId) -> &'static Spec {
 
 /// Poll `station` until the task is aborted or the event channel closes.
 /// `cached` holds the start times already catalogued for it; `skip_known`
-/// is set on a respawn.
-pub async fn poll(station: Station, events: Sender<Event>, cached: Vec<i64>, skip_known: bool) {
+/// is set on a respawn. `want` is the product a radar's poller follows
+/// (S20, `products.rs`); a composite has only itself.
+pub async fn poll(
+    station: Station,
+    events: Sender<Event>,
+    cached: Vec<i64>,
+    skip_known: bool,
+    want: crate::products::Want,
+) {
     match station.provider {
-        ProviderId::Smhi => smhi::poll(station, events, cached, skip_known).await,
+        ProviderId::Smhi => smhi::poll(station, events, cached, skip_known, want).await,
         ProviderId::Opera => opera::poll(station, events, cached, skip_known).await,
-        ProviderId::Ord => ord::poll(station, events, cached, skip_known).await,
+        ProviderId::Ord => ord::poll(station, events, cached, skip_known, want).await,
     }
 }
 

@@ -3,6 +3,8 @@ mod composite;
 mod netstats;
 mod odim;
 mod osm;
+mod products;
+use products::Want;
 mod protocol;
 mod providers;
 mod reference;
@@ -126,7 +128,8 @@ fn hello() -> Hello {
         engine: env!("CARGO_PKG_VERSION"),
         pid: std::process::id(),
         build: build_id().to_owned(),
-        sites: table.sites,
+        products: &products::VOCABULARY,
+        sites: table.sites.into_iter().map(products::site_entry).collect(),
         sites_source: table.source,
         sites_retrieved: table.retrieved,
         sites_notes: table.notes,
@@ -371,13 +374,31 @@ fn known_sweep_clears_loading(status: ConnectionStatus) -> bool {
 /// A live station's frame from an assembled sweep: the fixture frame's
 /// product, palette, and bounds (the engine's reflectivity vocabulary), the
 /// sweep's geometry and times, and the station table's coordinates. Texture
-/// paths are filled in by `publish_frame`.
-fn live_frame(template: &Frame, station: &Station, sweep: &sweep::Sweep, complete: bool) -> Frame {
+/// paths are filled in by `publish_frame`. A product other than the lowest
+/// scan names itself and ends the id in its variant (S20).
+fn live_frame(
+    template: &Frame,
+    station: &Station,
+    sweep: &sweep::Sweep,
+    complete: bool,
+    want: Want,
+) -> Frame {
+    let (product, product_name) = if want.is_lowest() {
+        (template.product.clone(), template.product_name.clone())
+    } else {
+        let (id, name) = want.product();
+        (id.to_owned(), name.to_owned())
+    };
     Frame {
-        id: format!("{}-{}-e0", station.id, compact(sweep.start_ms)),
+        id: format!(
+            "{}-{}-{}",
+            station.id,
+            compact(sweep.start_ms),
+            want.variant()
+        ),
         kind: FrameKind::Polar,
-        product: template.product.clone(),
-        product_name: template.product_name.clone(),
+        product,
+        product_name,
         units: template.units.clone(),
         elevation_deg: (sweep.elevation_deg() * 100.0).round() / 100.0,
         scan_time: iso(sweep.start_ms),
@@ -569,6 +590,7 @@ fn initial_state(
             osm,
         },
         playing: false,
+        product: products::Choice::default(),
     }
 }
 fn line(message: &Message) -> String {
@@ -627,6 +649,9 @@ struct Shared {
     last_broadcast: String,
     /// The selected station and its condition as engine.log last said.
     logged_condition: Option<(String, ConnectionStatus)>,
+    /// The angle `state.product` names in degrees, when it is one angle,
+    /// so a switch (through a composite, too) keeps the nearest (S20).
+    product_deg: Option<f64>,
 }
 impl Shared {
     fn snapshot(&mut self) -> String {
@@ -757,13 +782,146 @@ impl Shared {
                 id: site.clone(),
                 ..Station::default()
             });
+        let want = self.want();
         self.live = Some(tokio::spawn(providers::poll(
             station,
             self.events.clone(),
             cached,
             skip_known,
+            want,
         )));
         self.last_live_restart = Instant::now();
+    }
+    /// The product the selected station's poller follows and its timeline
+    /// shows: `state.product` where the station makes it, else (a
+    /// composite) the lowest scan.
+    fn want(&self) -> Want {
+        self.sites
+            .iter()
+            .find(|s| s.id == self.state.site.id)
+            .and_then(|s| products::want_for(s, &self.state.product))
+            .unwrap_or(Want::Lowest)
+    }
+    /// Open `station`'s catalogued `want` (S20: one ring per product): the
+    /// ring is published and becomes the timeline, and its newest frame, or
+    /// the loading placeholder, shows. Pruning first keeps the station's
+    /// lowest scan and at most two other products.
+    fn open_catalog(&mut self, station: &Station, want: Want) -> Result<(), String> {
+        let variant = want.variant();
+        if let Err(e) = self.catalog.prune(&station.id, &variant) {
+            eprintln!("Frame catalog: {e}");
+        }
+        let listed = self
+            .catalog
+            .list_variant(&station.id, &variant)
+            .unwrap_or_else(|e| {
+                eprintln!("Frame catalog: {e}");
+                Vec::new()
+            });
+        // The whole ring is published under stable names, so a client can
+        // fetch any frame of the loop without a seek.
+        for entry in &listed {
+            self.link(entry);
+        }
+        let shown = match listed.iter().rev().find(|e| e.record.is_some()) {
+            Some(newest) => self.show_entry(newest).map(|()| Some(newest.start_ms)),
+            None => {
+                let mut frame = empty_frame(&self.template, station);
+                if station.kind == SiteKind::Polar && !want.is_lowest() {
+                    let (id, name) = want.product();
+                    (frame.product, frame.product_name) = (id.to_owned(), name.to_owned());
+                }
+                blank_textures(&frame)
+                    .and_then(|(texture, lut)| self.show(frame, &texture, &lut))
+                    .map(|()| None)
+            }
+        };
+        self.frame_ms = match shown {
+            Ok(frame_ms) => frame_ms,
+            Err(e) => {
+                eprintln!("Publishing the frame for {}: {e}", station.id);
+                return Err(format!("Could not publish a frame for {}.", station.id));
+            }
+        };
+        self.timeline = Timeline::new(listed);
+        self.pending = None;
+        self.state.playing = false;
+        Ok(())
+    }
+    /// `set_product` (S20, `docs/protocol.md`, products): refused, changing
+    /// nothing, for an unknown id, no radar selected, or one that cannot make
+    /// it; the same choice again changes nothing; otherwise the timeline
+    /// becomes the radar's history of that product and the poller follows it.
+    fn set_product(&mut self, product: &str, elevation_index: u32) -> (bool, Option<String>) {
+        if !products::VOCABULARY.iter().any(|p| p.id == product) {
+            return (
+                false,
+                Some(format!(
+                    "Unknown product {product}; products are listed in hello."
+                )),
+            );
+        }
+        let station = self
+            .sites
+            .iter()
+            .find(|s| s.id == self.state.site.id)
+            .cloned();
+        let station = match station {
+            Some(s) if self.state.source == Source::Live && s.kind == SiteKind::Polar => s,
+            Some(s) if s.kind == SiteKind::Grid => {
+                return (
+                    false,
+                    Some(format!(
+                        "{} is a composite; it has no products to choose.",
+                        s.name
+                    )),
+                );
+            }
+            Some(_) if self.state.source == Source::Archived => {
+                return (
+                    false,
+                    Some("An archived volume shows its lowest scan only.".into()),
+                );
+            }
+            _ => {
+                return (
+                    false,
+                    Some("Select a radar before choosing a product.".into()),
+                );
+            }
+        };
+        let choice = products::Choice {
+            id: product.to_owned(),
+            elevation_index,
+        };
+        let Some(want) = products::want_for(&station, &choice) else {
+            let at = if elevation_index > 0 {
+                format!(" at elevation index {elevation_index}")
+            } else {
+                String::new()
+            };
+            return (
+                false,
+                Some(format!("{} cannot show {product}{at}.", station.name)),
+            );
+        };
+        if choice == self.state.product {
+            return (false, None);
+        }
+        if let Err(message) = self.open_catalog(&station, want) {
+            return (false, Some(message));
+        }
+        eprintln!(
+            "{} Product {}: {}",
+            iso(now_ms()),
+            station.id,
+            want.variant()
+        );
+        self.product_deg = products::angle_deg(&station, &choice);
+        self.state.product = choice;
+        self.state.connection.status = ConnectionStatus::Loading;
+        self.restart_live("polling the new product", false);
+        (true, None)
     }
     /// Keep-warm stations (`OMASTORM_WARM`): each one not selected has a
     /// poller of its own that fills its catalog, so opening it finds its
@@ -795,7 +953,14 @@ impl Shared {
                 .map(|listed| listed.iter().map(|e| e.start_ms).collect())
                 .unwrap_or_default();
             eprintln!("{} Warm {id}: polling", iso(now_ms()));
-            let task = tokio::spawn(providers::poll(station, self.events.clone(), cached, true));
+            // Keep-warm stays on the lowest scan, whatever product is chosen.
+            let task = tokio::spawn(providers::poll(
+                station,
+                self.events.clone(),
+                cached,
+                true,
+                Want::Lowest,
+            ));
             self.warm_pollers.insert(id, (task, Instant::now()));
         }
     }
@@ -822,38 +987,17 @@ impl Shared {
                 Some(format!("Unknown site {id}; stations are listed in hello.")),
             );
         };
-        let listed = self.catalog.list(&station.id).unwrap_or_else(|e| {
-            eprintln!("Frame catalog: {e}");
-            Vec::new()
-        });
-        // The whole ring is published under stable names, so a client can
-        // fetch any frame of the loop without a seek.
-        for entry in &listed {
-            self.link(entry);
+        // The product carries over (S20): an angle to the nearest, a product
+        // the radar cannot make to the lowest scan; a composite keeps it.
+        let choice = products::carry(&self.state.product, self.product_deg, &station);
+        let want = products::want_for(&station, &choice).unwrap_or(Want::Lowest);
+        if let Err(message) = self.open_catalog(&station, want) {
+            return (false, Some(message));
         }
-        let shown = match listed.iter().rev().find(|e| e.record.is_some()) {
-            Some(newest) => self.show_entry(newest).map(|()| Some(newest.start_ms)),
-            None => {
-                let frame = empty_frame(&self.template, &station);
-                blank_textures(&frame)
-                    .and_then(|(texture, lut)| self.show(frame, &texture, &lut))
-                    .map(|()| None)
-            }
-        };
-        let frame_ms = match shown {
-            Ok(frame_ms) => frame_ms,
-            Err(e) => {
-                eprintln!("Publishing the frame for {}: {e}", station.id);
-                return (
-                    false,
-                    Some(format!("Could not publish a frame for {}.", station.id)),
-                );
-            }
-        };
-        self.frame_ms = frame_ms;
-        self.timeline = Timeline::new(listed);
-        self.pending = None;
-        self.state.playing = false;
+        if station.kind == SiteKind::Polar {
+            self.product_deg = products::angle_deg(&station, &choice);
+            self.state.product = choice;
+        }
         self.state.site.id = station.id;
         self.state.source = Source::Live;
         self.state.connection.status = ConnectionStatus::Loading;
@@ -1085,12 +1229,8 @@ impl Shared {
             Command::Pause => (set(&mut self.state.playing, false), None),
             Command::SetProduct {
                 product,
-                elevation_index: 0,
-            } if product == self.state.frame.product => (false, None),
-            Command::SetProduct { .. } => (
-                false,
-                Some("Only reflectivity at elevation index 0 is available in this build.".into()),
-            ),
+                elevation_index,
+            } => self.set_product(&product, elevation_index),
             // Tile requests and place search are answered to the sender, not state.
             Command::TilesNeeded { .. } | Command::SearchPlaces { .. } | Command::Unsupported => {
                 return None;
@@ -1218,7 +1358,8 @@ fn encode(sweep: &sweep::Sweep, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)>
 /// as a grid frame (`composite.rs`).
 fn scan_frame(template: &Frame, station: &Station, scan: &Scan, complete: bool) -> Frame {
     match scan {
-        Scan::Polar(sweep) => live_frame(template, station, sweep, complete),
+        Scan::Polar(sweep) => live_frame(template, station, sweep, complete, Want::Lowest),
+        Scan::Product(sweep, want) => live_frame(template, station, sweep, complete, *want),
         Scan::Grid(grid) => composite::frame(template, station, grid),
     }
 }
@@ -1226,7 +1367,9 @@ fn scan_frame(template: &Frame, station: &Station, scan: &Scan, complete: bool) 
 /// lookup is empty, a polar sweep has no code texture.
 fn encode_scan(scan: &Scan, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     match scan {
-        Scan::Polar(sweep) => encode(sweep, frame).map(|(t, l)| (t, l, Vec::new())),
+        Scan::Polar(sweep) | Scan::Product(sweep, _) => {
+            encode(sweep, frame).map(|(t, l)| (t, l, Vec::new()))
+        }
         Scan::Grid(grid) => {
             let (texture, lut) = composite::encode(grid, frame)?;
             Ok((
@@ -1284,7 +1427,7 @@ fn decode_and_publish(dir: &Path, template: &Frame, archive: &[u8]) -> io::Resul
     let sweep = if odim::is_odim(archive) {
         let (sweep, site) = odim::decode_lowest_dbzh_with_site(io::Cursor::new(archive.to_vec()))
             .map_err(|e| failed(&e))?;
-        frame = live_frame(template, &odim_station(&site), &sweep, true);
+        frame = live_frame(template, &odim_station(&site), &sweep, true, Want::Lowest);
         sweep
     } else {
         frame.attribution = LEVEL_II_CREDIT.to_owned();
@@ -1378,9 +1521,11 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                     Ok(arrival) => {
                         let mut shared = shared.lock().unwrap();
                         // A switch while encoding: this frame belongs to the
-                        // previous station's timeline, which is gone.
+                        // previous station's timeline, or product's (S20),
+                        // which is gone; it stays catalogued.
                         if !arrival.frame.id.starts_with(&shared.state.site.id)
                             || shared.state.source != Source::Live
+                            || products::variant_of(&arrival.frame.id) != shared.want().variant()
                         {
                             continue;
                         }
@@ -1440,6 +1585,7 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                         let mut shared = shared.lock().unwrap();
                         if !entry.id.starts_with(&shared.state.site.id)
                             || shared.state.source != Source::Live
+                            || products::variant_of(&entry.id) != shared.want().variant()
                         {
                             continue;
                         }
@@ -1960,8 +2106,8 @@ fn serve(dir: PathBuf) -> io::Result<()> {
     // The frame ring buffer; live frames are written here as they complete.
     let catalog = Arc::new(catalog::Catalog::open(osm::cache_root()?.join("frames"))?);
     let sites = match source {
-        Source::Archived => with_archived_station(hello().sites, &frame),
-        Source::Live => hello().sites,
+        Source::Archived => with_archived_station(site_table().sites, &frame),
+        Source::Live => site_table().sites,
     };
     let warm = match (source, env::var(WARM_ENV)) {
         (Source::Live, Ok(value)) => parse_warm(&value, &sites),
@@ -1984,6 +2130,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         live: None,
         warm,
         warm_pollers: HashMap::new(),
+        product_deg: None,
         last_live_restart: Instant::now(),
         events,
         frame_ms,

@@ -9,7 +9,12 @@
 # root groups still describe the whole volume (they are not rewritten).
 #
 #   uv run --no-project --with h5py python scripts/trim-odim.py \
-#     SOURCE.h5 EXTRACT.h5 [--keep DBZH,TH] [--max-bytes 300000]
+#     SOURCE.h5 EXTRACT.h5 [--keep DBZH,TH] [--tilts lowest|all|0,2,5] [--max-bytes 300000]
+#
+# --tilts (S20, the multi-angle fixtures) keeps more than the lowest tilt:
+# `all`, or positions in ascending elevation (0 = the lowest). The kept
+# tilts become /dataset1.. in ascending elevation, each with only the
+# quantities asked for.
 #
 # After writing, the script re-opens both files and checks: the superblock's
 # end-of-file address equals the file length (the S3 range reader's
@@ -85,7 +90,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("source")
     p.add_argument("extract")
-    p.add_argument("--keep", default="DBZH", help="comma-separated quantities of the lowest tilt to keep")
+    p.add_argument("--keep", default="DBZH", help="comma-separated quantities of each kept tilt to keep")
+    p.add_argument(
+        "--tilts", default="lowest", help="lowest, all, or positions in ascending elevation (0 = lowest)"
+    )
     p.add_argument("--max-bytes", type=int, default=300_000)
     args = p.parse_args()
     keep = [q.strip() for q in args.keep.split(",") if q.strip()]
@@ -93,14 +101,28 @@ def main():
     src = h5py.File(args.source, "r")
     assert text(src["what"].attrs["object"]) in ("PVOL", "SCAN"), "not an ODIM polar volume or scan"
     tilts = {k: float(src[k]["where"].attrs["elangle"]) for k in src if k.startswith("dataset")}
-    lowest = min(tilts, key=lambda k: (tilts[k], int(k[len("dataset") :])))
-    ds = src[lowest]
-    moments = sorted((k for k in ds if k.startswith("data")), key=lambda k: int(k[len("data") :]))
-    quantity = {k: text(ds[k]["what"].attrs["quantity"]) for k in moments}
-    missing = [q for q in keep if q not in quantity.values()]
-    assert not missing, f"{lowest} has no {missing}; it has {sorted(quantity.values())}"
-    kept = [k for k in moments if quantity[k] in keep]  # source order, renumbered from data1
-    others = [k for k in ds if not k.startswith("data")]  # what, where, how (and quality*)
+    ascending = sorted(tilts, key=lambda k: (tilts[k], int(k[len("dataset") :])))
+    lowest = ascending[0]
+    if args.tilts == "lowest":
+        chosen = [lowest]
+    elif args.tilts == "all":
+        chosen = ascending
+    else:
+        chosen = [ascending[int(i)] for i in args.tilts.split(",")]
+        assert chosen == sorted(chosen, key=ascending.index), "--tilts must ascend"
+    # Per kept tilt: its new name, source name, kept moments (source order,
+    # renumbered from data1) and its other members (what, where, how, quality*).
+    plan = []
+    for n, name in enumerate(chosen, 1):
+        ds = src[name]
+        moments = sorted((k for k in ds if k.startswith("data")), key=lambda k: int(k[len("data") :]))
+        quantity = {k: text(ds[k]["what"].attrs["quantity"]) for k in moments}
+        missing = [q for q in keep if q not in quantity.values()]
+        assert not missing, f"{name} has no {missing}; it has {sorted(quantity.values())}"
+        kept = [k for k in moments if quantity[k] in keep]
+        others = [k for k in ds if not k.startswith("data")]
+        renamed = {f"data{m}": k for m, k in enumerate(kept, 1)}
+        plan.append((f"dataset{n}", name, renamed, others, quantity))
 
     if os.path.exists(args.extract):
         os.remove(args.extract)
@@ -115,15 +137,15 @@ def main():
     for k in ("what", "where", "how"):
         if k in src:
             src.copy(src[k], out, name=k)
-    group = out.create_group("dataset1")
-    for k, v in ds.attrs.items():
-        group.attrs.create(k, v, dtype=ds.attrs.get_id(k).dtype)
-    for k in others:
-        src.copy(ds[k], group, name=k)
-    renamed = {}
-    for n, k in enumerate(kept, 1):
-        src.copy(ds[k], group, name=f"data{n}")
-        renamed[f"data{n}"] = k
+    for new_name, name, renamed, others, _ in plan:
+        ds = src[name]
+        group = out.create_group(new_name)
+        for k, v in ds.attrs.items():
+            group.attrs.create(k, v, dtype=ds.attrs.get_id(k).dtype)
+        for k in others:
+            src.copy(ds[k], group, name=k)
+        for new, old in renamed.items():
+            src.copy(ds[old], group, name=new)
     out.close()
 
     # Check what was written, from the bytes on disk.
@@ -132,17 +154,21 @@ def main():
     assert eof == len(data), f"superblock end-of-file {eof} != file length {len(data)}"
     assert (version, size_o) == superblock_eof(open(args.source, "rb").read(64))[:2], "superblock shape differs"
     dst = h5py.File(args.extract, "r")
-    assert sorted(dst.keys()) == sorted(["dataset1"] + [k for k in ("what", "where", "how") if k in src])
+    assert sorted(dst.keys()) == sorted(
+        [new_name for new_name, *_ in plan] + [k for k in ("what", "where", "how") if k in src]
+    )
     same_attrs(src.attrs, dst.attrs, "/")
     for k in ("what", "where", "how"):
         if k in src:
             same_tree(src[k], dst[k], f"/{k}")
-    same_attrs(ds.attrs, dst["dataset1"].attrs, "/dataset1")
-    assert sorted(dst["dataset1"].keys()) == sorted(others + list(renamed)), "dataset1 members differ"
-    for k in others:
-        same_tree(ds[k], dst["dataset1"][k], f"/dataset1/{k}")
-    for new, old in renamed.items():
-        same_tree(ds[old], dst["dataset1"][new], f"/dataset1/{new}")
+    for new_name, name, renamed, others, _ in plan:
+        ds, group = src[name], dst[new_name]
+        same_attrs(ds.attrs, group.attrs, f"/{new_name}")
+        assert sorted(group.keys()) == sorted(others + list(renamed)), f"{new_name} members differ"
+        for k in others:
+            same_tree(ds[k], group[k], f"/{new_name}/{k}")
+        for new, old in renamed.items():
+            same_tree(ds[old], group[new], f"/{new_name}/{new}")
 
     raw = open(args.source, "rb").read()
     report = {
@@ -153,7 +179,12 @@ def main():
         "extractBytes": len(data),
         "extractSha256": hashlib.sha256(data).hexdigest(),
         "lowestTilt": f"/{lowest} (elangle {tilts[lowest]})",
-        "kept": {f"/dataset1/{n}": f"/{lowest}/{o} {quantity[o]}" for n, o in renamed.items()},
+        "tilts": {f"/{new_name}": f"/{name} (elangle {tilts[name]})" for new_name, name, *_ in plan},
+        "kept": {
+            f"/{new_name}/{n}": f"/{name}/{o} {quantity[o]}"
+            for new_name, name, renamed, _, quantity in plan
+            for n, o in renamed.items()
+        },
         "superblock": {"version": version, "offsetBytes": size_o, "eofAddress": eof},
         "h5py": h5py.__version__,
         "hdf5": h5py.version.hdf5_version,

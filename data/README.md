@@ -127,6 +127,33 @@ All three store the lowest tilt as `/dataset1`, as do all 29 radars
 lowest `elangle` (`Tilt::Lowest`). `produce-odim.py` gives the same
 `sweep0.u8` from the original and from the extract.
 
+## Multi-angle fixtures (S20)
+
+The products other than the lowest scan (pseudo-CAPPI, column maximum,
+clear view, one other angle; `engine/src/products.rs`) read several tilts,
+so each provider format with every angle in one file has a DBZH-only extract
+of several tilts, made from the same originals as above by
+`uv run --no-project --with h5py python scripts/trim-odim.py ORIGINAL.h5 EXTRACT.h5 --tilts …`
+(positions in ascending elevation; h5py 3.16, HDF5 2.0.0), each under
+300 KB. The kept tilts become `/dataset1…` in ascending elevation, their
+metadata and chunks byte-identical to the original's.
+
+| Fixture (`data/fixtures/`) | Original | Tilts kept (`--tilts`) | Bytes |
+|---|---|---|---|
+| `radar_vara_qcvol_202609131055_tilts.h5` | the SMHI volume above (14,701,179 B, `af8a6cc1…`) | 0.5, 1.5, 2.5, 8, 24° (`0,2,4,6,8`) | 298,733 |
+| `ord_nohur_202609140930_tilts.h5` | the Hurum file above (427,967 B) | 0.5 (720 rays), 1.0, 2.4, 5.4° (`0,1,3,6`) | 227,791 |
+| `ord_dksin_202609140940_tilts.h5` | the Sindal file above (1,293,200 B) | 0.49, 0.66, 1.47, 4.81, 9.98° (`0,1,3,5,7`) | 185,675 |
+
+Together they cover both gate spacings and three reaches of SMHI's tilts,
+Hurum's 720-ray lowest tilt beside 360-ray upper ones, and DMI's first gate
+at 750 m. FMI's files hold one angle each, so FMI's radars offer the lowest
+scan only and have no multi-angle fixture. The answer keys are
+`golden/<id>/products.json` and one gzipped `<variant>.u8.gz` per product,
+composed from every kept tilt by `golden/produce-products.py` (h5py, with
+the contract's formulas in scalar libm arithmetic);
+`products::tests::products_match_their_answer_keys` matches them byte for
+byte through `decode_volume`, which reads only the tilts a product needs.
+
 ## Fixture rule for new radars and countries
 
 A full volume per country would add 100–300 MB to every clone across

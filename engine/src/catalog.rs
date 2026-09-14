@@ -339,10 +339,11 @@ impl Catalog {
         self.list_variant(site, "e0")
     }
 
-    /// Keep a station's lowest scan (`e0`), its product `current`, and the
-    /// most recently stored of its other products, `products::KEPT` in all
-    /// besides the lowest scan; the frames and files of any other product
-    /// go. Returns the products removed.
+    /// Keep a station's lowest scan (`e0`) and at most `products::KEPT` other
+    /// products: `current` and the most recently stored of the rest, or,
+    /// while `current` is the lowest scan, the two most recently stored (the
+    /// product just left and the one before it). The frames and files of any
+    /// other product go. Returns the products removed.
     pub fn prune(&self, site: &str, current: &str) -> io::Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut others: Vec<(String, i64)> = conn
@@ -354,11 +355,15 @@ impl Catalog {
             .map_err(sql)?;
         others.retain(|(v, _)| v != "e0" && v != current);
         others.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let removed: Vec<String> = others
-            .into_iter()
-            .skip(crate::products::KEPT - 1)
-            .map(|(v, _)| v)
-            .collect();
+        // `current` takes one of the places unless it is the lowest scan,
+        // which is kept anyway (a select_site on the lowest scan must not
+        // cost the product the user just left).
+        let keep = if current == "e0" {
+            crate::products::KEPT
+        } else {
+            crate::products::KEPT - 1
+        };
+        let removed: Vec<String> = others.into_iter().skip(keep).map(|(v, _)| v).collect();
         let mut stale = Vec::new();
         for variant in &removed {
             let files: Vec<(String, String)> = conn
@@ -810,9 +815,10 @@ mod tests {
         assert_eq!(catalog.list_variant("vara", "cmax").unwrap().len(), RING);
         assert_eq!(catalog.list_variant("vara", "a40").unwrap().len(), RING);
         assert_eq!(files(&dir.join("vara")).len(), before - 2 * RING);
-        // Back to the lowest scan: one other product stays, the newest.
-        assert_eq!(catalog.prune("vara", "e0").unwrap(), ["cmax"]);
+        // Back to the lowest scan: both other products stay.
+        assert!(catalog.prune("vara", "e0").unwrap().is_empty());
         assert_eq!(catalog.list_variant("vara", "a40").unwrap().len(), RING);
+        assert_eq!(catalog.list_variant("vara", "cmax").unwrap().len(), RING);
         assert_eq!(catalog.list("vara").unwrap().len(), 1);
         let _ = fs::remove_dir_all(&dir);
     }

@@ -49,7 +49,7 @@ FocusScope {
     Engine {
         id: connection
         active: true
-        bufferCap: 160 * 1024 * 1024
+        bufferCeiling: 160 * 1024 * 1024
         loopShared: true
         loopSite: card.session.loopSite
         onLoopRequested: site => card.session.loopSite = site
@@ -250,7 +250,17 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 12
                     Label { font.pixelSize: 10; opacity: .55; text: card.frames.length ? Qt.formatTime(new Date(card.frames[0].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
-                    Item { Layout.fillWidth: true }
+                    // While it plays: frames held of the loop and their memory
+                    // against this card's cap (Engine.qml, bufferNote).
+                    Label {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignHCenter
+                        font.pixelSize: 9; opacity: .45
+                        visible: connection.looping && connection.bufferTarget > 0
+                        text: connection.bufferReady + "/" + connection.bufferTarget + " · " + connection.bufferMB + " of " + connection.bufferCapMB + " MB"
+                            + (connection.bufferDropped > 0 ? " · −" + connection.bufferDropped : "")
+                    }
+                    Item { Layout.fillWidth: true; visible: !(connection.looping && connection.bufferTarget > 0) }
                     Label { font.pixelSize: 10; opacity: .55; text: card.condition === "ok" ? "now" : card.frames.length ? Qt.formatTime(new Date(card.frames[card.frames.length - 1].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
                 }
             }

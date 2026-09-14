@@ -52,11 +52,17 @@ QtObject {
     /// its RGBA grid texture (docs/protocol.md, code texture); RadarMap then
     /// rebuilds each texel's class from the frame's bounds.
     readonly property bool codes: !!frame && frame.kind === "grid" && !!frame.codes
-    readonly property string texture: frame ? "file://" + runtime + (codes ? frame.codes : frame.texture) : ""
+    /// The files to draw: none once a surface that showed this client has
+    /// closed (`active` back to false), so a closed window lets the frame on
+    /// screen go too, not only the loop's. A client never made active (the
+    /// map checks and tests) draws as it always did.
+    readonly property bool drawing: active || !everActive
+    property bool everActive: false
+    readonly property string texture: frame && drawing ? "file://" + runtime + (codes ? frame.codes : frame.texture) : ""
     /// A grid frame has no azimuth lookup (docs/protocol.md, frame.kind). The
     /// shader never reads one for a grid, but its sampler still wants an
     /// image, so the grid texture stands in.
-    readonly property string azimuthLut: frame ? (frame.kind === "grid" ? texture : "file://" + runtime + frame.azimuthLut) : ""
+    readonly property string azimuthLut: frame && drawing ? (frame.kind === "grid" ? texture : "file://" + runtime + frame.azimuthLut) : ""
     /// The selected station's row from `hello`, or null before it arrives.
     readonly property var site: state ? (sites.find(s => s.id === state.site.id) || null) : null
 
@@ -73,12 +79,33 @@ QtObject {
     /// Whether this client shows frames: a visible window or popover. The
     /// session's status connection keeps it off and holds no textures.
     property bool active: false
-    /// Decoded texture memory the buffer may hold, in bytes. Qt keeps each
-    /// image as 4 bytes a texel (a one-channel code texture is widened on
-    /// load) on the CPU and again on the GPU, in the bar's own process, so
-    /// this is below the web's 512 MB: Sweden's two hours (24 frames, about
-    /// 250 MB) fit, Nordic's 15 MB frames give about an hour and a half.
-    property real bufferCap: 280 * 1024 * 1024
+    /// Decoded texture memory the buffer may hold, in bytes (DESIGN.md, loop
+    /// buffer): a quarter of the machine's MemAvailable, read each time this
+    /// client opens, at least `bufferFloor` and at most `bufferCeiling`. Qt
+    /// keeps each image as 4 bytes a texel (a one-channel code texture is
+    /// widened on load) in the shell's own memory and again on the GPU, so
+    /// the ceiling sits below the web's 512 MB: Sweden's two hours (24
+    /// frames, about 250 MB) fit, Nordic's 15 MB frames give 18 or so.
+    property real bufferCeiling: 280 * 1024 * 1024
+    readonly property real bufferFloor: 96 * 1024 * 1024
+    /// MemAvailable in bytes when this client last opened, 0 when unknown.
+    property real memAvailable: 0
+    readonly property real bufferCap: memAvailable > 0
+        ? Math.max(bufferFloor, Math.min(bufferCeiling, memAvailable / 4)) : bufferCeiling
+    property FileView meminfo: FileView { path: "/proc/meminfo"; blockLoading: true }
+    function readMemory() {
+        meminfo.reload();
+        var m = /MemAvailable:\s+(\d+) kB/.exec(meminfo.text());
+        memAvailable = m ? Number(m[1]) * 1024 : 0;
+    }
+    // Closing drops the loop's Images and the frame on screen (`texture`
+    // empties); a collection then frees the JS garbage of the states that
+    // arrived while it was open (once a second while live).
+    onActiveChanged: {
+        if (active) { everActive = true; readMemory(); }
+        else Qt.callLater(gc);
+    }
+    Component.onCompleted: if (active) { everActive = true; readMemory(); }
     readonly property int bufferLimit: 24     // two hours of 5-minute scans, as on the web
     readonly property int minStart: 6         // the loop starts with this many ready, or all there are
     readonly property int stepMs: 250         // a frame's time on screen
@@ -163,6 +190,20 @@ QtObject {
     readonly property int bufferReady: readyFrames.length
     readonly property int bufferTarget: loopFrames.length
     readonly property real bufferMB: Math.round(loopFrames.reduce((n, f) => n + frameBytes(f), 0) / 1048576)
+    readonly property int bufferCapMB: Math.round(bufferCap / 1048576)
+    /// Bufferable entries within `bufferLimit` that the cap left out.
+    readonly property int bufferDropped: {
+        if (!active || !state) return 0;
+        var n = 0, tl = timeline;
+        for (var i = tl.length - 1; i >= 0 && n < bufferLimit; i--) if (bufferable(tl[i])) n++;
+        return Math.max(0, n - loopFrames.length);
+    }
+    /// What the buffer holds and costs, as the web's Loop note says it:
+    /// "19/19 frames · 278 MB of 280 MB · 5 older left out".
+    readonly property string bufferNote: bufferTarget > 0
+        ? bufferReady + "/" + bufferTarget + " frames · " + bufferMB + " MB of " + bufferCapMB + " MB"
+          + (bufferDropped > 0 ? " · " + bufferDropped + " older left out" : "")
+        : ""
     readonly property bool looping: active && canLoop && !!state && loopSite !== "" && loopSite === state.site.id
 
     // One hidden Image per file of the loop, newest first, kept while the

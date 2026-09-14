@@ -165,6 +165,43 @@ rediscovery. A rediscovery that finds only a sweep already in the catalog
 leaves the frame and connection chrome alone; a newer volume still clears
 UNAVAILABLE / OFFLINE.
 
+## Loop buffer
+
+Both front ends keep the newest complete frames of the station's timeline
+loaded and play them locally (`ui/Engine.qml`, the web's `app.js`): at most
+24, oldest first, starting once six are ready. What they may hold:
+
+- **Desktop:** a quarter of the machine's `MemAvailable`, read from
+  `/proc/meminfo` each time the window or popover opens, at least 96 MB and
+  at most 280 MB for the window, 160 MB for the popover. The popover shows
+  "ready/target · MB of cap" under the timeline while it plays.
+- **Web:** 160 MB on a phone, 512 MB on a desktop, lower where
+  `deviceMemory` says so. Each frame is costed on its own (a ring can mix
+  frames with and without a code texture). The first six frames may use up
+  to 1.6 times the cap, so that a big frame still gets a loop (a Europe frame
+  without a code texture, ~41 MB). The Loop note names what the cap left out.
+
+**Closing gives it back.** The loop's hidden `Image`s go the moment a
+surface closes (`active` false). Qt's pixmap cache keeps at most 2 MB of
+images nobody references, so the frames' decoded copies are freed at once.
+The frame on screen goes with them (`Engine.texture` empties). A collection
+then clears the JS garbage from the states that arrived while it was open.
+A closed window holds no radar texture, and reopening reads the files again
+(the loop refills in a second or two from local files).
+
+**Texture memory in Qt: 4 bytes a texel, and there is no R8 path from QML**
+(Qt 6.11, settled in S28). `QQuickDefaultTextureFactory` keeps ARGB32, RGB32
+and the float formats as they are and converts everything else, the code
+PNG's `Grayscale8` included, to `ARGB32_Premultiplied` when the image loads.
+The texture-file path (`.ktx`, `.pkm`, `.astc` through `Image`) maps only
+compressed formats (DXT, ETC2, ASTC). An uncompressed `GL_R8` KTX fails to
+load (tested). The lossy one-channel formats (BC4, EAC R11) cannot carry
+exact codes. So on the desktop a code texture saves the PNG read and decode,
+not memory. On the web (WebGL `R8`) it takes one byte a texel. The only way
+to get one byte a code in Qt would be a packed texture from the engine (four
+codes to an RGBA texel, unpacked in `radar.frag`). That would be a protocol
+change, and it has not been made.
+
 ## Scope
 
 Keep the feature set small. Prefer the weather panel, the theme, and the

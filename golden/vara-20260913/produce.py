@@ -5,6 +5,12 @@
 #
 #   uv run --no-project --with h5py --with numpy python \
 #     golden/vara-20260913/produce.py data/raw/radar_vara_qcvol_202609131055.h5 golden/vara-20260913
+#
+# Since S13 the vendored file is the lowest-tilt extract of SMHI's volume
+# (scripts/trim-odim.py: root groups + /dataset1 with DBZH only). Run on the
+# original volume and on the extract, this script writes the same sweep0.u8
+# and the same sweep0.json apart from the source's sha256, size and date;
+# EXTRACT_OF records the original.
 import datetime
 import hashlib
 import json
@@ -19,6 +25,12 @@ SOURCE_URL = (
     "https://opendata-download-radar.smhi.se/api/version/latest/area/vara/"
     "product/qcvol/2026/09/13/radar_vara_qcvol_202609131055.h5"
 )
+EXTRACT_OF = {
+    "file": "radar_vara_qcvol_202609131055.h5",
+    "bytes": 14701179,
+    "sha256": "af8a6cc1984b2bd863cf4be484a2959e5d6020629ab8a9aa7f5447f8b1d1e7d0",
+    "by": "scripts/trim-odim.py --keep DBZH",
+}
 
 
 def text(v):
@@ -133,6 +145,7 @@ def main():
         "sourceUrl": SOURCE_URL,
         "sourceSha256": hashlib.sha256(raw_bytes).hexdigest(),
         "sourceBytes": len(raw_bytes),
+        "extractOf": EXTRACT_OF,
         "rowOrder": "ascending azimuth (stable sort of ODIM row order by the startazA/stopazA midpoint)",
         "rayTime": "how/startazT of each ray in ms (rounded), counted from the earliest; sweepEndMs is the latest stopazT",
         "byteOrder": "row-major, rays x gates, uint8",

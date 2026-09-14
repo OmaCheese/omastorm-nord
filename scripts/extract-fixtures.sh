@@ -15,8 +15,8 @@
 # `engine/build.rs` (3–33° E, 53–71.5° N; build.rs then clips vertex by
 # vertex), and cities5000 and admin1 keep Sweden, Norway, Finland, Åland,
 # Denmark and the Baltics. The 1:50m world set, the populated places and the
-# archived KTLX volume (the decoder tests and OMASTORM_ARCHIVE read it until
-# the ODIM golden replaces it) stay as they are. Worldwide input is detected
+# radar volumes (lowest-tilt extracts, scripts/trim-odim.py and
+# trim-level2.py, data/README.md) stay as they are. Worldwide input is detected
 # and cut; input already cut passes through unchanged, so a rerun is a no-op.
 set -euo pipefail
 cd "$(dirname "$0")/.."

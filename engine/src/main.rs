@@ -831,6 +831,11 @@ impl Shared {
                     let (id, name) = want.product();
                     (frame.product, frame.product_name) = (id.to_owned(), name.to_owned());
                 }
+                // A chosen angle shows its own until its first frame (S26),
+                // not "Reflectivity 0.0°".
+                if let Want::Angle(deg) = want {
+                    frame.elevation_deg = deg;
+                }
                 blank_textures(&frame)
                     .and_then(|(texture, lut)| self.show(frame, &texture, &lut))
                     .map(|()| None)

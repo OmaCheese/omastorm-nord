@@ -119,7 +119,9 @@ It is small (a few KB) so clients replace rather than merge.
 - `timeline` is every frame a client can `seek` to, oldest first:
   the station's complete frames from its catalog (the newest 60) and, while a
   sweep is painting, that sweep as the last entry with `status` `partial`
-  (`complete` otherwise). `frame` is one of them. The engine owns the
+  (`complete` otherwise). `frame` is one of them. Each entry also names its
+  own textures (S19), so a client can fetch any frame of the loop without a
+  `seek` ([timeline textures](#timeline-textures)). The engine owns the
   position: a new sweep replaces `frame` while it is the newest entry, and
   leaves it alone once a client stepped or sought elsewhere, until a step or
   seek lands on the newest entry again. Archived, the timeline is the one
@@ -299,8 +301,9 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
   returns an `error` to its sender and retains the current frame.
 - `step` moves `delta` entries along `timeline` from the frame shown, stopping
   at the ends; `seek` shows the entry with `id`. Both stop playback. A stepped
-  frame's textures are republished under new `tex/` paths with the frame's
-  real `scanTime`; an `id` outside the timeline is answered with an `error`,
+  catalogued frame shows under the textures its timeline entry names (the
+  same paths every time it is shown); the sweep in progress is republished
+  under new paths; an `id` outside the timeline is answered with an `error`,
   and a move that lands where it already is changes nothing. `play` starts
   the loop when the timeline holds at least two complete frames (otherwise
   nothing changes); `pause` stops it and leaves the frame shown.
@@ -318,8 +321,61 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 
 Directory `$XDG_RUNTIME_DIR/omastorm-se/tex/`. Every file is written to a temporary
 name and renamed into place. Files are never modified after rename; a change
-produces a new name with a bumped `-rN` revision, so Qt image caching can never
-show stale pixels. The engine deletes files no `state` has referenced for 30 s.
+produces a new name, so no client cache (Qt's, a browser's) can ever show
+stale pixels. The engine deletes files no `state` has referenced for 30 s;
+`frame` and every `timeline` entry count as references.
+
+Two kinds of name, both opaque to clients:
+
+- A **catalogued frame** (every `complete` timeline entry of a live station)
+  has one name per texture for as long as the catalog holds that frame:
+  `tex/sweep-<frame id>-<tag>.png` and `tex/azlut-<frame id>-<tag>.png`,
+  where `<tag>` is 8 hex digits derived from the texture's content (for
+  frames catalogued before S19, from the catalog file's size and time).
+  Showing the frame again, stepping back to it, looping over it, an engine
+  restart: the name is the same, and so are its bytes. The file is a
+  symbolic link into the engine's frame catalog; a client just opens the
+  path. Both files stay published while the frame is in the selected
+  station's `timeline`, so a client may fetch them at any time; after a
+  station switch they retire 30 s later like any other unreferenced file.
+- Anything else (the sweep in progress, the loading placeholder, an
+  archived `OMASTORM_ARCHIVE` frame) is a copy under a name with the
+  engine's process id and a nanosecond revision, new on every publish.
+
+### Timeline textures
+
+Additive since S19 (still version 2). Every `timeline` entry carries its
+own texture paths, and a `placement` when it would draw differently from
+`frame`:
+
+```json
+"timeline":[{"id":"vara-20260914T101003Z-e0","scanTime":"2026-09-14T10:10:03Z",
+             "status":"complete",
+             "texture":"tex/sweep-vara-20260914T101003Z-e0-3f9a1c2e.png",
+             "azimuthLut":"tex/azlut-vara-20260914T101003Z-e0-3f9a1c2e.png"}]
+```
+
+- `texture` and `azimuthLut` follow `frame`'s rules for the entry's kind: a
+  polar entry names both, a grid entry names its texture and an empty
+  `azimuthLut`. Both are `""` when the entry has no stable textures: the
+  `partial` sweep in progress, and the one frame of an archived start.
+  A client that wants such a frame uses `frame` after a `seek`.
+- `placement` is present only when the entry's placement differs from
+  `frame`'s, and then carries all of it: `kind`, `rays`, `gates`,
+  `firstGateM`, `gateSpacingM`, `elevationDeg`, `site`, and for a grid
+  `grid`. Absent, the entry draws with `frame`'s. In practice a station's
+  frames share one placement, so entries rarely carry one; this keeps the
+  `state` broadcast (once a second while live) small. A client that
+  buffers frames resolves each entry's placement against the `state` it
+  came in and keeps it with the frame.
+- Product, units, palette, bounds, `scale`, `offset`, and `attribution`
+  are the station's and the same for every entry; they come from `frame`.
+- A client may therefore fetch, decode, and upload the whole loop once,
+  play it without the engine, and still `seek` when the user pauses or
+  scrubs so other clients follow. The engine's own `play` keeps working
+  as before.
+- An engine older than S19 sends entries without `texture`; a client falls
+  back to `seek` and `frame` for them.
 
 **Sweep texture (`frame.texture`):** PNG, RGBA, width = gates, height = rays.
 Rows are radials sorted by azimuth. Nearest sampling, no mipmaps. When the
@@ -525,3 +581,12 @@ Additive since (S14, still version 2):
 - `select_site` accepts a station's aliases, and ids in any ASCII case.
 - Staleness thresholds follow each station's provider cadence; SMHI's stay
   15 and 30 minutes.
+
+Additive since (S19, still version 2):
+
+- `state.timeline[]` entries gain `texture` and `azimuthLut` (always sent,
+  `""` without stable textures) and `placement` (only where it differs
+  from `frame`'s). [Timeline textures](#timeline-textures).
+- A catalogued frame keeps one texture name per file while it is in the
+  catalog, instead of a new revision on every show; its files stay
+  published while it is in the selected station's timeline.

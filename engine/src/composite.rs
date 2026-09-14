@@ -1,47 +1,58 @@
-//! SMHI's national composite (`area/sweden/product/comp`; stream S8,
-//! DEC-11). One ODIM `COMP` file every 5 minutes covers every Swedish
-//! radar. The engine decodes it and reprojects it to a Web Mercator grid
-//! texture, so both UIs draw it as one textured rectangle
-//! (`docs/protocol.md`, grid texture).
+//! Composites: SMHI's national composite (`area/sweden/product/comp`;
+//! stream S8, DEC-11), and EUMETNET OPERA's European one cut to the Nordic
+//! box (`providers/opera.rs`; stream S16, DEC-14). One ODIM `COMP` file
+//! every 5 minutes covers every radar of its network. The engine decodes it
+//! and reprojects it to a Web Mercator grid texture, so both UIs draw it as
+//! one textured rectangle (`docs/protocol.md`, grid texture).
 //!
 //! - The DBZH layer (the `/dataset1/dataN` whose `what/quantity` is `DBZH`)
-//!   is read as bytes and requantized to the polar convention. Undetect
-//!   becomes 0 and nodata 1; a measured value becomes `round(dBZ × 2 + 66)`
-//!   clamped to 2..255. The palette bounds and the weak-return floor
-//!   therefore work as they do for a sweep.
-//! - `/where` describes a polar stereographic grid: `projdef`, and `xsize` ×
-//!   `ysize` pixels of `xscale` × `yscale` metres, row 0 north.
-//!   `UL_lon`/`UL_lat` is the outer corner of the upper-left pixel.
-//! - The texture covers the lon/lat box of the grid's outer boundary with
-//!   `PIXEL_M` Mercator pixels, counted from the box's west and north edges.
-//!   Each texel holds the source pixel that contains its centre, and texels
-//!   off the grid are nodata.
+//!   is read as numbers (SMHI stores bytes, OPERA float64) and requantized
+//!   to the polar convention. Undetect becomes 0 and nodata 1; a measured
+//!   value becomes `round(dBZ × 2 + 66)` clamped to 2..255. The palette
+//!   bounds and the weak-return floor therefore work as they do for a sweep.
+//! - `/where` describes the grid: `projdef`, and `xsize` × `ysize` pixels of
+//!   `xscale` × `yscale` metres, row 0 north. `UL_lon`/`UL_lat` is the outer
+//!   corner of the upper-left pixel.
+//! - The texture covers a lon/lat box with `PIXEL_M` Mercator pixels,
+//!   counted from the box's west and north edges: the box of the grid's
+//!   outer boundary (SMHI), or a box the provider names (OPERA's Nordic
+//!   crop). Each texel holds the source pixel that contains its centre, and
+//!   texels off the grid are nodata.
+//! - A layer stored in many chunks is read chunk by chunk, and only the
+//!   chunks some texel falls in: 11 of OPERA's 30 for the Nordic box. Chunks
+//!   stored back to back are read in one go, so a ranged reader fetches each
+//!   run in one request (DEC-2). A needed chunk the file does not allocate
+//!   reads as nodata.
 //!
-//! Only the polar `+proj=stere` form SMHI uses is understood: north pole,
-//! true scale at `lat_ts`, and an ellipsoid given by name or by `+a` with
-//! `+rf` or `+b`. Anything else is an error, which is better than a wrong
-//! picture. SMHI's `+towgs84=0,0,0` is read the way PROJ reads it: WGS84
-//! latitudes are carried onto the Bessel ellipsoid through geocentric
-//! coordinates before projecting (about 43 m at 70°N).
+//! Two projections are understood: the polar `+proj=stere` form SMHI uses
+//! (north pole, true scale at `lat_ts`), and the oblique or equatorial
+//! ellipsoidal `+proj=laea` OPERA uses, each on an ellipsoid given by name
+//! or by `+a` with `+rf` or `+b`. Anything else is an error, which is
+//! better than a wrong picture. SMHI's `+towgs84=0,0,0` is read the way
+//! PROJ reads it: WGS84 latitudes are carried onto the Bessel ellipsoid
+//! through geocentric coordinates before projecting (about 43 m at 70°N).
 
 use crate::protocol::{Frame, FrameKind, FrameStatus, Geometry, GridPlacement, SiteKind, Station};
 use crate::smhi_live::{RangeReader, Scan};
 use crate::sweep::{BELOW_THRESHOLD, OUTSIDE_COVERAGE, png};
 use chrono::{DateTime, NaiveDateTime};
-use hdf5_pure::{AttrValue, File, ReadSeekSource};
+use hdf5_pure::{AttrValue, Chunk, Dataset, Datatype, DatatypeByteOrder, File, ReadSeekSource};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 use std::fmt;
-use std::io::{self, Read, Seek};
+use std::io::{self, Read, Seek, SeekFrom};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// SMHI's area key for the composite, which is also its station id.
 pub const AREA: &str = "sweden";
 /// SMHI's product name for the composite.
 pub const PRODUCT: &str = "comp";
-/// Texel size in Web Mercator metres. At 54°N (the south edge) this is
-/// 1.2 km of ground, finer than the 2 km source, so nearest sampling
-/// skips no source pixel. The texture stays under 2048 px on each side,
-/// the smallest WebGL2 must support.
+/// Texel size in Web Mercator metres. At 54°N (Sweden's south edge) this
+/// is 1.2 km of ground, finer than SMHI's 2 km source, so nearest sampling
+/// skips no source pixel; OPERA's 1 km grid is sampled a little coarser
+/// south of about 60°N. Sweden's texture stays under 2048 px on each side,
+/// the smallest WebGL2 must support; the Nordic one is 1670 × 2297, under
+/// the 4096 phones have (plan, budgets).
 pub const PIXEL_M: f64 = 2000.0;
 /// The Web Mercator sphere (EPSG:3857).
 pub const MERCATOR_R: f64 = 6_378_137.0;
@@ -142,57 +153,99 @@ fn tsfn(phi: f64, e: f64) -> f64 {
     (FRAC_PI_4 - phi / 2.0).tan() / ((1.0 - s) / (1.0 + s)).powf(e / 2.0)
 }
 
-impl Stereographic {
-    fn parse(projdef: &str) -> Result<Stereographic, CompositeError> {
-        let params: HashMap<&str, &str> = projdef
+/// A projdef's `+key=value` tokens, and the checks both projections share.
+struct Params<'a> {
+    projdef: &'a str,
+    map: HashMap<&'a str, &'a str>,
+}
+
+impl<'a> Params<'a> {
+    fn new(projdef: &'a str) -> Self {
+        let map = projdef
             .split_whitespace()
             .map(|token| {
                 let token = token.strip_prefix('+').unwrap_or(token);
                 token.split_once('=').unwrap_or((token, ""))
             })
             .collect();
-        let bad = |why: &str| fail(format!("projdef {projdef:?}: {why}"));
-        let number = |key: &str| -> Result<Option<f64>, CompositeError> {
-            params
-                .get(key)
-                .map(|v| {
-                    v.parse::<f64>()
-                        .map_err(|_| bad(&format!("+{key} is not a number")))
-                })
-                .transpose()
-        };
-        if params.get("proj") != Some(&"stere") {
-            return Err(bad("only +proj=stere is supported"));
-        }
-        if number("lat_0")?.is_none_or(|lat0| (lat0 - 90.0).abs() > 1e-9) {
-            return Err(bad("only the north polar aspect (+lat_0=90) is supported"));
-        }
-        if number("k_0")?
-            .or(number("k")?)
+        Params { projdef, map }
+    }
+
+    fn bad(&self, why: &str) -> CompositeError {
+        fail(format!("projdef {:?}: {why}", self.projdef))
+    }
+
+    fn get(&self, key: &str) -> Option<&'a str> {
+        self.map.get(key).copied()
+    }
+
+    fn number(&self, key: &str) -> Result<Option<f64>, CompositeError> {
+        self.get(key)
+            .map(|v| {
+                v.parse::<f64>()
+                    .map_err(|_| self.bad(&format!("+{key} is not a number")))
+            })
+            .transpose()
+    }
+
+    /// Refuses a scale factor other than 1.
+    fn unit_scale(&self) -> Result<(), CompositeError> {
+        if self
+            .number("k_0")?
+            .or(self.number("k")?)
             .is_some_and(|k| (k - 1.0).abs() > 1e-12)
         {
-            return Err(bad("a scale factor other than 1 is not supported"));
+            return Err(self.bad("a scale factor other than 1 is not supported"));
         }
-        if number("x_0")?.is_some_and(|v| v != 0.0) || number("y_0")?.is_some_and(|v| v != 0.0) {
-            return Err(bad("false easting or northing is not supported"));
-        }
-        if let Some(shift) = params.get("towgs84")
+        Ok(())
+    }
+
+    /// Refuses a `+towgs84` that shifts; a zero one passes.
+    fn zero_shift(&self) -> Result<(), CompositeError> {
+        if let Some(shift) = self.get("towgs84")
             && shift.split(',').any(|v| v.trim().parse::<f64>() != Ok(0.0))
         {
-            return Err(bad("a datum shift is not supported"));
+            return Err(self.bad("a datum shift is not supported"));
         }
-        let (a, inverse_flattening) = match (params.get("ellps"), number("a")?) {
-            (Some(&"bessel"), _) => (6_377_397.155, 299.152_812_8),
-            (Some(&"WGS84"), _) => (6_378_137.0, 298.257_223_563),
-            (Some(&"GRS80"), _) => (6_378_137.0, 298.257_222_101),
-            (Some(other), _) => return Err(bad(&format!("unknown +ellps={other}"))),
-            (None, Some(a)) => match (number("rf")?, number("b")?) {
+        Ok(())
+    }
+
+    /// The ellipsoid's semi-major axis and inverse flattening, which is
+    /// infinite for a sphere.
+    fn ellipsoid(&self) -> Result<(f64, f64), CompositeError> {
+        Ok(match (self.get("ellps"), self.number("a")?) {
+            (Some("bessel"), _) => (6_377_397.155, 299.152_812_8),
+            (Some("WGS84"), _) => (WGS84_A, WGS84_RF),
+            (Some("GRS80"), _) => (6_378_137.0, 298.257_222_101),
+            (Some(other), _) => return Err(self.bad(&format!("unknown +ellps={other}"))),
+            (None, Some(a)) => match (self.number("rf")?, self.number("b")?) {
                 (Some(rf), _) => (a, rf),
                 (None, Some(b)) if b < a => (a, a / (a - b)),
                 (None, _) => (a, f64::INFINITY),
             },
-            (None, None) => return Err(bad("no ellipsoid (+ellps, or +a with +rf or +b)")),
-        };
+            (None, None) => {
+                return Err(self.bad("no ellipsoid (+ellps, or +a with +rf or +b)"));
+            }
+        })
+    }
+}
+
+impl Stereographic {
+    fn parse(projdef: &str) -> Result<Stereographic, CompositeError> {
+        let params = Params::new(projdef);
+        let number = |key: &str| params.number(key);
+        if params.get("proj") != Some("stere") {
+            return Err(params.bad("only +proj=stere is supported"));
+        }
+        if number("lat_0")?.is_none_or(|lat0| (lat0 - 90.0).abs() > 1e-9) {
+            return Err(params.bad("only the north polar aspect (+lat_0=90) is supported"));
+        }
+        params.unit_scale()?;
+        if number("x_0")?.is_some_and(|v| v != 0.0) || number("y_0")?.is_some_and(|v| v != 0.0) {
+            return Err(params.bad("false easting or northing is not supported"));
+        }
+        params.zero_shift()?;
+        let (a, inverse_flattening) = params.ellipsoid()?;
         let f = 1.0 / inverse_flattening;
         let e = (f * (2.0 - f)).sqrt();
         let phic = number("lat_ts")?.unwrap_or(90.0).to_radians();
@@ -207,7 +260,7 @@ impl Stereographic {
             e,
             lon0: number("lon_0")?.unwrap_or(0.0).to_radians(),
             akm1,
-            datum: (params.contains_key("towgs84") && !is_wgs84).then_some((a, e * e)),
+            datum: (params.get("towgs84").is_some() && !is_wgs84).then_some((a, e * e)),
         })
     }
 
@@ -255,6 +308,298 @@ fn mercator_y(lat: f64) -> f64 {
 
 fn mercator_lat(y: f64) -> f64 {
     (y / MERCATOR_R).sinh().atan().to_degrees()
+}
+
+// ---------------------------------------------------------------------------
+// Lambert azimuthal equal-area on an ellipsoid (Snyder 1987, §24; PROJ `laea`)
+// ---------------------------------------------------------------------------
+
+/// Snyder's `q` (PROJ `pj_qsfn`) of `sin φ`.
+fn qsfn(sinphi: f64, e: f64, one_es: f64) -> f64 {
+    let con = e * sinphi;
+    one_es * (sinphi / (1.0 - con * con) - 0.5 / e * ((1.0 - con) / (1.0 + con)).ln())
+}
+
+/// The latitude, in radians, whose `q` is `q`: Snyder's eq. 3-16 by
+/// Newton's method. PROJ uses a series here; the two agree far below a
+/// millimetre (`laea_matches_pyproj_both_ways`).
+fn latitude_of_q(q: f64, e: f64, es: f64) -> f64 {
+    let one_es = 1.0 - es;
+    let mut phi = (q / 2.0).clamp(-1.0, 1.0).asin();
+    for _ in 0..30 {
+        let (sin, cos) = phi.sin_cos();
+        if cos.abs() < 1e-12 {
+            break;
+        }
+        let w = 1.0 - es * sin * sin;
+        let next = phi
+            + w * w / (2.0 * cos)
+                * (q / one_es - sin / w + 0.5 / e * ((1.0 - e * sin) / (1.0 + e * sin)).ln());
+        let done = (next - phi).abs() < 1e-15;
+        phi = next;
+        if done {
+            break;
+        }
+    }
+    phi
+}
+
+/// Lambert azimuthal equal-area, oblique or equatorial aspect, on an
+/// ellipsoid: OPERA's grid (DEC-14). Metres with the false origin added,
+/// the way PROJ writes them. The constants are PROJ's (`laea.cpp`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Laea {
+    a: f64,
+    e: f64,
+    es: f64,
+    /// Central meridian, radians.
+    lon0: f64,
+    /// Latitude of origin, degrees.
+    lat0: f64,
+    x0: f64,
+    y0: f64,
+    /// `q` at the pole.
+    qp: f64,
+    /// Radius of the authalic sphere, in semi-major axes.
+    rq: f64,
+    /// The authalic latitude of the origin, as sine and cosine.
+    sinb1: f64,
+    cosb1: f64,
+    /// Snyder's `D`, and the x and y factors built from it.
+    dd: f64,
+    xmf: f64,
+    ymf: f64,
+}
+
+impl Laea {
+    fn parse(projdef: &str) -> Result<Laea, CompositeError> {
+        let params = Params::new(projdef);
+        if params.get("proj") != Some("laea") {
+            return Err(params.bad("not +proj=laea"));
+        }
+        if params.get("units").is_some_and(|u| u != "m") {
+            return Err(params.bad("only metres (+units=m) are supported"));
+        }
+        params.unit_scale()?;
+        params.zero_shift()?;
+        let (a, inverse_flattening) = params.ellipsoid()?;
+        let is_wgs84 = a == WGS84_A && (inverse_flattening - WGS84_RF).abs() < 1e-9;
+        if params.get("towgs84").is_some() && !is_wgs84 {
+            return Err(params.bad("+towgs84 on an ellipsoid other than WGS84 is not supported"));
+        }
+        if !inverse_flattening.is_finite() {
+            return Err(params.bad("a spherical +proj=laea is not supported"));
+        }
+        let lat0 = params.number("lat_0")?.unwrap_or(0.0);
+        if lat0.abs() > 90.0 - 1e-9 {
+            return Err(params.bad("the polar aspect of +proj=laea is not supported"));
+        }
+        let f = 1.0 / inverse_flattening;
+        let es = f * (2.0 - f);
+        let e = es.sqrt();
+        let one_es = 1.0 - es;
+        let qp = qsfn(1.0, e, one_es);
+        let rq = (0.5 * qp).sqrt();
+        let phi0 = lat0.to_radians();
+        let sinphi = phi0.sin();
+        let sinb1 = qsfn(sinphi, e, one_es) / qp;
+        let cosb1 = (1.0 - sinb1 * sinb1).sqrt();
+        let dd = phi0.cos() / ((1.0 - es * sinphi * sinphi).sqrt() * rq * cosb1);
+        Ok(Laea {
+            a,
+            e,
+            es,
+            lon0: params.number("lon_0")?.unwrap_or(0.0).to_radians(),
+            lat0,
+            x0: params.number("x_0")?.unwrap_or(0.0),
+            y0: params.number("y_0")?.unwrap_or(0.0),
+            qp,
+            rq,
+            sinb1,
+            cosb1,
+            dd,
+            xmf: rq * dd,
+            ymf: rq / dd,
+        })
+    }
+
+    /// What a forward projection needs of a latitude in degrees: the sine
+    /// and cosine of its authalic latitude.
+    fn row(&self, lat: f64) -> (f64, f64) {
+        let sinb = qsfn(lat.to_radians().sin(), self.e, 1.0 - self.es) / self.qp;
+        let cosb2 = 1.0 - sinb * sinb;
+        (sinb, if cosb2 > 0.0 { cosb2.sqrt() } else { 0.0 })
+    }
+
+    /// Projected metres from a latitude's `row` and the sine and cosine of
+    /// the longitude from the central meridian.
+    fn at(&self, (sinb, cosb): (f64, f64), (sinlam, coslam): (f64, f64)) -> (f64, f64) {
+        let b = (2.0 / (1.0 + self.sinb1 * sinb + self.cosb1 * cosb * coslam)).sqrt();
+        let x = self.xmf * b * cosb * sinlam;
+        let y = self.ymf * b * (self.cosb1 * sinb - self.sinb1 * cosb * coslam);
+        (self.a * x + self.x0, self.a * y + self.y0)
+    }
+
+    fn forward(&self, lon: f64, lat: f64) -> (f64, f64) {
+        self.at(self.row(lat), (lon.to_radians() - self.lon0).sin_cos())
+    }
+
+    /// Projected metres to degrees (longitude, latitude); NaN beyond the
+    /// projection's disc.
+    fn inverse(&self, x: f64, y: f64) -> (f64, f64) {
+        let x = (x - self.x0) / self.a / self.dd;
+        let y = (y - self.y0) / self.a * self.dd;
+        let rho = x.hypot(y);
+        if rho < 1e-10 {
+            return (self.lon0.to_degrees(), self.lat0);
+        }
+        let s = 0.5 * rho / self.rq;
+        if s > 1.0 {
+            return (f64::NAN, f64::NAN);
+        }
+        let (sin_ce, cos_ce) = (2.0 * s.asin()).sin_cos();
+        let ab = (cos_ce * self.sinb1 + y * sin_ce * self.cosb1 / rho).clamp(-1.0, 1.0);
+        let lam = (x * sin_ce).atan2(rho * self.cosb1 * cos_ce - y * self.sinb1 * sin_ce);
+        let phi = if (ab.abs() - 1.0).abs() < 1e-15 {
+            FRAC_PI_2.copysign(ab)
+        } else {
+            latitude_of_q(ab * self.qp, self.e, self.es)
+        };
+        ((self.lon0 + lam).to_degrees(), phi.to_degrees())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The projections a composite may use, and the texture's box
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Projection {
+    Stereographic(Stereographic),
+    Laea(Laea),
+}
+
+impl Projection {
+    fn parse(projdef: &str) -> Result<Projection, CompositeError> {
+        match Params::new(projdef).get("proj") {
+            Some("stere") => Stereographic::parse(projdef).map(Projection::Stereographic),
+            Some("laea") => Laea::parse(projdef).map(Projection::Laea),
+            other => Err(fail(format!(
+                "projdef {projdef:?}: +proj={} is not supported (only stere and laea)",
+                other.unwrap_or("")
+            ))),
+        }
+    }
+
+    /// Central meridian, radians.
+    fn lon0(&self) -> f64 {
+        match self {
+            Projection::Stereographic(s) => s.lon0,
+            Projection::Laea(l) => l.lon0,
+        }
+    }
+
+    fn forward(&self, lon: f64, lat: f64) -> (f64, f64) {
+        match self {
+            Projection::Stereographic(s) => s.forward(lon, lat),
+            Projection::Laea(l) => l.forward(lon, lat),
+        }
+    }
+
+    fn inverse(&self, x: f64, y: f64) -> (f64, f64) {
+        match self {
+            Projection::Stereographic(s) => s.inverse(x, y),
+            Projection::Laea(l) => l.inverse(x, y),
+        }
+    }
+
+    /// The part of a forward projection that depends on the latitude
+    /// (degrees) alone, so a lattice pays for it once per row.
+    fn row(&self, lat: f64) -> (f64, f64) {
+        match self {
+            Projection::Stereographic(s) => (s.rho(lat), 0.0),
+            Projection::Laea(l) => l.row(lat),
+        }
+    }
+
+    /// Projected metres from a latitude's `row` and the sine and cosine of
+    /// the longitude from the central meridian.
+    fn at(&self, row: (f64, f64), (sin, cos): (f64, f64)) -> (f64, f64) {
+        match self {
+            Projection::Stereographic(_) => (row.0 * sin, -row.0 * cos),
+            Projection::Laea(l) => l.at(row, (sin, cos)),
+        }
+    }
+}
+
+/// A lon/lat box, degrees: what a texture covers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LonLatBox {
+    pub west: f64,
+    pub east: f64,
+    pub south: f64,
+    pub north: f64,
+}
+
+/// The texture over a box: whole `PIXEL_M` Mercator texels counted from
+/// its west and north edges, so its east and south edges move outward to
+/// the last texel's edge.
+struct Target {
+    west: f64,
+    north: f64,
+    mx_west: f64,
+    my_north: f64,
+    width: u32,
+    height: u32,
+}
+
+impl Target {
+    fn over(b: LonLatBox) -> Target {
+        let (mx_west, my_north) = (MERCATOR_R * b.west.to_radians(), mercator_y(b.north));
+        Target {
+            west: b.west,
+            north: b.north,
+            mx_west,
+            my_north,
+            width: ((MERCATOR_R * b.east.to_radians() - mx_west) / PIXEL_M).ceil() as u32,
+            height: ((my_north - mercator_y(b.south)) / PIXEL_M).ceil() as u32,
+        }
+    }
+
+    fn east(&self) -> f64 {
+        (self.mx_west + f64::from(self.width) * PIXEL_M) / MERCATOR_R * 180.0 / std::f64::consts::PI
+    }
+
+    fn south(&self) -> f64 {
+        mercator_lat(self.my_north - f64::from(self.height) * PIXEL_M)
+    }
+
+    /// Each texel's source pixel (column, row), or `None` off the grid, row
+    /// by row from the north-west corner. Longitude depends only on the
+    /// column and latitude only on the row, so each projection splits into
+    /// a per-row and a per-column part.
+    fn each_texel(&self, source: &Source, mut each: impl FnMut(Option<(usize, usize)>)) {
+        let columns: Vec<(f64, f64)> = (0..self.width)
+            .map(|c| {
+                let lon = self.mx_west + (f64::from(c) + 0.5) * PIXEL_M;
+                (lon / MERCATOR_R - source.proj.lon0()).sin_cos()
+            })
+            .collect();
+        for r in 0..self.height {
+            let lat = mercator_lat(self.my_north - (f64::from(r) + 0.5) * PIXEL_M);
+            let row = source.proj.row(lat);
+            for &column in &columns {
+                let (x, y) = source.proj.at(row, column);
+                let i = ((x - source.x0) / source.xscale).floor();
+                let j = ((source.y0 - y) / source.yscale).floor();
+                let inside = i >= 0.0
+                    && j >= 0.0
+                    && (i as usize) < source.xsize
+                    && (j as usize) < source.ysize;
+                each(inside.then_some((i as usize, j as usize)));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -437,8 +782,7 @@ fn nominal_ms(what: &Attrs, date: &str, time: &str) -> Option<i64> {
 }
 
 /// One ODIM value as a polar-convention reflectivity byte.
-fn requantize(raw: u8, gain: f64, offset: f64, nodata: f64, undetect: f64) -> u8 {
-    let value = f64::from(raw);
+fn requantize(value: f64, gain: f64, offset: f64, nodata: f64, undetect: f64) -> u8 {
     if value == undetect {
         0
     } else if value == nodata {
@@ -451,9 +795,24 @@ fn requantize(raw: u8, gain: f64, offset: f64, nodata: f64, undetect: f64) -> u8
     }
 }
 
+/// A layer's value coding (`what/gain`, `offset`, `nodata`, `undetect`).
+#[derive(Clone, Copy, Debug)]
+struct Coding {
+    gain: f64,
+    offset: f64,
+    nodata: f64,
+    undetect: f64,
+}
+
+impl Coding {
+    fn code(&self, value: f64) -> u8 {
+        requantize(value, self.gain, self.offset, self.nodata, self.undetect)
+    }
+}
+
 /// The source grid as `/where` describes it.
 struct Source {
-    stereo: Stereographic,
+    proj: Projection,
     xsize: usize,
     ysize: usize,
     xscale: f64,
@@ -467,7 +826,7 @@ impl Source {
     fn read(where_: &Attrs) -> Result<(Source, String), CompositeError> {
         let path = "/where";
         let projdef = text(where_, "projdef").ok_or_else(|| fail("/where: no projdef"))?;
-        let stereo = Stereographic::parse(&projdef)?;
+        let proj = Projection::parse(&projdef)?;
         let xsize = need(where_, path, "xsize")? as usize;
         let ysize = need(where_, path, "ysize")? as usize;
         let (xscale, yscale) = (need(where_, path, "xscale")?, need(where_, path, "yscale")?);
@@ -477,7 +836,7 @@ impl Source {
             )));
         }
         let corner = |name: &str| -> Result<(f64, f64), CompositeError> {
-            Ok(stereo.forward(
+            Ok(proj.forward(
                 need(where_, path, &format!("{name}_lon"))?,
                 need(where_, path, &format!("{name}_lat"))?,
             ))
@@ -498,7 +857,7 @@ impl Source {
         }
         Ok((
             Source {
-                stereo,
+                proj,
                 xsize,
                 ysize,
                 xscale,
@@ -511,8 +870,8 @@ impl Source {
     }
 
     /// The lon/lat box of the grid's outer boundary, sampled at every
-    /// pixel edge: (west, east, south, north).
-    fn bounds(&self) -> (f64, f64, f64, f64) {
+    /// pixel edge.
+    fn bounds(&self) -> LonLatBox {
         let (x1, y1) = (
             self.x0 + self.xsize as f64 * self.xscale,
             self.y0 - self.ysize as f64 * self.yscale,
@@ -525,7 +884,7 @@ impl Source {
             let y = self.y0 - k as f64 * self.yscale;
             [(self.x0, y), (x1, y)]
         });
-        across.chain(down).fold(
+        let (west, east, south, north) = across.chain(down).fold(
             (
                 f64::INFINITY,
                 f64::NEG_INFINITY,
@@ -533,20 +892,315 @@ impl Source {
                 f64::NEG_INFINITY,
             ),
             |(w, e, s, n), (x, y)| {
-                let (lon, lat) = self.stereo.inverse(x, y);
+                let (lon, lat) = self.proj.inverse(x, y);
                 (w.min(lon), e.max(lon), s.min(lat), n.max(lat))
             },
-        )
+        );
+        LonLatBox {
+            west,
+            east,
+            south,
+            north,
+        }
     }
 }
 
-/// Decode a composite and reproject it to its Web Mercator texture.
-/// `reader` may be a file, a buffer, or a ranged HTTP reader; only the
-/// metadata and the DBZH layer are read.
+/// One reader shared by the HDF5 parser and the chunk reads that go around
+/// it. Both seek before every read (`ReadSeekSource` does), so neither
+/// disturbs the other's position.
+struct Shared<R>(Arc<Mutex<R>>);
+
+impl<R> Clone for Shared<R> {
+    fn clone(&self) -> Self {
+        Shared(self.0.clone())
+    }
+}
+
+impl<R> Shared<R> {
+    fn new(reader: R) -> Self {
+        Shared(Arc::new(Mutex::new(reader)))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, R> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl<R: Read + Seek> Shared<R> {
+    /// `len` bytes from `offset`, in one read, so a ranged reader fetches
+    /// whatever of them it lacks in one request.
+    fn read_at(&self, offset: u64, len: u64) -> io::Result<Vec<u8>> {
+        let mut reader = self.lock();
+        reader.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; len as usize];
+        reader.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+}
+
+impl<R: Read> Read for Shared<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.lock().read(buf)
+    }
+}
+
+impl<R: Seek> Seek for Shared<R> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        self.lock().seek(to)
+    }
+}
+
+/// HDF5's deflate and shuffle filters, the only ones read.
+const DEFLATE: u16 = 1;
+const SHUFFLE: u16 = 2;
+
+/// How a layer stores one value. Only little-endian numbers are read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Element {
+    U8,
+    I16,
+    U16,
+    F32,
+    F64,
+}
+
+impl Element {
+    fn of(datatype: &Datatype) -> Result<Element, String> {
+        use DatatypeByteOrder::LittleEndian;
+        Ok(match datatype {
+            Datatype::FloatingPoint {
+                size: 8,
+                byte_order: LittleEndian,
+                ..
+            } => Element::F64,
+            Datatype::FloatingPoint {
+                size: 4,
+                byte_order: LittleEndian,
+                ..
+            } => Element::F32,
+            Datatype::FixedPoint {
+                size: 1,
+                signed: false,
+                ..
+            } => Element::U8,
+            Datatype::FixedPoint {
+                size: 2,
+                byte_order: LittleEndian,
+                signed,
+                ..
+            } => {
+                if *signed {
+                    Element::I16
+                } else {
+                    Element::U16
+                }
+            }
+            other => return Err(format!("values stored as {other:?} are not supported")),
+        })
+    }
+
+    fn size(self) -> usize {
+        match self {
+            Element::U8 => 1,
+            Element::I16 | Element::U16 => 2,
+            Element::F32 => 4,
+            Element::F64 => 8,
+        }
+    }
+
+    /// The value in `bytes`, which are exactly `size` long.
+    fn value(self, bytes: &[u8]) -> f64 {
+        match self {
+            Element::U8 => f64::from(bytes[0]),
+            Element::I16 => f64::from(i16::from_le_bytes([bytes[0], bytes[1]])),
+            Element::U16 => f64::from(u16::from_le_bytes([bytes[0], bytes[1]])),
+            Element::F32 => f64::from(f32::from_le_bytes(bytes.try_into().unwrap_or_default())),
+            Element::F64 => f64::from_le_bytes(bytes.try_into().unwrap_or_default()),
+        }
+    }
+}
+
+/// A stored chunk with its filters undone, last first, skipping those its
+/// mask marks as not applied. It must come to exactly `expected` bytes.
+fn unfilter(
+    stored: &[u8],
+    filters: &[u16],
+    mask: u32,
+    element: usize,
+    expected: usize,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = stored.to_vec();
+    for (i, &id) in filters.iter().enumerate().rev() {
+        if i < 32 && (mask >> i) & 1 == 1 {
+            continue;
+        }
+        bytes = match id {
+            DEFLATE => {
+                let mut out = Vec::with_capacity(expected);
+                flate2::read::ZlibDecoder::new(&bytes[..])
+                    .take(expected as u64 + 1)
+                    .read_to_end(&mut out)
+                    .map_err(|e| format!("inflating a chunk: {e}"))?;
+                out
+            }
+            SHUFFLE => unshuffle(&bytes, element),
+            other => return Err(format!("HDF5 filter {other} is not supported")),
+        };
+    }
+    if bytes.len() != expected {
+        return Err(format!(
+            "a chunk decodes to {} bytes, not {expected}",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
+}
+
+/// HDF5's shuffle undone: the first bytes of every element, then the
+/// second bytes, and so on, back into whole elements.
+fn unshuffle(bytes: &[u8], element: usize) -> Vec<u8> {
+    let n = bytes.len() / element.max(1);
+    let mut out = bytes.to_vec();
+    for (k, &b) in bytes[..n * element].iter().enumerate() {
+        out[(k % n) * element + k / n] = b;
+    }
+    out
+}
+
+/// The layer as codes, `ysize × xsize`, row 0 north. A layer stored in
+/// more than one chunk is read chunk by chunk (`read_chunks`); anything
+/// else is read whole.
+fn read_codes<R: Read + Seek>(
+    dataset: &Dataset,
+    reader: &Shared<R>,
+    source: &Source,
+    target: &Target,
+    coding: Coding,
+) -> Result<Vec<u8>, String> {
+    let shape = dataset.shape().map_err(|e| e.to_string())?;
+    if shape != [source.ysize as u64, source.xsize as u64] {
+        return Err(format!(
+            "shape {shape:?}, not {} × {}",
+            source.ysize, source.xsize
+        ));
+    }
+    let chunk = match dataset.chunk_shape().map_err(|e| e.to_string())?.as_deref() {
+        Some(&[rows, cols]) if rows > 0 && cols > 0 => Some((rows as usize, cols as usize)),
+        _ => None,
+    };
+    match chunk {
+        Some((rows, cols)) if rows < source.ysize || cols < source.xsize => {
+            read_chunks(dataset, reader, source, target, coding, (rows, cols))
+        }
+        _ => {
+            let values = dataset.read_f64().map_err(|e| e.to_string())?;
+            if values.len() != source.xsize * source.ysize {
+                return Err(format!(
+                    "holds {} values, not {} × {}",
+                    values.len(),
+                    source.ysize,
+                    source.xsize
+                ));
+            }
+            Ok(values.into_iter().map(|v| coding.code(v)).collect())
+        }
+    }
+}
+
+/// The chunks some texel of `target` falls in, and only those, one read
+/// per run of chunks stored back to back. The rest of the grid, and a
+/// needed chunk the file does not allocate, is nodata.
+fn read_chunks<R: Read + Seek>(
+    dataset: &Dataset,
+    reader: &Shared<R>,
+    source: &Source,
+    target: &Target,
+    coding: Coding,
+    (rows, cols): (usize, usize),
+) -> Result<Vec<u8>, String> {
+    let across = source.xsize.div_ceil(cols);
+    let down = source.ysize.div_ceil(rows);
+    let mut needed = vec![false; across * down];
+    target.each_texel(source, |pixel| {
+        if let Some((i, j)) = pixel {
+            needed[j / rows * across + i / cols] = true;
+        }
+    });
+    let element = Element::of(&dataset.datatype().map_err(|e| e.to_string())?)?;
+    let filters = dataset.filters();
+    if let Some(id) = filters.iter().find(|&&id| id != DEFLATE && id != SHUFFLE) {
+        return Err(format!("HDF5 filter {id} is not supported"));
+    }
+    let place = |c: &Chunk| match c.offset[..] {
+        [r, k] => {
+            let (r, k) = (r as usize, k as usize);
+            (r % rows == 0 && k % cols == 0 && r < source.ysize && k < source.xsize)
+                .then_some((r, k))
+        }
+        _ => None,
+    };
+    let mut chunks: Vec<Chunk> = dataset
+        .chunks()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|c| place(c).is_some_and(|(r, k)| needed[r / rows * across + k / cols]))
+        .collect();
+    chunks.sort_by_key(|c| c.address);
+
+    let size = element.size();
+    let expected = rows * cols * size;
+    let mut codes = vec![1u8; source.xsize * source.ysize];
+    let mut at = 0;
+    while at < chunks.len() {
+        let first = chunks[at].address;
+        let mut end = first + chunks[at].storage_size;
+        let mut next = at + 1;
+        while next < chunks.len() && chunks[next].address == end {
+            end += chunks[next].storage_size;
+            next += 1;
+        }
+        let run = reader
+            .read_at(first, end - first)
+            .map_err(|e| format!("reading chunks at {first}: {e}"))?;
+        for chunk in &chunks[at..next] {
+            let start = (chunk.address - first) as usize;
+            let stored = &run[start..start + chunk.storage_size as usize];
+            let raw = unfilter(stored, &filters, chunk.filter_mask, size, expected)?;
+            let Some((r0, k0)) = place(chunk) else {
+                continue;
+            };
+            let width = cols.min(source.xsize - k0);
+            for r in 0..rows.min(source.ysize - r0) {
+                let line = &raw[r * cols * size..][..width * size];
+                let dest = &mut codes[(r0 + r) * source.xsize + k0..][..width];
+                for (code, value) in dest.iter_mut().zip(line.chunks_exact(size)) {
+                    *code = coding.code(element.value(value));
+                }
+            }
+        }
+        at = next;
+    }
+    Ok(codes)
+}
+
+/// Decode a composite and reproject its whole grid to its Web Mercator
+/// texture. `reader` may be a file, a buffer, or a ranged HTTP reader;
+/// only the metadata and the DBZH layer are read.
 pub fn decode<R: Read + Seek + Send + 'static>(reader: R) -> Result<Grid, CompositeError> {
-    let source =
-        ReadSeekSource::new(reader).map_err(|e| fail(format!("reading the composite: {e}")))?;
-    let file = File::from_source(source)
+    decode_box(reader, None)
+}
+
+/// `decode`, with the texture over `crop` instead of the whole grid when
+/// one is given. Of a layer stored in many chunks, only the chunks under
+/// the texture are read.
+pub fn decode_box<R: Read + Seek + Send + 'static>(
+    reader: R,
+    crop: Option<LonLatBox>,
+) -> Result<Grid, CompositeError> {
+    let reader = Shared::new(reader);
+    let hdf5 = ReadSeekSource::new(reader.clone())
+        .map_err(|e| fail(format!("reading the composite: {e}")))?;
+    let file = File::from_source(hdf5)
         .map_err(|e| fail(format!("opening the composite as HDF5: {e}")))?;
 
     let what = attrs(&file, "/what")?;
@@ -574,91 +1228,41 @@ pub fn decode<R: Read + Seek + Send + 'static>(reader: R) -> Result<Grid, Compos
             .or_else(|| num(&dwhat, key))
             .ok_or_else(|| fail(format!("{data}/what: no {key}")))
     };
-    let (gain, offset) = (coding("gain")?, coding("offset")?);
-    let (nodata, undetect) = (coding("nodata")?, coding("undetect")?);
+    let coding = Coding {
+        gain: coding("gain")?,
+        offset: coding("offset")?,
+        nodata: coding("nodata")?,
+        undetect: coding("undetect")?,
+    };
     let start_ms = nominal_ms(&what, "date", "time")
         .or_else(|| nominal_ms(&dwhat, "startdate", "starttime"))
         .ok_or_else(|| fail("/what: no date and time"))?;
     let end_ms = nominal_ms(&dwhat, "enddate", "endtime").unwrap_or(start_ms);
     let elevation_deg = num(&dwhat, "prodpar").unwrap_or(0.0);
 
-    let values = file
+    let target = Target::over(crop.unwrap_or_else(|| source.bounds()));
+    let dataset = file
         .dataset(&format!("{data}/data"))
-        .and_then(|d| d.read_u8())
         .map_err(|e| fail(format!("{data}/data: {e}")))?;
-    if values.len() != source.xsize * source.ysize {
-        return Err(fail(format!(
-            "{data}/data holds {} values, not {} × {}",
-            values.len(),
-            source.ysize,
-            source.xsize
-        )));
-    }
-    let source_codes: Vec<u8> = values
-        .iter()
-        .map(|&v| requantize(v, gain, offset, nodata, undetect))
-        .collect();
-
-    Ok(reproject(
-        &source,
-        &source_codes,
-        projdef,
-        start_ms,
-        end_ms,
-        elevation_deg,
-    ))
-}
-
-/// The Web Mercator texture over `source`: whole `PIXEL_M` texels from the
-/// box's west and north edges, each holding the source pixel under its
-/// centre. Longitude depends only on the column and latitude only on the
-/// row, so the projection splits into a per-row radius and a per-column
-/// angle.
-fn reproject(
-    source: &Source,
-    codes: &[u8],
-    source_projdef: String,
-    start_ms: i64,
-    end_ms: i64,
-    elevation_deg: f64,
-) -> Grid {
-    let (west, east, south, north) = source.bounds();
-    let (mx_west, my_north) = (MERCATOR_R * west.to_radians(), mercator_y(north));
-    let width = ((MERCATOR_R * east.to_radians() - mx_west) / PIXEL_M).ceil() as u32;
-    let height = ((my_north - mercator_y(south)) / PIXEL_M).ceil() as u32;
-    let angles: Vec<(f64, f64)> = (0..width)
-        .map(|c| {
-            let lon = mx_west + (f64::from(c) + 0.5) * PIXEL_M;
-            (lon / MERCATOR_R - source.stereo.lon0).sin_cos()
-        })
-        .collect();
-    let mut out = Vec::with_capacity(width as usize * height as usize);
-    for r in 0..height {
-        let lat = mercator_lat(my_north - (f64::from(r) + 0.5) * PIXEL_M);
-        let rho = source.stereo.rho(lat);
-        out.extend(angles.iter().map(|&(sin, cos)| {
-            let i = ((rho * sin - source.x0) / source.xscale).floor();
-            let j = ((source.y0 + rho * cos) / source.yscale).floor();
-            if i >= 0.0 && j >= 0.0 && (i as usize) < source.xsize && (j as usize) < source.ysize {
-                codes[j as usize * source.xsize + i as usize]
-            } else {
-                1
-            }
-        }));
-    }
-    Grid {
-        width,
-        height,
+    let codes = read_codes(&dataset, &reader, &source, &target, coding)
+        .map_err(|e| fail(format!("{data}/data: {e}")))?;
+    let mut out = Vec::with_capacity(target.width as usize * target.height as usize);
+    target.each_texel(&source, |pixel| {
+        out.push(pixel.map_or(1, |(i, j)| codes[j * source.xsize + i]));
+    });
+    Ok(Grid {
+        width: target.width,
+        height: target.height,
         codes: out,
         start_ms,
         end_ms,
         elevation_deg,
-        west,
-        east: (mx_west + f64::from(width) * PIXEL_M) / MERCATOR_R * 180.0 / std::f64::consts::PI,
-        north,
-        south: mercator_lat(my_north - f64::from(height) * PIXEL_M),
-        source_projdef,
-    }
+        west: target.west,
+        east: target.east(),
+        north: target.north,
+        south: target.south(),
+        source_projdef: projdef,
+    })
 }
 
 #[cfg(test)]
@@ -828,7 +1432,7 @@ mod tests {
         let file = File::from_source(ReadSeekSource::new(Cursor::new(bytes)).unwrap()).unwrap();
         let (source, _) = Source::read(&attrs(&file, "/where").unwrap()).unwrap();
         assert!((source.x0 - g.ul_x).abs() < 1e-3 && (source.y0 - g.ul_y).abs() < 1e-3);
-        let (x1, y1) = source.stereo.forward(
+        let (x1, y1) = source.proj.forward(
             num(&attrs(&file, "/where").unwrap(), "LR_lon").unwrap(),
             num(&attrs(&file, "/where").unwrap(), "LR_lat").unwrap(),
         );
@@ -840,7 +1444,7 @@ mod tests {
             .unwrap();
         let codes: Vec<u8> = values
             .iter()
-            .map(|&v| requantize(v, 0.4, -30.0, 255.0, 0.0))
+            .map(|&v| requantize(f64::from(v), 0.4, -30.0, 255.0, 0.0))
             .collect();
         assert_eq!(
             counts(&codes),
@@ -890,12 +1494,21 @@ mod tests {
 
     #[test]
     fn requantizes_like_the_polar_convention() {
-        assert_eq!(requantize(0, 0.4, -30.0, 255.0, 0.0), 0);
-        assert_eq!(requantize(255, 0.4, -30.0, 255.0, 0.0), 1);
+        assert_eq!(requantize(0.0, 0.4, -30.0, 255.0, 0.0), 0);
+        assert_eq!(requantize(255.0, 0.4, -30.0, 255.0, 0.0), 1);
         // 1 → -29.6 dBZ → 6.8 → 7; 75 → 0 dBZ → 66; 254 → 71.6 dBZ → 209.
-        assert_eq!(requantize(1, 0.4, -30.0, 255.0, 0.0), 7);
-        assert_eq!(requantize(75, 0.4, -30.0, 255.0, 0.0), 66);
-        assert_eq!(requantize(254, 0.4, -30.0, 255.0, 0.0), 209);
+        assert_eq!(requantize(1.0, 0.4, -30.0, 255.0, 0.0), 7);
+        assert_eq!(requantize(75.0, 0.4, -30.0, 255.0, 0.0), 66);
+        assert_eq!(requantize(254.0, 0.4, -30.0, 255.0, 0.0), 209);
+        // OPERA's floats: dBZ itself, and sentinels far below any echo.
+        let opera = |v| requantize(v, 1.0, 0.0, -9_999_000.0, -8_888_000.0);
+        assert_eq!(opera(-8_888_000.0), 0);
+        assert_eq!(opera(-9_999_000.0), 1);
+        assert_eq!(opera(-32.0), 2);
+        assert_eq!(opera(-31.5), 3);
+        assert_eq!(opera(0.0), 66);
+        assert_eq!(opera(69.5), 205);
+        assert_eq!(opera(100.0), 255);
     }
 
     #[test]
@@ -1046,5 +1659,299 @@ mod tests {
         assert_eq!(json["kind"], "grid");
         assert_eq!(json["grid"]["projection"], "EPSG:3857");
         assert_eq!(json["grid"]["sourceProjdef"], grid.source_projdef);
+    }
+
+    // -----------------------------------------------------------------------
+    // OPERA's Nordic crop (S16, DEC-14)
+    // -----------------------------------------------------------------------
+
+    const NORDIC_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../data/raw/opera_nordic_202609140810.h5"
+    );
+    const NORDIC_GOLDEN: &str = include_str!("../../golden/nordic-20260914/grid.json");
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Nordic {
+        sha256: String,
+        projdef: String,
+        date: String,
+        time: String,
+        end_date: String,
+        end_time: String,
+        chunk_rows: usize,
+        chunk_cols: usize,
+        ul_x: f64,
+        ul_y: f64,
+        lr_x: f64,
+        lr_y: f64,
+        #[serde(rename = "box")]
+        crop: Box4,
+        needed_chunks: Vec<ChunkAt>,
+        allocated_chunks: Vec<Allocated>,
+        width: u32,
+        height: u32,
+        west: f64,
+        east: f64,
+        north: f64,
+        south: f64,
+        counts: Counts,
+        near_edge: u64,
+        projection: Vec<Point>,
+        samples: Vec<Sample>,
+    }
+    #[derive(Deserialize)]
+    struct Box4 {
+        west: f64,
+        east: f64,
+        south: f64,
+        north: f64,
+    }
+    #[derive(Deserialize)]
+    struct ChunkAt {
+        row: usize,
+        col: usize,
+    }
+    #[derive(Deserialize)]
+    struct Allocated {
+        row: usize,
+        col: usize,
+        address: u64,
+        size: u64,
+        needed: bool,
+        counts: Option<Counts>,
+    }
+
+    impl Nordic {
+        fn crop(&self) -> LonLatBox {
+            LonLatBox {
+                west: self.crop.west,
+                east: self.crop.east,
+                south: self.crop.south,
+                north: self.crop.north,
+            }
+        }
+    }
+
+    fn nordic() -> Nordic {
+        serde_json::from_str(NORDIC_GOLDEN).unwrap()
+    }
+
+    fn nordic_fixture() -> Vec<u8> {
+        std::fs::read(NORDIC_FIXTURE).expect("run bash scripts/extract-fixtures.sh first")
+    }
+
+    fn utc(date: &str, time: &str) -> i64 {
+        NaiveDateTime::parse_from_str(&format!("{date}{time}"), "%Y%m%d%H%M%S")
+            .unwrap()
+            .and_utc()
+            .timestamp_millis()
+    }
+
+    #[test]
+    fn the_nordic_fixture_is_the_one_its_golden_file_describes() {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(nordic_fixture());
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, nordic().sha256);
+    }
+
+    #[test]
+    fn laea_matches_pyproj_both_ways() {
+        let g = nordic();
+        let laea = Laea::parse(&g.projdef).unwrap();
+        for p in &g.projection {
+            let (x, y) = laea.forward(p.lon, p.lat);
+            assert!(
+                (x - p.x).abs() < 1e-3 && (y - p.y).abs() < 1e-3,
+                "forward {}, {}: {x}, {y} vs {}, {}",
+                p.lon,
+                p.lat,
+                p.x,
+                p.y
+            );
+            let (lon, lat) = laea.inverse(p.x, p.y);
+            assert!(
+                (lon - p.inverse_lon).abs() < 1e-9 && (lat - p.inverse_lat).abs() < 1e-9,
+                "inverse {}, {}: {lon}, {lat} vs {}, {}",
+                p.x,
+                p.y,
+                p.inverse_lon,
+                p.inverse_lat
+            );
+        }
+    }
+
+    #[test]
+    fn only_laea_forms_it_can_draw_are_accepted() {
+        for bad in [
+            "+proj=laea +lat_0=90 +lon_0=10 +ellps=WGS84",
+            "+proj=laea +lat_0=55 +lon_0=10 +a=6371000",
+            "+proj=laea +lat_0=55 +lon_0=10 +ellps=WGS84 +units=km",
+            "+proj=laea +lat_0=55 +lon_0=10 +ellps=WGS84 +towgs84=1,2,3",
+            "+proj=laea +lat_0=55 +lon_0=10 +ellps=bessel +towgs84=0,0,0",
+            "+proj=laea +lat_0=55 +lon_0=10",
+        ] {
+            assert!(Laea::parse(bad).is_err(), "{bad} should be rejected");
+        }
+        assert!(Projection::parse("+proj=merc +ellps=WGS84").is_err());
+        let named = Laea::parse("+proj=laea +lat_0=55 +lon_0=10 +ellps=WGS84").unwrap();
+        let spelled =
+            Laea::parse("+proj=laea +lat_0=55 +lon_0=10 +a=6378137 +rf=298.257223563").unwrap();
+        assert_eq!(named, spelled);
+        // The equatorial aspect is the oblique formulas' limit.
+        let equator = Laea::parse("+proj=laea +lat_0=0 +lon_0=0 +ellps=WGS84").unwrap();
+        let (x, y) = equator.forward(0.0, 0.0);
+        assert!(x.abs() < 1e-9 && y.abs() < 1e-9);
+        let (x, y) = equator.forward(10.0, 20.0);
+        let (lon, lat) = equator.inverse(x, y);
+        assert!((lon - 10.0).abs() < 1e-9 && (lat - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_nordic_box_needs_eleven_chunks() {
+        let g = nordic();
+        let bytes = nordic_fixture();
+        let file = File::from_source(ReadSeekSource::new(Cursor::new(bytes)).unwrap()).unwrap();
+        let where_ = attrs(&file, "/where").unwrap();
+        let (source, _) = Source::read(&where_).unwrap();
+        // UL_* and LR_* are the outer corners of the corner pixels.
+        assert!((source.x0 - g.ul_x).abs() < 1e-3 && (source.y0 - g.ul_y).abs() < 1e-3);
+        let (x1, y1) = source.proj.forward(
+            num(&where_, "LR_lon").unwrap(),
+            num(&where_, "LR_lat").unwrap(),
+        );
+        assert!((x1 - g.lr_x).abs() < 1e-3 && (y1 - g.lr_y).abs() < 1e-3);
+        let mut needed = std::collections::BTreeSet::new();
+        Target::over(g.crop()).each_texel(&source, |pixel| {
+            if let Some((i, j)) = pixel {
+                needed.insert((j / g.chunk_rows, i / g.chunk_cols));
+            }
+        });
+        let expected: Vec<(usize, usize)> =
+            g.needed_chunks.iter().map(|c| (c.row, c.col)).collect();
+        assert_eq!(needed.into_iter().collect::<Vec<_>>(), expected);
+        assert_eq!(expected.len(), 11);
+    }
+
+    #[test]
+    fn the_needed_chunks_decode_like_h5py() {
+        let g = nordic();
+        let reader = Shared::new(Cursor::new(nordic_fixture()));
+        let file = File::from_source(ReadSeekSource::new(reader.clone()).unwrap()).unwrap();
+        let (source, _) = Source::read(&attrs(&file, "/where").unwrap()).unwrap();
+        let dataset = file.dataset("/dataset1/data1/data").unwrap();
+        let coding = Coding {
+            gain: 1.0,
+            offset: 0.0,
+            nodata: -9_999_000.0,
+            undetect: -8_888_000.0,
+        };
+        let codes = read_codes(&dataset, &reader, &source, &Target::over(g.crop()), coding)
+            .unwrap();
+        let mut checked = 0;
+        for c in g.allocated_chunks.iter().filter(|c| c.needed) {
+            let theirs = c.counts.as_ref().unwrap();
+            let mut ours = (0, 0, 0);
+            for r in c.row * g.chunk_rows..((c.row + 1) * g.chunk_rows).min(source.ysize) {
+                let line = &codes[r * source.xsize..][..source.xsize];
+                let cells = &line[c.col * g.chunk_cols..((c.col + 1) * g.chunk_cols).min(source.xsize)];
+                let (m, u, n) = counts(cells);
+                ours = (ours.0 + m, ours.1 + u, ours.2 + n);
+            }
+            assert_eq!(
+                ours,
+                (theirs.measured, theirs.undetect, theirs.nodata),
+                "chunk {}, {}",
+                c.row,
+                c.col
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 5, "the fixture keeps five of the eleven needed chunks");
+    }
+
+    #[test]
+    fn the_nordic_crop_reprojects_like_pyproj() {
+        let g = nordic();
+        let grid = decode_box(Cursor::new(nordic_fixture()), Some(g.crop())).unwrap();
+        assert_eq!((grid.width, grid.height), (g.width, g.height));
+        assert_eq!((grid.width, grid.height), (1670, 2297));
+        for (ours, theirs, edge) in [
+            (grid.west, g.west, "west"),
+            (grid.east, g.east, "east"),
+            (grid.north, g.north, "north"),
+            (grid.south, g.south, "south"),
+        ] {
+            assert!((ours - theirs).abs() < 1e-8, "{edge}: {ours} vs {theirs}");
+        }
+        assert_eq!(grid.source_projdef, g.projdef);
+        assert_eq!(
+            (grid.start_ms, grid.end_ms),
+            (utc(&g.date, &g.time), utc(&g.end_date, &g.end_time))
+        );
+        for s in &g.samples {
+            let code = grid.codes[(s.row * grid.width + s.col) as usize];
+            assert_eq!(code, s.code, "texel {}, {} ({}, {})", s.col, s.row, s.lon, s.lat);
+        }
+        let (measured, undetect, nodata) = counts(&grid.codes);
+        for (ours, theirs, what) in [
+            (measured, g.counts.measured, "measured"),
+            (undetect, g.counts.undetect, "undetect"),
+            (nodata, g.counts.nodata, "nodata or outside"),
+        ] {
+            assert!(
+                ours.abs_diff(theirs) <= g.near_edge,
+                "{what}: {ours} vs {theirs}"
+            );
+        }
+    }
+
+    /// The fixture served in ranges, recording every range asked for.
+    struct Recording(Vec<u8>, Arc<Mutex<Vec<(u64, u64)>>>);
+    impl RangeSource for Recording {
+        fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, Option<u64>)> {
+            self.1.lock().unwrap().push((offset, len));
+            let start = (offset as usize).min(self.0.len());
+            let end = (start + len as usize).min(self.0.len());
+            Ok((self.0[start..end].to_vec(), Some(self.0.len() as u64)))
+        }
+    }
+
+    #[test]
+    fn only_the_needed_chunks_are_fetched() {
+        let g = nordic();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let reader = RangeReader::open(Box::new(Recording(nordic_fixture(), asked.clone()))).unwrap();
+        let traffic = reader.traffic();
+        let grid = decode_box(reader, Some(g.crop())).unwrap();
+        assert_eq!((grid.width, grid.height), (g.width, g.height));
+        let asked = asked.lock().unwrap();
+        let unneeded: Vec<&Allocated> = g.allocated_chunks.iter().filter(|c| !c.needed).collect();
+        assert!(!unneeded.is_empty(), "the fixture keeps an unneeded chunk to test this");
+        for c in unneeded {
+            // At most the block it shares with a stored neighbour.
+            let overlap: u64 = asked
+                .iter()
+                .map(|&(offset, len)| {
+                    (offset + len).min(c.address + c.size).saturating_sub(offset.max(c.address))
+                })
+                .sum();
+            assert!(
+                overlap <= smhi_live::BLOCK && c.size > smhi_live::BLOCK,
+                "chunk ({}, {}): {overlap} of its {} bytes fetched by {asked:?}",
+                c.row,
+                c.col,
+                c.size
+            );
+        }
+        assert!(
+            traffic.requests() <= 12,
+            "{} requests, {} bytes of {}: {asked:?}",
+            traffic.requests(),
+            traffic.bytes(),
+            traffic.total()
+        );
     }
 }

@@ -17,6 +17,11 @@ nexrad-model = "=1.0.0-rc.2"
 # SMHI ODIM_H5 volumes (`odim.rs`, DEC-1): pure-Rust HDF5, no C library;
 # the default features (`std`, `checksum`, `deflate`) read SMHI's chunks.
 hdf5-pure = "=0.45.0"
+# OPERA's chunked composite (`composite.rs`, DEC-14) is read chunk by chunk,
+# and hdf5-pure keeps its chunk filters private, so the engine inflates the
+# chunks itself. Already in the tree through hdf5-pure's `deflate` feature,
+# with the same pure-Rust backend.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 png = "0.18"
 tokio = { version = "1.53", features = ["rt", "net", "time", "sync", "io-util"] }
 # Basemap tile masks (DESIGN.md, basemap tiles): one antialiased coverage

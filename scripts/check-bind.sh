@@ -13,8 +13,10 @@ rg -F -- "$bind" README.md >/dev/null \
 # shellcheck disable=SC2088 # the literal path as the README prints it
 rg -F -- '~/.config/hypr/bindings.lua' README.md >/dev/null \
   || fail 'README.md does not name ~/.config/hypr/bindings.lua'
-rg -- 'omarchy plugin add https://github\.com/wesleygrimes/omastorm(\.git)? --enable' README.md >/dev/null \
-  || fail 'README.md does not name omarchy plugin add https://github.com/wesleygrimes/omastorm --enable'
+# The fork's install line, not upstream's (that would install the NEXRAD
+# plugin); the owner is whoever publishes the fork.
+rg -- 'omarchy plugin add https://github\.com/[^/ ]+/omastorm-se(\.git)? --enable' README.md >/dev/null \
+  || fail 'README.md does not name omarchy plugin add https://github.com/<owner>/omastorm-se --enable'
 
 # Omarchy never writes this file, and neither do install or launch.
 if rg -q 'bindings\.lua|hypr/' run.sh scripts/fetch-engine.sh scripts/write-desktop-entry.sh; then

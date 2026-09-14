@@ -329,7 +329,11 @@ mod tests {
         let nordic = sites.iter().find(|s| s.id == "nordic").unwrap();
         assert_eq!(
             (nordic.kind, nordic.provider, nordic.attribution.as_str()),
-            (SiteKind::Grid, ProviderId::Opera, "EUMETNET OPERA, CC BY 4.0")
+            (
+                SiteKind::Grid,
+                ProviderId::Opera,
+                "EUMETNET OPERA, CC BY 4.0"
+            )
         );
         assert_eq!(
             serde_json::to_string(&ProviderId::Opera).unwrap(),

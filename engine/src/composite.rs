@@ -1200,8 +1200,8 @@ pub fn decode_box<R: Read + Seek + Send + 'static>(
     let reader = Shared::new(reader);
     let hdf5 = ReadSeekSource::new(reader.clone())
         .map_err(|e| fail(format!("reading the composite: {e}")))?;
-    let file = File::from_source(hdf5)
-        .map_err(|e| fail(format!("opening the composite as HDF5: {e}")))?;
+    let file =
+        File::from_source(hdf5).map_err(|e| fail(format!("opening the composite as HDF5: {e}")))?;
 
     let what = attrs(&file, "/what")?;
     if let Some(object) = text(&what, "object")
@@ -1848,15 +1848,16 @@ mod tests {
             nodata: -9_999_000.0,
             undetect: -8_888_000.0,
         };
-        let codes = read_codes(&dataset, &reader, &source, &Target::over(g.crop()), coding)
-            .unwrap();
+        let codes =
+            read_codes(&dataset, &reader, &source, &Target::over(g.crop()), coding).unwrap();
         let mut checked = 0;
         for c in g.allocated_chunks.iter().filter(|c| c.needed) {
             let theirs = c.counts.as_ref().unwrap();
             let mut ours = (0, 0, 0);
             for r in c.row * g.chunk_rows..((c.row + 1) * g.chunk_rows).min(source.ysize) {
                 let line = &codes[r * source.xsize..][..source.xsize];
-                let cells = &line[c.col * g.chunk_cols..((c.col + 1) * g.chunk_cols).min(source.xsize)];
+                let cells =
+                    &line[c.col * g.chunk_cols..((c.col + 1) * g.chunk_cols).min(source.xsize)];
                 let (m, u, n) = counts(cells);
                 ours = (ours.0 + m, ours.1 + u, ours.2 + n);
             }
@@ -1869,7 +1870,10 @@ mod tests {
             );
             checked += 1;
         }
-        assert_eq!(checked, 5, "the fixture keeps five of the eleven needed chunks");
+        assert_eq!(
+            checked, 5,
+            "the fixture keeps five of the eleven needed chunks"
+        );
     }
 
     #[test]
@@ -1893,7 +1897,11 @@ mod tests {
         );
         for s in &g.samples {
             let code = grid.codes[(s.row * grid.width + s.col) as usize];
-            assert_eq!(code, s.code, "texel {}, {} ({}, {})", s.col, s.row, s.lon, s.lat);
+            assert_eq!(
+                code, s.code,
+                "texel {}, {} ({}, {})",
+                s.col, s.row, s.lon, s.lat
+            );
         }
         let (measured, undetect, nodata) = counts(&grid.codes);
         for (ours, theirs, what) in [
@@ -1923,19 +1931,25 @@ mod tests {
     fn only_the_needed_chunks_are_fetched() {
         let g = nordic();
         let asked = Arc::new(Mutex::new(Vec::new()));
-        let reader = RangeReader::open(Box::new(Recording(nordic_fixture(), asked.clone()))).unwrap();
+        let reader =
+            RangeReader::open(Box::new(Recording(nordic_fixture(), asked.clone()))).unwrap();
         let traffic = reader.traffic();
         let grid = decode_box(reader, Some(g.crop())).unwrap();
         assert_eq!((grid.width, grid.height), (g.width, g.height));
         let asked = asked.lock().unwrap();
         let unneeded: Vec<&Allocated> = g.allocated_chunks.iter().filter(|c| !c.needed).collect();
-        assert!(!unneeded.is_empty(), "the fixture keeps an unneeded chunk to test this");
+        assert!(
+            !unneeded.is_empty(),
+            "the fixture keeps an unneeded chunk to test this"
+        );
         for c in unneeded {
             // At most the block it shares with a stored neighbour.
             let overlap: u64 = asked
                 .iter()
                 .map(|&(offset, len)| {
-                    (offset + len).min(c.address + c.size).saturating_sub(offset.max(c.address))
+                    (offset + len)
+                        .min(c.address + c.size)
+                        .saturating_sub(offset.max(c.address))
                 })
                 .sum();
             assert!(

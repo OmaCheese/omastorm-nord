@@ -639,7 +639,10 @@ mod tests {
         assert_eq!(SPEC.staleness.unavailable, Duration::from_secs(30 * 60));
         assert_eq!(SPEC.backfill, 24);
         let s = station();
-        assert_eq!((s.id.as_str(), s.kind, s.provider), (ID, SiteKind::Grid, ProviderId::Opera));
+        assert_eq!(
+            (s.id.as_str(), s.kind, s.provider),
+            (ID, SiteKind::Grid, ProviderId::Opera)
+        );
         assert_eq!((s.country.as_str(), s.range_km), ("", 0.0));
         assert_eq!(s.attribution, "EUMETNET OPERA, CC BY 4.0");
         // The station sits inside its own box.
@@ -650,7 +653,8 @@ mod tests {
     #[test]
     fn the_nordic_box_is_the_goldens() {
         let golden: serde_json::Value =
-            serde_json::from_str(include_str!("../../../golden/nordic-20260914/grid.json")).unwrap();
+            serde_json::from_str(include_str!("../../../golden/nordic-20260914/grid.json"))
+                .unwrap();
         let b = &golden["box"];
         assert_eq!(
             NORDIC,

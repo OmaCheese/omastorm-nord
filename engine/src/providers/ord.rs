@@ -1569,7 +1569,7 @@ mod tests {
         let mut gets = Vec::new();
         for want in [
             Want::ColMax,
-            Want::Cappi(1000.0),
+            Want::Cappi(1000.0, 1000),
             Want::ColMax,
             Want::Lowest,
         ] {
@@ -1894,7 +1894,7 @@ mod tests {
     /// product as under the block plan; the lowest scan keeps its plan.
     #[test]
     fn a_product_reads_the_file_whole_up_to_two_mib() {
-        for want in [Want::ColMax, Want::Cappi(1000.0), Want::Angle(4.8)] {
+        for want in [Want::ColMax, Want::Cappi(1000.0, 1000), Want::Angle(4.8)] {
             let plan = |size| plan_for(Some(size), want);
             assert_eq!(plan(801_413).prefetch, 802_816, "norsa's 12-angle file");
             assert_eq!(plan(1_293_200).prefetch, 1_294_336, "DMI's largest seen");
@@ -1909,7 +1909,7 @@ mod tests {
             let path = format!("{}/../data/raw/{name}", env!("CARGO_MANIFEST_DIR"));
             let bytes = std::fs::read(path).unwrap();
             let len = bytes.len() as u64;
-            for want in [Want::ColMax, Want::Cappi(2000.0)] {
+            for want in [Want::ColMax, Want::Cappi(2000.0, 2000)] {
                 let blocks = cost_of(&bytes, PLAN, want);
                 let whole = cost_of(&bytes, plan_for(Some(len), want), want);
                 assert_eq!(whole.3, blocks.3, "{name}: the same product");

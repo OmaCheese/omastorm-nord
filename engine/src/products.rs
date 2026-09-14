@@ -4,8 +4,10 @@
 //! - `REF` at elevation index 0 is the lowest scan, decoded as before S20
 //!   (`Want::Lowest`); `REF` at another index is that one angle as it is
 //!   (`Want::Angle`).
-//! - `CAPPI1` and `CAPPI2` are pseudo-CAPPIs at 1 and 2 km above the
-//!   antenna, `CMAX` the column maximum, `HYBRID` ("Clear view") the lowest
+//! - `CAPPI` ("Height", S29) is a horizontal slice at a chosen height above
+//!   sea level (500 m to 12 km), with no data where no beam holds that
+//!   height; `CAPPI1` and `CAPPI2` are its old names for 1 and 2 km (`choose`).
+//!   `CMAX` is the column maximum, `HYBRID` ("Clear view") the lowest
 //!   angle the terrain does not block, per azimuth. These are drawn on the
 //!   lowest scan's rays and gates (`compose`), so the texture, the azimuth
 //!   lookup and the shader's lookup rule are unchanged: `elevationDeg` is the
@@ -41,9 +43,23 @@ pub const KEPT: usize = 2;
 
 pub const REF: &str = "REF";
 pub const HYBRID: &str = "HYBRID";
+/// "Height" (S29): a horizontal slice at `heightM` above sea level.
+pub const CAPPI: &str = "CAPPI";
+/// The fixed heights before S29, which `set_product` still accepts as
+/// `CAPPI` at 1,000 and 2,000 m (`choose`); no longer in the vocabulary.
 pub const CAPPI1: &str = "CAPPI1";
 pub const CAPPI2: &str = "CAPPI2";
 pub const CMAX: &str = "CMAX";
+
+/// `CAPPI`'s heights above sea level, in metres (S29).
+pub const HEIGHT_MIN_M: u32 = 500;
+pub const HEIGHT_MAX_M: u32 = 12_000;
+pub const HEIGHT_STEP_M: u32 = 500;
+/// `CAPPI`'s height when `set_product` names none.
+pub const HEIGHT_DEFAULT_M: u32 = 2_000;
+/// Half of a nominal 1° beam: a scan's beam holds a height where the height
+/// is seen within this of the scan's angle (`cappi_pick`).
+pub const BEAM_HALF_DEG: f64 = 0.5;
 
 /// One entry of `hello.products`.
 #[derive(Serialize, PartialEq, Clone, Debug)]
@@ -53,7 +69,7 @@ pub struct Info {
 }
 
 /// `hello.products`: the vocabulary, in the order a chooser lists it.
-pub const VOCABULARY: [Info; 5] = [
+pub const VOCABULARY: [Info; 4] = [
     Info {
         id: REF,
         name: "Lowest scan",
@@ -63,12 +79,8 @@ pub const VOCABULARY: [Info; 5] = [
         name: "Clear view",
     },
     Info {
-        id: CAPPI1,
-        name: "Height 1 km",
-    },
-    Info {
-        id: CAPPI2,
-        name: "Height 2 km",
+        id: CAPPI,
+        name: "Height",
     },
     Info {
         id: CMAX,
@@ -82,6 +94,10 @@ pub const VOCABULARY: [Info; 5] = [
 pub struct Choice {
     pub id: String,
     pub elevation_index: u32,
+    /// `CAPPI`'s height above sea level, in metres (S29); `None`, and not
+    /// sent, for any other product.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height_m: Option<u32>,
 }
 
 impl Default for Choice {
@@ -90,7 +106,61 @@ impl Default for Choice {
         Choice {
             id: REF.to_owned(),
             elevation_index: 0,
+            height_m: None,
         }
+    }
+}
+
+/// What a `set_product` asks for, as `state.product` will hold it: the
+/// aliases `CAPPI1` and `CAPPI2` become `CAPPI` at 1,000 and 2,000 m (a
+/// `heightM` sent with them is ignored), and `CAPPI` without a height takes
+/// `HEIGHT_DEFAULT_M`. An id neither in the vocabulary nor an alias, or a
+/// height out of range, off the 500 m steps or sent with another product, is
+/// the error its sender hears. Whether the station can make the choice is
+/// `want_for`'s question.
+pub fn choose(
+    product: &str,
+    elevation_index: u32,
+    height_m: Option<u32>,
+) -> Result<Choice, String> {
+    let height = match product {
+        CAPPI1 => Some(1_000),
+        CAPPI2 => Some(2_000),
+        CAPPI => {
+            let h = height_m.unwrap_or(HEIGHT_DEFAULT_M);
+            if !(HEIGHT_MIN_M..=HEIGHT_MAX_M).contains(&h) || !h.is_multiple_of(HEIGHT_STEP_M) {
+                return Err(format!(
+                    "heightM {h} is not a height CAPPI shows: {HEIGHT_MIN_M} to {HEIGHT_MAX_M} m \
+                     above sea level, in steps of {HEIGHT_STEP_M}."
+                ));
+            }
+            Some(h)
+        }
+        _ if !VOCABULARY.iter().any(|p| p.id == product) => {
+            return Err(format!(
+                "Unknown product {product}; products are listed in hello."
+            ));
+        }
+        _ => {
+            if let Some(h) = height_m {
+                return Err(format!("heightM {h} goes with CAPPI only, not {product}."));
+            }
+            None
+        }
+    };
+    Ok(Choice {
+        id: if height.is_some() { CAPPI } else { product }.to_owned(),
+        elevation_index,
+        height_m: height,
+    })
+}
+
+/// A height in metres as a label: `3 km`, `3.5 km`.
+fn km_label(m: u32) -> String {
+    if m.is_multiple_of(1000) {
+        format!("{} km", m / 1000)
+    } else {
+        format!("{:.1} km", f64::from(m) / 1000.0)
     }
 }
 
@@ -109,8 +179,10 @@ pub enum Want {
     Lowest,
     /// The scan nearest this angle, in degrees.
     Angle(f64),
-    /// A pseudo-CAPPI this many metres above the antenna.
-    Cappi(f64),
+    /// A horizontal slice (S29): `.0` metres above the antenna, what the
+    /// beams are matched against; `.1` the chosen height above sea level in
+    /// metres, which names the product.
+    Cappi(f64, u32),
     /// The column maximum.
     ColMax,
     /// Per azimuth, the lowest angle clear of the terrain.
@@ -118,20 +190,24 @@ pub enum Want {
 }
 
 impl Want {
-    /// The product a choice names on a station with these nominal angles
-    /// and blockage table; `None` when the station cannot make it.
+    /// The product a choice names on a station with these nominal angles,
+    /// blockage table and antenna height above sea level (`alt_m`); `None`
+    /// when the station cannot make it.
     pub fn of(
         choice: &Choice,
         elevations: &[f64],
         blockage: Option<&'static Blockage>,
+        alt_m: f64,
     ) -> Option<Want> {
         let index = choice.elevation_index as usize;
         match choice.id.as_str() {
             REF if index == 0 => Some(Want::Lowest),
             REF => elevations.get(index).map(|&deg| Want::Angle(deg)),
             _ if index != 0 => None,
-            CAPPI1 => Some(Want::Cappi(1000.0)),
-            CAPPI2 => Some(Want::Cappi(2000.0)),
+            CAPPI => {
+                let h = choice.height_m.unwrap_or(HEIGHT_DEFAULT_M);
+                Some(Want::Cappi(f64::from(h) - alt_m, h))
+            }
             CMAX => Some(Want::ColMax),
             HYBRID => blockage.map(Want::Hybrid),
             _ => None,
@@ -143,24 +219,27 @@ impl Want {
     }
 
     /// The product's id and display name (`frame.product`, `productName`).
-    pub fn product(&self) -> (&'static str, &'static str) {
+    pub fn product(&self) -> (&'static str, String) {
         match self {
-            Want::Lowest | Want::Angle(_) => (REF, "Reflectivity"),
-            Want::Cappi(h) if *h < 1500.0 => (CAPPI1, "Height 1 km"),
-            Want::Cappi(_) => (CAPPI2, "Height 2 km"),
-            Want::ColMax => (CMAX, "Column max"),
-            Want::Hybrid(_) => (HYBRID, "Clear view"),
+            Want::Lowest | Want::Angle(_) => (REF, "Reflectivity".to_owned()),
+            Want::Cappi(_, asl) => (CAPPI, format!("Height {}", km_label(*asl))),
+            Want::ColMax => (CMAX, "Column max".to_owned()),
+            Want::Hybrid(_) => (HYBRID, "Clear view".to_owned()),
         }
     }
 
     /// The last part of a frame id, and the catalog's key for the product:
     /// `e0` for the lowest scan (the id every frame had before S20), `a40`
-    /// for the angle 4.0°, and so on.
+    /// for the angle 4.0°, `cappi3` for a whole number of km above sea level
+    /// (so S20's `cappi1` and `cappi2` rings stay 1 and 2 km) and
+    /// `cappi3500` for any other height in metres (500 m to 12 km, so the two
+    /// never meet), and so on.
     pub fn variant(&self) -> String {
         match self {
             Want::Lowest => "e0".to_owned(),
             Want::Angle(deg) => format!("a{}", (deg * 10.0).round() as i64),
-            Want::Cappi(h) => format!("cappi{}", (h / 1000.0).round() as i64),
+            Want::Cappi(_, asl) if asl.is_multiple_of(1000) => format!("cappi{}", asl / 1000),
+            Want::Cappi(_, asl) => format!("cappi{asl}"),
             Want::ColMax => "cmax".to_owned(),
             Want::Hybrid(_) => "clear".to_owned(),
         }
@@ -276,7 +355,12 @@ pub fn want_for(station: &Station, choice: &Choice) -> Option<Want> {
     if !products.contains(&choice.id.as_str()) {
         return None;
     }
-    Want::of(choice, nominal_angles(station), blockage(&station.id))
+    Want::of(
+        choice,
+        nominal_angles(station),
+        blockage(&station.id),
+        station.alt_m,
+    )
 }
 
 /// The angle a `REF` choice names on `station`, in degrees; `None` for any
@@ -306,6 +390,7 @@ pub fn carry(choice: &Choice, deg: Option<f64>, to: &Station) -> Choice {
         return Choice {
             id: REF.to_owned(),
             elevation_index: index as u32,
+            height_m: None,
         };
     }
     if want_for(to, choice).is_some() {
@@ -409,18 +494,31 @@ struct Hit {
     height: f64,
 }
 
-/// Per scan, per output gate, where it covers the gate (`docs/protocol.md`,
-/// how each product is made). `lowest` indexes the scan whose grid is the
-/// output's.
-fn hits(infos: &[TiltInfo], lowest: usize) -> Vec<Vec<Option<Hit>>> {
+/// The ground distance of each output gate: the gates of the scan `lowest`
+/// indexes, placed at its nominal angle.
+fn grounds(infos: &[TiltInfo], lowest: usize) -> Vec<f64> {
     let base = infos[lowest];
     let e0 = placement_deg(base.elangle).to_radians();
-    let grounds: Vec<f64> = (0..usize::from(base.gates))
+    (0..usize::from(base.gates))
         .map(|g| {
             let r = f64::from(base.first_gate_m) + g as f64 * f64::from(base.gate_spacing_m);
             ground_of(r, e0)
         })
-        .collect();
+        .collect()
+}
+
+/// The elevation, in radians, at which the antenna sees the point at ground
+/// distance `ground_m` and `height_m` above the antenna, on the 4/3 earth.
+fn elevation_to(ground_m: f64, height_m: f64) -> f64 {
+    let (theta, r) = (ground_m / EARTH_M, EARTH_M + height_m);
+    (r * theta.cos() - EARTH_M).atan2(r * theta.sin())
+}
+
+/// Per scan, per output gate, where it covers the gate (`docs/protocol.md`,
+/// how each product is made). `lowest` indexes the scan whose grid is the
+/// output's.
+fn hits(infos: &[TiltInfo], lowest: usize) -> Vec<Vec<Option<Hit>>> {
+    let grounds = grounds(infos, lowest);
     infos
         .iter()
         .map(|info| {
@@ -474,17 +572,26 @@ fn nearest_of(infos: &[TiltInfo], deg: f64) -> usize {
     best
 }
 
-/// The pseudo-CAPPI's scan at one output gate: of those covering it, the
-/// one whose beam centre is nearest `height`; the lower angle on a tie.
+/// The height slice's scan at output gate `g`, `ground_m` from the radar:
+/// of the scans covering it whose beam holds `height` metres above the
+/// antenna (seen within `BEAM_HALF_DEG` of the scan's angle), the one whose
+/// beam centre is nearest `height`; the lower angle on a tie. `None` where
+/// no beam holds it: no radar at this height.
 fn cappi_pick(
     hits: &[Vec<Option<Hit>>],
     infos: &[TiltInfo],
+    ground_m: f64,
     g: usize,
     height: f64,
 ) -> Option<usize> {
+    let seen = elevation_to(ground_m, height);
+    let half = BEAM_HALF_DEG.to_radians();
     let mut best: Option<(usize, f64)> = None;
     for (k, per_gate) in hits.iter().enumerate() {
         let Some(hit) = per_gate[g] else { continue };
+        if (seen - infos[k].elangle.to_radians()).abs() > half {
+            continue;
+        }
         let d = (hit.height - height).abs();
         let better = match best {
             None => true,
@@ -527,10 +634,10 @@ pub fn needed(want: Want, infos: &[TiltInfo]) -> Vec<usize> {
             picked[lowest] = false;
             picked[nearest_of(infos, deg)] = true;
         }
-        Want::Cappi(height) => {
+        Want::Cappi(height, _) => {
             let hits = hits(infos, lowest);
-            for g in 0..usize::from(infos[lowest].gates) {
-                if let Some(k) = cappi_pick(&hits, infos, g, height) {
+            for (g, &s) in grounds(infos, lowest).iter().enumerate() {
+                if let Some(k) = cappi_pick(&hits, infos, s, g, height) {
                     picked[k] = true;
                 }
             }
@@ -607,8 +714,10 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
         })
     };
     let per_gate_pick: Vec<Option<usize>> = match want {
-        Want::Cappi(height) => (0..gates)
-            .map(|g| cappi_pick(&hits, &infos, g, height))
+        Want::Cappi(height, _) => grounds(&infos, 0)
+            .iter()
+            .enumerate()
+            .map(|(g, &s)| cappi_pick(&hits, &infos, s, g, height))
             .collect(),
         _ => Vec::new(),
     };
@@ -624,7 +733,7 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
         };
         let codes: Vec<u8> = (0..gates)
             .map(|g| match want {
-                Want::Cappi(_) => per_gate_pick[g].and_then(|k| value(k, i, g)).unwrap_or(1),
+                Want::Cappi(..) => per_gate_pick[g].and_then(|k| value(k, i, g)).unwrap_or(1),
                 Want::Hybrid(_) => hybrid.and_then(|k| value(k, i, g)).unwrap_or(1),
                 Want::ColMax => {
                     let (mut top, mut below) = (None::<u8>, false);
@@ -800,46 +909,83 @@ mod tests {
     #[test]
     fn the_vocabulary_and_choices() {
         let ids: Vec<&str> = VOCABULARY.iter().map(|p| p.id).collect();
-        assert_eq!(ids, ["REF", "HYBRID", "CAPPI1", "CAPPI2", "CMAX"]);
+        assert_eq!(ids, ["REF", "HYBRID", "CAPPI", "CMAX"]);
         let elevations = [0.5, 1.0, 1.5];
         let choice = |id: &str, index| Choice {
             id: id.into(),
             elevation_index: index,
+            height_m: None,
+        };
+        let height = |m| Choice {
+            id: CAPPI.into(),
+            elevation_index: 0,
+            height_m: Some(m),
         };
         assert_eq!(
-            Want::of(&Choice::default(), &elevations, None),
+            Want::of(&Choice::default(), &elevations, None, 0.0),
             Some(Want::Lowest)
         );
         assert_eq!(
-            Want::of(&choice("REF", 2), &elevations, None),
+            Want::of(&choice("REF", 2), &elevations, None, 0.0),
             Some(Want::Angle(1.5))
         );
-        assert_eq!(Want::of(&choice("REF", 3), &elevations, None), None);
+        assert_eq!(Want::of(&choice("REF", 3), &elevations, None, 0.0), None);
         assert_eq!(
-            Want::of(&choice("CAPPI1", 0), &[], None),
-            Some(Want::Cappi(1000.0))
+            Want::of(&height(1000), &[], None, 0.0),
+            Some(Want::Cappi(1000.0, 1000))
         );
         assert_eq!(
-            Want::of(&choice("CAPPI2", 1), &elevations, None),
+            Want::of(&height(3500), &[], None, 220.0),
+            Some(Want::Cappi(3280.0, 3500)),
+            "above sea level: the antenna's height comes off"
+        );
+        assert_eq!(
+            Want::of(
+                &Choice {
+                    elevation_index: 1,
+                    ..height(2000)
+                },
+                &elevations,
+                None,
+                0.0
+            ),
             None,
             "an index with another product"
         );
         assert_eq!(
-            Want::of(&choice("HYBRID", 0), &elevations, None),
+            Want::of(&choice("HYBRID", 0), &elevations, None, 0.0),
             None,
             "no blockage table"
         );
-        assert_eq!(Want::of(&choice("VIL", 0), &elevations, None), None);
-        for (want, variant, id) in [
-            (Want::Lowest, "e0", "REF"),
-            (Want::Angle(4.0), "a40", "REF"),
-            (Want::Angle(0.7), "a7", "REF"),
-            (Want::Cappi(1000.0), "cappi1", "CAPPI1"),
-            (Want::Cappi(2000.0), "cappi2", "CAPPI2"),
-            (Want::ColMax, "cmax", "CMAX"),
+        assert_eq!(Want::of(&choice("VIL", 0), &elevations, None, 0.0), None);
+        assert_eq!(
+            Want::of(&choice("CAPPI1", 0), &elevations, None, 0.0),
+            None,
+            "an alias is choose's to resolve; state never holds one"
+        );
+        for (want, variant, id, name) in [
+            (Want::Lowest, "e0", "REF", "Reflectivity"),
+            (Want::Angle(4.0), "a40", "REF", "Reflectivity"),
+            (Want::Angle(0.7), "a7", "REF", "Reflectivity"),
+            (Want::Cappi(1000.0, 1000), "cappi1", "CAPPI", "Height 1 km"),
+            (Want::Cappi(1780.0, 2000), "cappi2", "CAPPI", "Height 2 km"),
+            (
+                Want::Cappi(3280.0, 3500),
+                "cappi3500",
+                "CAPPI",
+                "Height 3.5 km",
+            ),
+            (Want::Cappi(0.0, 500), "cappi500", "CAPPI", "Height 0.5 km"),
+            (Want::Cappi(0.0, 12000), "cappi12", "CAPPI", "Height 12 km"),
+            (Want::ColMax, "cmax", "CMAX", "Column max"),
         ] {
-            assert_eq!((want.variant().as_str(), want.product().0), (variant, id));
+            let (product, product_name) = want.product();
+            assert_eq!(
+                (want.variant().as_str(), product, product_name.as_str()),
+                (variant, id, name)
+            );
         }
+        assert_eq!(variant_of("vara-20260913T105503Z-cappi3500"), "cappi3500");
         assert_eq!(variant_of("vara-20260913T105503Z-cappi1"), "cappi1");
         assert_eq!(variant_of("vara-20260913T105503Z-e0"), "e0");
         assert_eq!(variant_of("vara-20260913T105503Z-a240"), "a240");
@@ -870,6 +1016,70 @@ mod tests {
             "a tie takes the lower"
         );
         assert_eq!(nearest_index(&[], 1.0), None);
+    }
+
+    #[test]
+    fn choosing_a_height() {
+        let ok = |p: &str, i, h| choose(p, i, h).unwrap();
+        assert_eq!(
+            ok("CAPPI", 0, Some(3500)),
+            Choice {
+                id: "CAPPI".into(),
+                elevation_index: 0,
+                height_m: Some(3500)
+            }
+        );
+        assert_eq!(ok("CAPPI", 0, None).height_m, Some(2000), "the default");
+        assert_eq!(
+            ok("CAPPI1", 0, None),
+            ok("CAPPI", 0, Some(1000)),
+            "the old names"
+        );
+        assert_eq!(
+            ok("CAPPI2", 0, Some(5000)),
+            ok("CAPPI", 0, Some(2000)),
+            "an alias keeps its own height"
+        );
+        assert_eq!(
+            ok("CMAX", 0, None),
+            Choice {
+                id: "CMAX".into(),
+                ..Choice::default()
+            }
+        );
+        assert_eq!(ok("REF", 3, None).elevation_index, 3);
+        for (p, h, says) in [
+            ("CAPPI", Some(750), "heightM 750"),
+            ("CAPPI", Some(0), "heightM 0"),
+            ("CAPPI", Some(12_500), "heightM 12500"),
+            ("CMAX", Some(2000), "CAPPI only"),
+            ("VIL", None, "Unknown product VIL"),
+        ] {
+            let e = choose(p, 0, h).unwrap_err();
+            assert!(e.contains(says), "{e}");
+        }
+        let every: Vec<u32> = (0..=30_000)
+            .filter(|&m| choose("CAPPI", 0, Some(m)).is_ok())
+            .collect();
+        assert_eq!(every, (1..=24).map(|n| n * 500).collect::<Vec<u32>>());
+        // `state.product` sends heightM with CAPPI only.
+        assert_eq!(
+            serde_json::to_value(ok("CAPPI", 0, Some(3000))).unwrap(),
+            serde_json::json!({"id":"CAPPI","elevationIndex":0,"heightM":3000})
+        );
+        assert_eq!(
+            serde_json::to_value(Choice::default()).unwrap(),
+            serde_json::json!({"id":"REF","elevationIndex":0})
+        );
+        // Above sea level: a radar 700 m up takes 1 km at 300 m above it.
+        let high = Station {
+            alt_m: 700.0,
+            ..polar(ProviderId::Smhi, "SE")
+        };
+        assert_eq!(
+            want_for(&high, &ok("CAPPI", 0, Some(1000))),
+            Some(Want::Cappi(300.0, 1000))
+        );
     }
 
     /// The plan's table (§S20), rounded by hand, within 0.2 km: beam centre
@@ -932,8 +1142,8 @@ mod tests {
             "2.5° is nearer 3.0° than 4.0°"
         );
         assert_eq!(needed(Want::ColMax, &infos), (0..10).collect::<Vec<_>>());
-        let cappi1 = needed(Want::Cappi(1000.0), &infos);
-        let cappi2 = needed(Want::Cappi(2000.0), &infos);
+        let cappi1 = needed(Want::Cappi(1000.0, 1000), &infos);
+        let cappi2 = needed(Want::Cappi(2000.0, 2000), &infos);
         assert_eq!(cappi1[0], 0);
         assert!(
             cappi1.contains(&3) && cappi2.contains(&6),
@@ -955,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pseudo_cappi_takes_each_gate_from_the_nearest_beam() {
+    fn a_height_takes_each_gate_from_the_nearest_beam_that_holds_it() {
         // Three scans marking their own code: 0.5° -> 10, 1.5° -> 20, 4° -> 30.
         let tilts = || {
             vec![
@@ -964,7 +1174,7 @@ mod tests {
                 scan(1.5, 360, 480, 500, |_, _| 20),
             ]
         };
-        let out = compose(Want::Cappi(1000.0), tilts()).unwrap();
+        let out = compose(Want::Cappi(1000.0, 1000), tilts()).unwrap();
         assert_eq!(
             (out.rays.len(), out.gates, out.gate_spacing_m),
             (360, 480, 500)
@@ -972,27 +1182,45 @@ mod tests {
         assert_eq!(out.rays[0].elevation_deg, 0.5);
         assert_eq!(out.end_ms, 2040, "the last scan's end");
         let row = &out.rays[17].codes;
-        // Near the radar 4° is nearest 1 km, then 1.5°, then 0.5° far out.
-        assert_eq!(row[20], 30, "10 km");
+        // 1 km up is seen between 4.5° and 3.5° from about 12.7 to 16.3 km
+        // (the 4° beam holds it), between 2° and 1° from about 28 to 49 km
+        // (1.5°), and below 1° out to where it meets the horizon, ~130 km
+        // (0.5°). Where no beam holds it: no data (1), never no rain (0).
+        assert_eq!(row[5], 1, "2.8 km: above every beam");
+        assert_eq!(row[28], 30, "14 km");
+        assert_eq!(row[40], 1, "20 km: between the 4° and the 1.5° beams");
         assert_eq!(row[80], 20, "40 km");
-        assert_eq!(row[300], 10, "150 km");
+        assert_eq!(row[200], 10, "100 km");
+        assert_eq!(row[300], 1, "150 km: under the lowest beam");
         let order: Vec<u8> = row.iter().copied().fold(Vec::new(), |mut runs, c| {
             if runs.last() != Some(&c) {
                 runs.push(c);
             }
             runs
         });
-        assert_eq!(order, [30, 20, 10], "one band each, outward");
+        assert_eq!(order, [1, 30, 1, 20, 10, 1], "one band each, outward");
+        assert!(row.iter().all(|&c| c != 0), "no gate says no rain");
+        // The slice ends where the lowest beam's lower edge (0°) rises past
+        // 1 km: cos(s/R) = R / (R + 1000).
+        let last = row.iter().rposition(|&c| c == 10).unwrap();
+        let edge = EARTH_M * (EARTH_M / (EARTH_M + 1000.0)).acos();
+        let at = |g: usize| ground_of(250.0 + 500.0 * g as f64, 0.5f64.to_radians());
+        assert!(
+            at(last) <= edge && at(last + 1) > edge,
+            "{} {} {edge}",
+            at(last),
+            at(last + 1)
+        );
         // Composing from only the needed scans gives the same answer.
         let infos: Vec<TiltInfo> = tilts().iter().map(Tilt::info).collect();
-        let keep = needed(Want::Cappi(1000.0), &infos);
+        let keep = needed(Want::Cappi(1000.0, 1000), &infos);
         let subset: Vec<Tilt> = tilts()
             .into_iter()
             .enumerate()
             .filter(|(i, _)| keep.contains(i))
             .map(|(_, t)| t)
             .collect();
-        let again = compose(Want::Cappi(1000.0), subset).unwrap();
+        let again = compose(Want::Cappi(1000.0, 1000), subset).unwrap();
         assert!(
             again
                 .rays
@@ -1062,7 +1290,7 @@ mod tests {
         let (products, elevations) = for_station(&polar(ProviderId::Smhi, "SE"));
         assert_eq!(
             products,
-            ["REF", "CAPPI1", "CAPPI2", "CMAX"],
+            ["REF", "CAPPI", "CMAX"],
             "no blockage table: no HYBRID"
         );
         assert_eq!(elevations.len(), 10);
@@ -1089,6 +1317,7 @@ mod tests {
         let choice = |id: &str, index| Choice {
             id: id.into(),
             elevation_index: index,
+            height_m: None,
         };
         let smhi = polar(ProviderId::Smhi, "SE");
         assert_eq!(want_for(&smhi, &choice("CMAX", 0)), Some(Want::ColMax));
@@ -1112,6 +1341,7 @@ mod tests {
         let choice = |id: &str, index| Choice {
             id: id.into(),
             elevation_index: index,
+            height_m: None,
         };
         let (smhi, norway, finland) = (
             polar(ProviderId::Smhi, "SE"),
@@ -1132,15 +1362,15 @@ mod tests {
             carry(&choice("REF", 4), Some(2.5), &norway),
             choice("REF", 3)
         );
-        assert_eq!(
-            carry(&choice("CAPPI2", 0), None, &norway),
-            choice("CAPPI2", 0)
-        );
+        // A height stays the same height above sea level.
+        let tall = Choice {
+            id: CAPPI.into(),
+            elevation_index: 0,
+            height_m: Some(3500),
+        };
+        assert_eq!(carry(&tall, None, &norway), tall);
         // FMI makes neither: the lowest scan.
-        assert_eq!(
-            carry(&choice("CAPPI2", 0), None, &finland),
-            Choice::default()
-        );
+        assert_eq!(carry(&tall, None, &finland), Choice::default());
         assert_eq!(
             carry(&choice("REF", 4), Some(2.5), &finland),
             Choice::default()
@@ -1192,8 +1422,8 @@ mod tests {
             assert_eq!(products.len(), 6, "{golden}");
             for (variant, product) in products {
                 let want = match variant.as_str() {
-                    "cappi1" => Want::Cappi(1000.0),
-                    "cappi2" => Want::Cappi(2000.0),
+                    "cappi1" => Want::Cappi(1000.0, 1000),
+                    "cappi2" => Want::Cappi(2000.0, 2000),
                     "cmax" => Want::ColMax,
                     "clear" => Want::Hybrid(table),
                     angle => Want::Angle(angle[1..].parse::<f64>().unwrap() / 10.0),
@@ -1279,7 +1509,7 @@ mod tests {
         ] {
             let open = || std::fs::File::open(format!("{ROOT}{fixture}")).unwrap();
             let expected = crate::odim::decode_lowest(open(), lowest).unwrap();
-            for want in [Want::Cappi(1000.0), Want::ColMax, Want::Hybrid(table)] {
+            for want in [Want::Cappi(1000.0, 1000), Want::ColMax, Want::Hybrid(table)] {
                 let Scan::Product(_, _, Some(free)) = decode_volume(open(), want, lowest).unwrap()
                 else {
                     panic!("{fixture} {}: no lowest scan", want.variant())
@@ -1339,12 +1569,13 @@ mod tests {
             assert!(blockage(id).is_some(), "{id}");
             assert_eq!(
                 for_station(station).0,
-                ["REF", "HYBRID", "CAPPI1", "CAPPI2", "CMAX"],
+                ["REF", "HYBRID", "CAPPI", "CMAX"],
                 "{id}"
             );
             let choice = Choice {
                 id: HYBRID.into(),
                 elevation_index: 0,
+                height_m: None,
             };
             assert_eq!(want_for(station, &choice), blockage(id).map(Want::Hybrid));
         }
@@ -1385,8 +1616,8 @@ mod tests {
         };
         for want in [
             Want::Angle(8.0),
-            Want::Cappi(1000.0),
-            Want::Cappi(2000.0),
+            Want::Cappi(1000.0, 1000),
+            Want::Cappi(2000.0, 2000),
             Want::ColMax,
         ] {
             let reader = RangeReader::open_planned(
@@ -1442,8 +1673,8 @@ mod tests {
                 for want in [
                     Want::Lowest,
                     Want::Angle(4.0),
-                    Want::Cappi(1000.0),
-                    Want::Cappi(2000.0),
+                    Want::Cappi(1000.0, 1000),
+                    Want::Cappi(2000.0, 2000),
                     Want::ColMax,
                 ] {
                     let reader = RangeReader::open_planned(

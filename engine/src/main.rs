@@ -388,7 +388,7 @@ fn live_frame(
         (template.product.clone(), template.product_name.clone())
     } else {
         let (id, name) = want.product();
-        (id.to_owned(), name.to_owned())
+        (id.to_owned(), name)
     };
     Frame {
         id: format!(
@@ -830,7 +830,7 @@ impl Shared {
                 let mut frame = empty_frame(&self.template, station);
                 if station.kind == SiteKind::Polar && !want.is_lowest() {
                     let (id, name) = want.product();
-                    (frame.product, frame.product_name) = (id.to_owned(), name.to_owned());
+                    (frame.product, frame.product_name) = (id.to_owned(), name);
                 }
                 // A chosen angle shows its own until its first frame (S26),
                 // not "Reflectivity 0.0°".
@@ -858,15 +858,18 @@ impl Shared {
     /// nothing, for an unknown id, no radar selected, or one that cannot make
     /// it; the same choice again changes nothing; otherwise the timeline
     /// becomes the radar's history of that product and the poller follows it.
-    fn set_product(&mut self, product: &str, elevation_index: u32) -> (bool, Option<String>) {
-        if !products::VOCABULARY.iter().any(|p| p.id == product) {
-            return (
-                false,
-                Some(format!(
-                    "Unknown product {product}; products are listed in hello."
-                )),
-            );
-        }
+    /// `CAPPI1`/`CAPPI2` are `CAPPI` at 1 and 2 km, and a height is checked,
+    /// before anything else (S29, `products::choose`).
+    fn set_product(
+        &mut self,
+        product: &str,
+        elevation_index: u32,
+        height_m: Option<u32>,
+    ) -> (bool, Option<String>) {
+        let choice = match products::choose(product, elevation_index, height_m) {
+            Ok(choice) => choice,
+            Err(message) => return (false, Some(message)),
+        };
         let station = self
             .sites
             .iter()
@@ -895,10 +898,6 @@ impl Shared {
                     Some("Select a radar before choosing a product.".into()),
                 );
             }
-        };
-        let choice = products::Choice {
-            id: product.to_owned(),
-            elevation_index,
         };
         let Some(want) = products::want_for(&station, &choice) else {
             let at = if elevation_index > 0 {
@@ -1236,7 +1235,8 @@ impl Shared {
             Command::SetProduct {
                 product,
                 elevation_index,
-            } => self.set_product(&product, elevation_index),
+                height_m,
+            } => self.set_product(&product, elevation_index, height_m),
             // Tile requests and place search are answered to the sender, not state.
             Command::TilesNeeded { .. } | Command::SearchPlaces { .. } | Command::Unsupported => {
                 return None;

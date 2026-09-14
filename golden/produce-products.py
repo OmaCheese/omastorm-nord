@@ -10,6 +10,10 @@
 #   uv run --no-project --with h5py --with numpy python golden/produce-products.py \
 #     data/fixtures/radar_vara_qcvol_202609131055_tilts.h5 golden/vara-20260913 SOURCE_URL ORIGINAL.h5
 #
+# SOURCE_URL and ORIGINAL.h5 may be "-" to keep what the existing
+# products.json says of them (S29 re-ran the keys for the new height rule
+# without the original volumes).
+#
 # The float steps mirror the contract's formulas in the engine's order, with
 # Python's scalar math (libm, like Rust's f64) rather than numpy's vector
 # kernels, so the comparison is exact:
@@ -22,8 +26,11 @@
 # - a tilt's value for output ray i is that gate on its ray nearest ray i's
 #   azimuth (both as float32 degrees, as the engine stores them), within
 #   0.75 deg, else code 1;
-# - CAPPI1/2: of the covering tilts, the one whose height is nearest 1000
-#   (2000) m, the lower angle on a tie; CMAX: the highest measured code
+# - cappi1/2 (S29's height rule, at 1000 and 2000 m above the antenna):
+#   the point at ground distance s and height H is seen at
+#   eH = atan2((R + H) cos(s/R) - R, (R + H) sin(s/R)); of the covering
+#   tilts with |eH - e| <= 0.5 deg (radians compared), the one whose height is
+#   nearest H, the lower angle on a tie; none: code 1; CMAX: the highest measured code
 #   (>= 2), else 0 if any tilt is below threshold, else 1; HYBRID ("clear"):
 #   per output ray, floor(azimuth) picks a blockage entry, and the lowest
 #   tilt with round(elangle x 10) >= it (else the highest) gives the value
@@ -43,6 +50,7 @@ import numpy as np
 
 R = 6_371_000.0 * 4.0 / 3.0
 GAP_DEG = 0.75
+BEAM_HALF_DEG = 0.5
 
 
 def text(v):
@@ -125,14 +133,20 @@ def decode(ds):
     }
 
 
-def hits(tilts):
-    """Per tilt, per output gate: (gate, height) where it covers it, else None."""
+def ground_list(tilts):
+    """The ground distance of each output gate (the lowest tilt's gates)."""
     base = tilts[0]
     e0 = math.radians(rnd(base["elangle"] * 100.0) / 100.0)
     grounds = []
     for g in range(base["gates"]):
         r = float(base["first"]) + g * float(base["spacing"])
         grounds.append(R * math.atan2(r * math.cos(e0), R + r * math.sin(e0)))
+    return grounds
+
+
+def hits(tilts):
+    """Per tilt, per output gate: (gate, height) where it covers it, else None."""
+    grounds = ground_list(tilts)
     out = []
     for t in tilts:
         e = math.radians(t["elangle"])
@@ -180,10 +194,15 @@ def compose(tilts, product, height=None, table=None):
 
     picks = []
     if product == "cappi":
-        for g in range(gates):
+        half = math.radians(BEAM_HALF_DEG)
+        for g, s in enumerate(ground_list(tilts)):
+            theta, rh = s / R, R + height
+            seen = math.atan2(rh * math.cos(theta) - R, rh * math.sin(theta))
             best, held = None, None
             for k in range(len(tilts)):
                 if h[k][g] is None:
+                    continue
+                if abs(seen - math.radians(tilts[k]["elangle"])) > half:
                     continue
                 d = abs(h[k][g][1] - height)
                 if held is None or d < held or (d == held and tilts[k]["elangle"] < tilts[best]["elangle"]):
@@ -223,10 +242,29 @@ def synthetic_table(tilts):
     return [second if 30 <= d < 120 else (255 if 170 <= d < 190 else 0) for d in range(360)]
 
 
+def extract_of(source_url, original, tilts):
+    """What the fixture was trimmed from: the original volume's name, size,
+    digest, and the trim that made the fixture."""
+    orig = open(original, "rb").read()
+    angles = sorted(h5py.File(original, "r")[k]["where"].attrs["elangle"] for k in h5py.File(original, "r")
+                    if k.startswith("dataset"))
+    return {
+        "file": source_url.rsplit("/", 1)[1],
+        "bytes": len(orig),
+        "sha256": hashlib.sha256(orig).hexdigest(),
+        "by": "scripts/trim-odim.py --keep DBZH --tilts " + ",".join(str(angles.index(t["elangle"])) for t in tilts),
+    }
+
+
 def main():
     src, out, source_url, original = sys.argv[1:5]
     raw = open(src, "rb").read()
-    orig = open(original, "rb").read()
+    previous = None
+    if original == "-" or source_url == "-":
+        with open(os.path.join(out, "products.json")) as fh:
+            previous = json.load(fh)
+        if source_url == "-":
+            source_url = previous["sourceUrl"]
     f = h5py.File(src, "r")
     names = sorted((k for k in f if k.startswith("dataset")), key=lambda k: int(k[len("dataset"):]))
     tilts = [decode(f[k]) for k in names]
@@ -255,7 +293,7 @@ def main():
 
     for variant, height in (("cappi1", 1000.0), ("cappi2", 2000.0)):
         codes, base = compose(tilts, "cappi", height=height)
-        write(variant, codes, base, f"pseudo-CAPPI at {int(height)} m above the antenna")
+        write(variant, codes, base, f"height slice at {int(height)} m above the antenna, beam +-0.5 deg")
     codes, base = compose(tilts, "cmax")
     write("cmax", codes, base, "column maximum")
     codes, base = compose(tilts, "clear", table=table)
@@ -280,15 +318,7 @@ def main():
         "sourceUrl": source_url,
         "sourceSha256": hashlib.sha256(raw).hexdigest(),
         "sourceBytes": len(raw),
-        "extractOf": {
-            "file": source_url.rsplit("/", 1)[1],
-            "bytes": len(orig),
-            "sha256": hashlib.sha256(orig).hexdigest(),
-            "by": "scripts/trim-odim.py --keep DBZH --tilts " + ",".join(
-                str(sorted(h5py.File(original, "r")[k]["where"].attrs["elangle"] for k in h5py.File(original, "r")
-                           if k.startswith("dataset")).index(t["elangle"])) for t in tilts
-            ),
-        },
+        "extractOf": previous["extractOf"] if original == "-" else extract_of(source_url, original, tilts),
         "producedBy": f"golden/produce-products.py (h5py {h5py.__version__}, numpy {np.__version__})",
         "producedOn": datetime.date.today().isoformat(),
     }

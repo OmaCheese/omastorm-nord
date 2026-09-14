@@ -706,12 +706,24 @@ impl RangeReader {
         Self::open_planned(source, DEC2, pause)
     }
 
-    /// `open_with` under another provider's `plan`.
+    /// `open_with` under another provider's `plan`. The prefetch is rounded
+    /// up to a whole number of blocks (S26): the reader keeps whole blocks,
+    /// and a prefetch's short last chunk would be read past its end.
     pub fn open_planned(
         mut source: Box<dyn RangeSource>,
         plan: RangePlan,
         pause: Duration,
     ) -> io::Result<Self> {
+        if plan.block == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a range plan's block is 0 bytes",
+            ));
+        }
+        let plan = RangePlan {
+            prefetch: plan.prefetch.next_multiple_of(plan.block),
+            ..plan
+        };
         let mut requests = 0u32;
         let mut fetched = 0u64;
         let (head, len) = loop {
@@ -1704,6 +1716,43 @@ mod tests {
         reader.read_to_end(&mut all).unwrap();
         assert_eq!(all, bytes);
         assert_eq!(reader.traffic().requests(), 1, "the prefetch holds it all");
+    }
+
+    /// A plan whose prefetch is not a whole number of blocks (S26): the
+    /// reader rounds it up, so a read across the prefetch's end neither runs
+    /// past a short chunk nor asks again for bytes it holds. A block of 0
+    /// bytes is refused.
+    #[test]
+    fn a_prefetch_is_rounded_up_to_whole_blocks() {
+        let bytes = pattern(50_000);
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let plan = RangePlan {
+            prefetch: 10_000,
+            block: 4096,
+            max_requests: 8,
+            max_bytes: 1 << 20,
+        };
+        let local = |log: &Arc<StdMutex<Vec<(u64, u64)>>>| {
+            Box::new(Local {
+                bytes: bytes.clone(),
+                log: log.clone(),
+            })
+        };
+        let mut reader = RangeReader::open_planned(local(&log), plan, Duration::ZERO).unwrap();
+        // Across the asked prefetch's end (10,000) and the rounded one's.
+        reader.seek(SeekFrom::Start(9_000)).unwrap();
+        let mut buf = vec![0; 8_000];
+        reader.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, bytes[9_000..17_000]);
+        assert_eq!(*log.lock().unwrap(), [(0, 12_288), (12_288, 8_192)]);
+        // The file's short last block.
+        reader.seek(SeekFrom::End(-100)).unwrap();
+        let mut tail = Vec::new();
+        reader.read_to_end(&mut tail).unwrap();
+        assert_eq!(tail, bytes[49_900..]);
+        assert_eq!(log.lock().unwrap()[2], (49_152, 848));
+        let zero = RangePlan { block: 0, ..plan };
+        assert!(RangeReader::open_planned(local(&log), zero, Duration::ZERO).is_err());
     }
 
     /// The file changes length between requests: SMHI replaced it.

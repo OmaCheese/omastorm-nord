@@ -929,6 +929,7 @@ name = "omastorm-engine"
 version = "0.1.5"
 dependencies = [
  "chrono",
+ "flate2",
  "geo-types",
  "hdf5-pure",
  "libc",

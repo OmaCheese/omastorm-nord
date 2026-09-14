@@ -2401,8 +2401,9 @@ mod handoff_tests {
     #[test]
     fn the_site_table_is_the_smhi_network() {
         let sites = site_table().sites;
-        // The 12 radars of sites.json, then the composite (S8).
-        assert_eq!(sites.len(), 13);
+        // The 12 radars of sites.json, then the composites: SMHI's (S8) and
+        // OPERA's Nordic crop (S16).
+        assert_eq!(sites.len(), 14);
         assert_eq!(
             sites.iter().filter(|s| s.kind == SiteKind::Polar).count(),
             12
@@ -2413,8 +2414,12 @@ mod handoff_tests {
                 .filter(|s| s.kind == SiteKind::Grid)
                 .map(|s| &s.id[..])
                 .collect::<Vec<_>>(),
-            ["sweden"]
+            ["sweden", "nordic"]
         );
+        // The Nordic composite is never a target either, and while it is
+        // selected nothing is handed off to.
+        assert!(handoff(&sites, "nordic", 59.33, 18.07).is_none());
+        assert!(handoff(&sites, "", 62.25, 18.0).is_some_and(|s| s.kind == SiteKind::Polar));
         for s in &sites {
             assert!(
                 (53.0..=71.5).contains(&s.lat) && (3.0..=33.0).contains(&s.lon),

@@ -459,8 +459,13 @@ thresholds as a radar's.
 A provider supplies the station's listing and polling, its cadence (and so
 its staleness thresholds), its backfill depth, its range-read budget, and
 the default `attribution`, `country`, and `rangeKm` of its rows in
-`engine/data/sites.json`. SMHI is the only provider so far: the poller
-above, a 5-minute cadence, 60-frame backfill, and DEC-2's range reads. The
+`engine/data/sites.json`. SMHI: the poller above, a 5-minute cadence,
+60-frame backfill, and DEC-2's range reads. `opera` (S16, DEC-14): the grid
+station `nordic`, EUMETNET OPERA's European composite from the Open Radar
+Data 24-hour S3 cache, cut to 3–33° E, 53–71.5° N (a 1670 × 2297 texture,
+larger than Sweden's 1364 × 1983 and above WebGL2's guaranteed 2048), read
+11 of its 30 chunks at a time (~0.9 MB a frame), a 5-minute cadence and a
+24-frame backfill, credited `EUMETNET OPERA, CC BY 4.0`, `country` empty. The
 frames of every provider share this section's rules: `id` is
 `<station id>-<scanTime compact>-e0`, values are requantized to `scale` 2
 and `offset` 66, and complete frames enter the catalog under the station

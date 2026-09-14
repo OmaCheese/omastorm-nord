@@ -117,9 +117,10 @@ fn fixture_transport_and_shared_commands() {
     assert_eq!(hello["v"], 2);
     assert_eq!(hello["build"].as_str().unwrap().len(), 16);
     let sites = hello["sites"].as_array().unwrap();
-    // The 12 SMHI radars and the national composite (protocol v2): every
-    // station says its kind, and the composite is the one grid.
-    assert_eq!(sites.len(), 13);
+    // The 12 SMHI radars, the national composite (protocol v2) and OPERA's
+    // Nordic composite (S16): every station says its kind, and the
+    // composites are the grids.
+    assert_eq!(sites.len(), 14);
     assert!(
         sites
             .iter()
@@ -130,7 +131,7 @@ fn fixture_transport_and_shared_commands() {
         .filter(|s| s["kind"] == "grid")
         .map(|s| s["id"].as_str().unwrap())
         .collect();
-    assert_eq!(grids, ["sweden"]);
+    assert_eq!(grids, ["sweden", "nordic"]);
     let mut ids = std::collections::HashSet::new();
     for site in sites {
         assert!(ids.insert(site["id"].as_str().unwrap()));

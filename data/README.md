@@ -58,6 +58,40 @@ the lowest tilt's DBZH (`/dataset1/data1`, int16, 360 × 480, 500 m bins).
   `sweep0.u8` and the same `sweep0.json` apart from the source sha256, size
   and date; `extractOf` records the original.
 
+## OPERA fixture (Nordic composite, S16)
+
+EUMETNET **OPERA** CIRRUS maximum-reflectivity composite, nominal time
+**2026-09-14 08:10 UTC** (data 08:00:01–08:10:00), ODIM_H5 2.4 `COMP`,
+`/dataset1/data1` DBZH float64, 4400 × 3800 pixels of 1 km on
+`+proj=laea +lat_0=55 +lon_0=10 +x_0=1950000 +y_0=-2100000 +ellps=WGS84`,
+30 deflate-9 chunks of 760 × 880 (DEC-14). `engine/src/composite.rs` reads
+only the 11 chunks under the Nordic box (3–33° E, 53–71.5° N).
+
+- Original: `OPERA@20260914T0810@0@DBZH.h5` from the Open Radar Data 24-hour
+  cache, `https://s3.waw3-1.cloudferro.com/openradar-24h/2026/09/14/OPERA/COMP/`,
+  1,866,101 bytes, sha256
+  `73e748236a6e206070835f151a11ada5c81bb855eeb7267013ae9313046ce881`,
+  downloaded 2026-09-14. The cache keeps about a day, so it cannot be
+  fetched again.
+- **Vendored: a crop of its chunks**, `opera_nordic_202609140810.h5`,
+  289,488 bytes, sha256 `1a9c2fc4…b3ea56ee` (`data/SHA256SUMS`), made by
+  `uv run --no-project --with h5py python scripts/crop-opera.py ORIGINAL.h5 data/fixtures/opera_nordic_202609140810.h5 --keep 1,2 1,3 2,2 2,3 0,3 5,0`
+  (h5py 3.16, HDF5 2.0.0). The root attributes and `/what`, `/where`,
+  `/how`, `/dataset1/what` and `/dataset1/data1/what` are unchanged; the
+  quality layer is dropped. Of the 11 needed chunks, the 11 verbatim come to
+  882 KB (868,342 B of chunk data; shuffle does not help: 917 KB), so the
+  fixture keeps five of them (central and southern Sweden, Finland, the
+  Baltic; 266,732 B) and one unneeded chunk (row 5, column 0, 8,676 B) that
+  a test proves is never fetched. The other chunks are unallocated and read
+  as the fill value, set to the layer's nodata; the engine reads a needed
+  chunk the file does not allocate as nodata too.
+- [EUMETNET OPERA](https://www.eumetnet.eu/activities/observations-programme/current-activities/opera/),
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Source:
+  EUMETNET OPERA (created by Météo-France).
+- Golden files under `golden/nordic-20260914/` were produced with h5py 3.16
+  and pyproj (PROJ), not the engine's reader or projection, by
+  `golden/nordic-20260914/produce.py`, which records its own command line.
+
 ## Fixture rule for new radars and countries
 
 A full volume per country would add 100–300 MB to every clone across

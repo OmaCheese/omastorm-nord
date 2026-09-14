@@ -128,7 +128,7 @@ const LENGTH_RETRIES: u32 = 3;
 /// One volume download at a time in the whole engine. The permit travels
 /// into the blocking decode, so an aborted poller's in-flight read still
 /// holds it until it ends.
-static FETCHER: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+pub(crate) static FETCHER: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -393,7 +393,7 @@ pub enum Fail {
 }
 
 impl Fail {
-    fn retry_after(&self) -> Option<Duration> {
+    pub(crate) fn retry_after(&self) -> Option<Duration> {
         match self {
             Fail::Status(_, after) => *after,
             _ => None,
@@ -425,18 +425,20 @@ fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     Some(Duration::from_secs(seconds))
 }
 
-enum Fetched {
+pub(crate) enum Fetched {
     NotModified,
     Body(Vec<u8>, Option<String>),
 }
 
+/// The HTTP client every poller shares the shape of (`providers/opera.rs`
+/// uses it too).
 #[derive(Clone)]
-struct Http {
+pub(crate) struct Http {
     client: reqwest::Client,
 }
 
 impl Http {
-    fn new() -> Result<Self, String> {
+    pub(crate) fn new() -> Result<Self, String> {
         reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(CALL_TIMEOUT)
@@ -446,7 +448,7 @@ impl Http {
     }
 
     /// A listing, conditional on `since` (a previous `Last-Modified`).
-    async fn get(&self, url: &str, since: Option<&str>) -> Result<Fetched, Fail> {
+    pub(crate) async fn get(&self, url: &str, since: Option<&str>) -> Result<Fetched, Fail> {
         let mut request = self.client.get(url);
         if let Some(since) = since {
             request = request.header(IF_MODIFIED_SINCE, since);
@@ -771,11 +773,11 @@ impl Seek for RangeReader {
 /// Ranged requests from the blocking decode thread, answered by the async
 /// client on the engine's runtime. The last HTTP failure is kept, so the
 /// poller can tell a network problem (back off) from a bad volume.
-struct HttpRanges {
-    http: Http,
-    url: String,
-    runtime: Handle,
-    failure: Arc<Mutex<Option<Fail>>>,
+pub(crate) struct HttpRanges {
+    pub(crate) http: Http,
+    pub(crate) url: String,
+    pub(crate) runtime: Handle,
+    pub(crate) failure: Arc<Mutex<Option<Fail>>>,
 }
 
 impl RangeSource for HttpRanges {
@@ -918,7 +920,7 @@ pub async fn poll(site: String, events: Sender<Event>, cached: Vec<i64>, _skip_k
 
 /// Aborts its task when dropped, so a poller that is replaced takes its
 /// backfill with it.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
+pub(crate) struct AbortOnDrop(pub(crate) tokio::task::JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
@@ -2031,7 +2033,10 @@ mod tests {
             handler,
             Vec::new(),
             |events| events.len() >= 2,
-            Duration::from_millis(300),
+            // Long enough for a second probe round even under `mise check`'s
+            // load (S16: 300 ms saw only 3 polls there, the last one's probe
+            // not yet served).
+            Duration::from_secs(2),
         );
         let seen: Vec<String> = events.iter().map(describe).collect();
         assert_eq!(

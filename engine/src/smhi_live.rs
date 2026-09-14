@@ -70,6 +70,11 @@ const OFFLINE_AFTER: u32 = 2;
 /// Frames the loop holds after a join, counting the live one (DEC-2 passed:
 /// a volume costs ~100 KB, so 60 of them is ~6 MB). Matches `catalog::RING`.
 pub const BACKFILL: usize = 60;
+/// Frames any other product backfills after a switch (S26): an hour. A
+/// product volume costs ~39 range requests and ~740 KB (all ten tilts for
+/// CAPPI and CMAX, S20), so 24 frames were ~950 requests and 18 MB a
+/// switch; its ring still fills to 60 live.
+pub const PRODUCT_BACKFILL: usize = 12;
 /// The backfill starts this long after a join, so a hand-off passed while
 /// panning costs nothing.
 const BACKFILL_DELAY: Duration = Duration::from_secs(3);
@@ -177,20 +182,23 @@ pub enum Scan {
     Grid(Grid),
     /// A radar's product other than its lowest scan (S20, `products.rs`):
     /// one other angle, or one drawn on the lowest scan's rays and gates.
-    Product(Sweep, Want),
+    /// The lowest scan rides along when the read decoded it anyway (S26:
+    /// CAPPI, CMAX, HYBRID), until the poller sends it on as a frame of its
+    /// own (`Event::free_lowest`).
+    Product(Sweep, Want, Option<Box<Sweep>>),
 }
 
 impl Scan {
     /// The frame's start: the first radial, or the composite's nominal time.
     pub fn start_ms(&self) -> i64 {
         match self {
-            Scan::Polar(sweep) | Scan::Product(sweep, _) => sweep.start_ms,
+            Scan::Polar(sweep) | Scan::Product(sweep, ..) => sweep.start_ms,
             Scan::Grid(grid) => grid.start_ms,
         }
     }
     pub fn end_ms(&self) -> i64 {
         match self {
-            Scan::Polar(sweep) | Scan::Product(sweep, _) => sweep.end_ms,
+            Scan::Polar(sweep) | Scan::Product(sweep, ..) => sweep.end_ms,
             Scan::Grid(grid) => grid.end_ms,
         }
     }
@@ -198,7 +206,7 @@ impl Scan {
     pub fn describe(&self) -> String {
         match self {
             Scan::Polar(sweep) => format!("{} rays", sweep.rays.len()),
-            Scan::Product(sweep, want) => {
+            Scan::Product(sweep, want, _) => {
                 format!("{} rays of {}", sweep.rays.len(), want.variant())
             }
             Scan::Grid(grid) => grid.describe(),
@@ -242,6 +250,49 @@ pub enum Event {
     Offline { site: String, reason: String },
     /// SMHI answered, and the station has published nothing recent.
     Silent { site: String, reason: String },
+}
+
+impl Event {
+    /// This event, and, for a product read that decoded the lowest scan on
+    /// the way (S26: CAPPI, CMAX and HYBRID are drawn on its rays and gates,
+    /// `products::decode_volume`), that lowest scan as a second event of the
+    /// same kind. `main.rs` catalogues it in the station's `e0` ring, so the
+    /// ring keeps filling while a product is selected, at no extra request.
+    /// Its provenance counts 0 requests and 0 bytes (`soak-report.sh` sums
+    /// them), and names the read it came from.
+    pub fn free_lowest(mut self) -> (Event, Option<Event>) {
+        let provenance_of = |provenance: &str| {
+            let (head, tail) = provenance.split_once(": ").unwrap_or((provenance, ""));
+            let total = tail
+                .rsplit_once(" of ")
+                .map_or("0 bytes", |(_, total)| total);
+            format!("{head}, its lowest scan: 0 range requests, 0 of {total}")
+        };
+        let free = match &mut self {
+            Event::Sweep {
+                site,
+                sweep: Scan::Product(_, _, lowest),
+                complete,
+                provenance,
+            } => lowest.take().map(|lowest| Event::Sweep {
+                site: site.clone(),
+                sweep: Scan::Polar(*lowest),
+                complete: *complete,
+                provenance: provenance_of(provenance),
+            }),
+            Event::Backfill {
+                site,
+                sweep: Scan::Product(_, _, lowest),
+                provenance,
+            } => lowest.take().map(|lowest| Event::Backfill {
+                site: site.clone(),
+                sweep: Scan::Polar(*lowest),
+                provenance: provenance_of(provenance),
+            }),
+            _ => None,
+        };
+        (self, free)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -660,12 +711,24 @@ impl RangeReader {
         Self::open_planned(source, DEC2, pause)
     }
 
-    /// `open_with` under another provider's `plan`.
+    /// `open_with` under another provider's `plan`. The prefetch is rounded
+    /// up to a whole number of blocks (S26): the reader keeps whole blocks,
+    /// and a prefetch's short last chunk would be read past its end.
     pub fn open_planned(
         mut source: Box<dyn RangeSource>,
         plan: RangePlan,
         pause: Duration,
     ) -> io::Result<Self> {
+        if plan.block == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a range plan's block is 0 bytes",
+            ));
+        }
+        let plan = RangePlan {
+            prefetch: plan.prefetch.next_multiple_of(plan.block),
+            ..plan
+        };
         let mut requests = 0u32;
         let mut fetched = 0u64;
         let (head, len) = loop {
@@ -982,8 +1045,14 @@ impl Drop for AbortOnDrop {
     }
 }
 
-async fn send(events: &Sender<Event>, event: Event) -> bool {
+/// Send `event`, then the lowest scan its read made for free, if any.
+pub(crate) async fn send(events: &Sender<Event>, event: Event) -> bool {
+    let (event, free) = event.free_lowest();
     events.send(event).await.is_ok()
+        && match free {
+            Some(free) => events.send(free).await.is_ok(),
+            None => true,
+        }
 }
 
 /// SMHI's cadence: one volume per site every 5 minutes.
@@ -1310,8 +1379,8 @@ async fn backfill(
             return;
         }
     };
-    // The lowest scan backfills the whole ring, another product two hours.
-    let depth = cfg.want.backfill(BACKFILL);
+    // The lowest scan backfills the whole ring, another product an hour.
+    let depth = cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL);
     if needs_yesterday(listed.len(), depth) {
         match day(live_ms - 24 * 60 * 60 * 1000).await {
             Ok(earlier) => listed.extend(earlier),
@@ -1654,6 +1723,43 @@ mod tests {
         assert_eq!(reader.traffic().requests(), 1, "the prefetch holds it all");
     }
 
+    /// A plan whose prefetch is not a whole number of blocks (S26): the
+    /// reader rounds it up, so a read across the prefetch's end neither runs
+    /// past a short chunk nor asks again for bytes it holds. A block of 0
+    /// bytes is refused.
+    #[test]
+    fn a_prefetch_is_rounded_up_to_whole_blocks() {
+        let bytes = pattern(50_000);
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let plan = RangePlan {
+            prefetch: 10_000,
+            block: 4096,
+            max_requests: 8,
+            max_bytes: 1 << 20,
+        };
+        let local = |log: &Arc<StdMutex<Vec<(u64, u64)>>>| {
+            Box::new(Local {
+                bytes: bytes.clone(),
+                log: log.clone(),
+            })
+        };
+        let mut reader = RangeReader::open_planned(local(&log), plan, Duration::ZERO).unwrap();
+        // Across the asked prefetch's end (10,000) and the rounded one's.
+        reader.seek(SeekFrom::Start(9_000)).unwrap();
+        let mut buf = vec![0; 8_000];
+        reader.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, bytes[9_000..17_000]);
+        assert_eq!(*log.lock().unwrap(), [(0, 12_288), (12_288, 8_192)]);
+        // The file's short last block.
+        reader.seek(SeekFrom::End(-100)).unwrap();
+        let mut tail = Vec::new();
+        reader.read_to_end(&mut tail).unwrap();
+        assert_eq!(tail, bytes[49_900..]);
+        assert_eq!(log.lock().unwrap()[2], (49_152, 848));
+        let zero = RangePlan { block: 0, ..plan };
+        assert!(RangeReader::open_planned(local(&log), zero, Duration::ZERO).is_err());
+    }
+
     /// The file changes length between requests: SMHI replaced it.
     struct Moving(u64);
     impl RangeSource for Moving {
@@ -1862,8 +1968,11 @@ mod tests {
             let mut buf = vec![0; len];
             reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
         }
-        let start_ms = valid + 3_000;
-        Ok(Scan::Polar(Sweep {
+        Ok(Scan::Polar(stub_sweep(valid + 3_000)))
+    }
+
+    fn stub_sweep(start_ms: i64) -> Sweep {
+        Sweep {
             rays: vec![Ray {
                 azimuth_deg: 0.5,
                 elevation_deg: 0.5,
@@ -1878,7 +1987,17 @@ mod tests {
             scale: 2.0,
             offset: 66.0,
             code1_status: crate::sweep::OUTSIDE_COVERAGE,
-        }))
+        }
+    }
+
+    /// `stub_decode` for a product: the product, with the lowest scan it
+    /// read on the way (`products::decode_volume`).
+    fn stub_product(reader: RangeReader, want: Want) -> Result<Scan, String> {
+        let Scan::Polar(sweep) = stub_decode(reader, want)? else {
+            unreachable!()
+        };
+        let lowest = stub_sweep(sweep.start_ms);
+        Ok(Scan::Product(sweep, want, Some(Box::new(lowest))))
     }
 
     fn config(base: String) -> Config {
@@ -1924,10 +2043,34 @@ mod tests {
         until: impl Fn(&[Event]) -> bool,
         linger: Duration,
     ) -> (Vec<Event>, Vec<String>) {
+        run_as(
+            (Want::Lowest, stub_decode),
+            site,
+            handler,
+            cached,
+            until,
+            linger,
+        )
+    }
+
+    /// `run` for a poller following `want` through `decode`.
+    fn run_as(
+        (want, decode): (Want, Decode),
+        site: &'static str,
+        handler: Handler,
+        cached: Vec<i64>,
+        until: impl Fn(&[Event]) -> bool,
+        linger: Duration,
+    ) -> (Vec<Event>, Vec<String>) {
         runtime().block_on(async {
             let (base, served) = serve(handler).await;
             let (tx, mut rx) = mpsc::channel(16);
-            let poller = tokio::spawn(poll_with(config(base), site.into(), tx, cached));
+            let cfg = Config {
+                want,
+                decode,
+                ..config(base)
+            };
+            let poller = tokio::spawn(poll_with(cfg, site.into(), tx, cached));
             let mut events = Vec::new();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
             while !until(&events) {
@@ -1951,6 +2094,44 @@ mod tests {
     /// publishes 16:40, overtakes the lagging listing by probing 16:45 and
     /// 16:50, then backfills the rest of the 60-frame loop. After that,
     /// conditional polls fetch nothing more.
+    /// Another product backfills an hour (S26: a product volume costs ~39
+    /// requests), and every read that decoded the lowest scan on the way
+    /// sends it too, as a second event, from the same volume.
+    #[test]
+    fn a_product_backfills_an_hour_and_sends_its_lowest_scans_too() {
+        let (events, served) = run_as(
+            (Want::ColMax, stub_product),
+            "vara",
+            smhi("vara", VARA, VARA_DAY),
+            Vec::new(),
+            |events| events.len() >= 2 * PRODUCT_BACKFILL,
+            Duration::from_millis(300),
+        );
+        let seen: Vec<String> = events.iter().map(describe).collect();
+        assert_eq!(seen.len(), 2 * PRODUCT_BACKFILL, "{seen:?}");
+        assert_eq!(seen[0], "sweep 2026-09-13 16:40Z true");
+        assert_eq!(seen[5], "sweep 2026-09-13 16:50Z true");
+        assert_eq!(seen[6], "backfill 2026-09-13 16:35Z");
+        assert_eq!(seen[2 * PRODUCT_BACKFILL - 1], "backfill 2026-09-13 15:55Z");
+        for (i, pair) in events.chunks(2).enumerate() {
+            let scans = pair.iter().map(|e| match e {
+                Event::Sweep { sweep, .. } | Event::Backfill { sweep, .. } => sweep,
+                _ => panic!("{}", describe(e)),
+            });
+            let [product, lowest] = scans.collect::<Vec<_>>()[..] else {
+                unreachable!()
+            };
+            assert!(
+                matches!(product, Scan::Product(_, Want::ColMax, None)),
+                "{i}"
+            );
+            assert!(matches!(lowest, Scan::Polar(_)), "{i}");
+            assert_eq!(seen[2 * i], seen[2 * i + 1]);
+        }
+        let volumes = served.iter().filter(|s| s.contains(".h5")).count();
+        assert_eq!(volumes, PRODUCT_BACKFILL * 3, "one read per pair");
+    }
+
     #[test]
     fn the_poller_publishes_the_newest_volume_then_backfills_sixty_frames() {
         let (events, served) = run(

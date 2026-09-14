@@ -35,10 +35,6 @@ pub const EARTH_M: f64 = 6_371_000.0 * 4.0 / 3.0;
 /// A scan's ray farther than this from an output ray's azimuth does not
 /// reach it (the texture's own gap rule, `sweep::GAP_DEG`).
 pub const GAP_DEG: f64 = 0.75;
-/// Frames any product but the lowest scan backfills after a switch: two
-/// hours, what both clients buffer. Its ring still fills to
-/// `catalog::RING` as live frames arrive.
-pub const BACKFILL: usize = 24;
 /// Products other than the lowest scan a station keeps in its catalog: the
 /// current one and the one before (`catalog::Catalog::keep`).
 pub const KEPT: usize = 2;
@@ -170,13 +166,14 @@ impl Want {
         }
     }
 
-    /// Frames a switch backfills: the provider's own depth for the lowest
-    /// scan, `BACKFILL` for any other product.
-    pub fn backfill(&self, provider: usize) -> usize {
+    /// Frames a switch backfills, by the provider's depths (S26): `lowest`
+    /// for the lowest scan, `product` (at most `lowest`) for any other. A
+    /// product's ring still fills to `catalog::RING` as live frames arrive.
+    pub fn backfill(&self, lowest: usize, product: usize) -> usize {
         if self.is_lowest() {
-            provider
+            lowest
         } else {
-            provider.min(BACKFILL)
+            product.min(lowest)
         }
     }
 }
@@ -683,9 +680,51 @@ pub fn decode_volume<R: std::io::Read + std::io::Seek + Send + 'static>(
             .map(Scan::Polar)
             .map_err(|e| e.to_string());
     }
-    let tilts = crate::odim::decode_tilts(reader, |infos| needed(want, infos))
-        .map_err(|e| e.to_string())?;
-    compose(want, tilts).map(|sweep| Scan::Product(sweep, want))
+    // SMHI's lowest scan is `/dataset1` (`odim::Tilt::First`); its free
+    // copy below is only that scan when `/dataset1` is the lowest angle.
+    let mut first_is_lowest = false;
+    let tilts = crate::odim::decode_tilts(reader, |infos| {
+        first_is_lowest = lowest_of(infos) == 0;
+        needed(want, infos)
+    })
+    .map_err(|e| e.to_string())?;
+    // CAPPI, CMAX and HYBRID read the lowest scan for their rays and gates
+    // (`needed`), so it comes free (S26): the sweep `decode_lowest` makes of
+    // the same volume (the lowest angle, ties the first dataset, as
+    // `odim::tilt_path` picks), for the station's `e0` ring.
+    let free = match want {
+        Want::Lowest | Want::Angle(_) => None,
+        _ if lowest == crate::odim::Tilt::First && !first_is_lowest => None,
+        _ => tilts
+            .iter()
+            .min_by(|a, b| a.elangle.total_cmp(&b.elangle))
+            .map(|t| Box::new(copy_sweep(&t.sweep))),
+    };
+    compose(want, tilts).map(|sweep| Scan::Product(sweep, want, free))
+}
+
+/// A field-by-field copy (`Sweep` is not `Clone`).
+fn copy_sweep(sweep: &Sweep) -> Sweep {
+    Sweep {
+        rays: sweep
+            .rays
+            .iter()
+            .map(|r| Ray {
+                azimuth_deg: r.azimuth_deg,
+                elevation_deg: r.elevation_deg,
+                time_ms: r.time_ms,
+                codes: r.codes.clone(),
+            })
+            .collect(),
+        start_ms: sweep.start_ms,
+        end_ms: sweep.end_ms,
+        gates: sweep.gates,
+        first_gate_m: sweep.first_gate_m,
+        gate_spacing_m: sweep.gate_spacing_m,
+        scale: sweep.scale,
+        offset: sweep.offset,
+        code1_status: sweep.code1_status,
+    }
 }
 
 /// ` cappi1` after a provenance's file name for a product other than the
@@ -810,8 +849,20 @@ mod tests {
         assert_eq!(variant_of("popover-test-0"), "e0");
         assert_eq!(variant_of("vara-loading"), "e0");
         assert_eq!(variant_of("x-abc"), "e0");
-        assert_eq!(Want::Lowest.backfill(60), 60);
-        assert_eq!(Want::ColMax.backfill(60), 24);
+        use crate::providers::ord;
+        use crate::smhi_live as smhi;
+        let smhi_depths = (smhi::BACKFILL, smhi::PRODUCT_BACKFILL);
+        assert_eq!(Want::Lowest.backfill(smhi_depths.0, smhi_depths.1), 60);
+        assert_eq!(Want::ColMax.backfill(smhi_depths.0, smhi_depths.1), 12);
+        assert_eq!(
+            Want::ColMax.backfill(ord::BACKFILL, ord::PRODUCT_BACKFILL),
+            24
+        );
+        assert_eq!(
+            Want::ColMax.backfill(10, 24),
+            10,
+            "never deeper than the lowest scan"
+        );
         assert_eq!(nearest_index(&[0.5, 1.0, 2.4, 3.2], 2.6), Some(2));
         assert_eq!(
             nearest_index(&[0.5, 1.0], 0.75),
@@ -1149,7 +1200,7 @@ mod tests {
                 };
                 assert_eq!(want.variant(), *variant);
                 let file = std::fs::File::open(format!("{ROOT}data/raw/{fixture}")).unwrap();
-                let crate::smhi_live::Scan::Product(sweep, _) =
+                let crate::smhi_live::Scan::Product(sweep, ..) =
                     decode_volume(file, want, lowest).unwrap()
                 else {
                     panic!("{golden} {variant}: not a product")
@@ -1198,14 +1249,93 @@ mod tests {
         }
     }
 
+    /// CAPPI, CMAX and HYBRID carry the lowest scan they read (S26): the
+    /// very sweep `decode_lowest` makes of the same volume, for the `e0`
+    /// ring. The lowest scan itself and one other angle carry none.
+    #[test]
+    fn a_product_read_carries_its_lowest_scan() {
+        use crate::smhi_live::Scan;
+        const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../data/raw/");
+        let table: &'static Blockage = Box::leak(Box::new(Blockage { tenths: [8; 360] }));
+        let codes = |s: &Sweep| -> Vec<u8> {
+            s.rays
+                .iter()
+                .flat_map(|r| r.codes.iter().copied())
+                .collect()
+        };
+        let rays = |s: &Sweep| -> Vec<(f32, f32, i64)> {
+            s.rays
+                .iter()
+                .map(|r| (r.azimuth_deg, r.elevation_deg, r.time_ms))
+                .collect()
+        };
+        for (fixture, lowest) in [
+            (
+                "radar_vara_qcvol_202609131055_tilts.h5",
+                crate::odim::Tilt::First,
+            ),
+            ("ord_nohur_202609140930_tilts.h5", crate::odim::Tilt::Lowest),
+            ("ord_dksin_202609140940_tilts.h5", crate::odim::Tilt::Lowest),
+        ] {
+            let open = || std::fs::File::open(format!("{ROOT}{fixture}")).unwrap();
+            let expected = crate::odim::decode_lowest(open(), lowest).unwrap();
+            for want in [Want::Cappi(1000.0), Want::ColMax, Want::Hybrid(table)] {
+                let Scan::Product(_, _, Some(free)) = decode_volume(open(), want, lowest).unwrap()
+                else {
+                    panic!("{fixture} {}: no lowest scan", want.variant())
+                };
+                assert_eq!(
+                    (
+                        free.start_ms,
+                        free.end_ms,
+                        free.gates,
+                        free.first_gate_m,
+                        free.gate_spacing_m,
+                        free.scale,
+                        free.offset
+                    ),
+                    (
+                        expected.start_ms,
+                        expected.end_ms,
+                        expected.gates,
+                        expected.first_gate_m,
+                        expected.gate_spacing_m,
+                        expected.scale,
+                        expected.offset
+                    ),
+                    "{fixture} {}",
+                    want.variant()
+                );
+                assert!(rays(&free) == rays(&expected), "{fixture}: rays");
+                assert!(codes(&free) == codes(&expected), "{fixture}: codes");
+            }
+            for want in [Want::Lowest, Want::Angle(4.0)] {
+                let scan = decode_volume(open(), want, lowest).unwrap();
+                assert!(
+                    matches!(scan, Scan::Polar(_) | Scan::Product(_, _, None)),
+                    "{fixture} {}",
+                    want.variant()
+                );
+            }
+        }
+    }
+
     /// The vendored blockage tables (`scripts/blockage-tables.py`): 360
-    /// entries per radar, every radar a table station, and those radars
-    /// offer "Clear view" with their own table.
+    /// entries per radar, every radar a table station, and every radar
+    /// whose angles the engine knows (SMHI's, MET Norway's and DMI's, S26)
+    /// offers "Clear view" with its own table. FMI's offer the lowest scan
+    /// only.
     #[test]
     fn blockage_tables_load_and_offer_clear_view() {
         let table = crate::providers::table();
-        for id in ["vara", "ostersund", "nohur", "nosta"] {
-            let station = table.sites.iter().find(|s| s.id == id).unwrap();
+        let radars: Vec<&Station> = table
+            .sites
+            .iter()
+            .filter(|s| s.kind == SiteKind::Polar && !nominal_angles(s).is_empty())
+            .collect();
+        assert_eq!(radars.len(), 29, "12 SE, 12 NO and 5 DK radars");
+        for station in radars {
+            let id = station.id.as_str();
             assert!(blockage(id).is_some(), "{id}");
             assert_eq!(
                 for_station(station).0,

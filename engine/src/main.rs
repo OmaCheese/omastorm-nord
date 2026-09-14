@@ -831,6 +831,11 @@ impl Shared {
                     let (id, name) = want.product();
                     (frame.product, frame.product_name) = (id.to_owned(), name.to_owned());
                 }
+                // A chosen angle shows its own until its first frame (S26),
+                // not "Reflectivity 0.0°".
+                if let Want::Angle(deg) = want {
+                    frame.elevation_deg = deg;
+                }
                 blank_textures(&frame)
                     .and_then(|(texture, lut)| self.show(frame, &texture, &lut))
                     .map(|()| None)
@@ -1359,7 +1364,7 @@ fn encode(sweep: &sweep::Sweep, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)>
 fn scan_frame(template: &Frame, station: &Station, scan: &Scan, complete: bool) -> Frame {
     match scan {
         Scan::Polar(sweep) => live_frame(template, station, sweep, complete, Want::Lowest),
-        Scan::Product(sweep, want) => live_frame(template, station, sweep, complete, *want),
+        Scan::Product(sweep, want, _) => live_frame(template, station, sweep, complete, *want),
         Scan::Grid(grid) => composite::frame(template, station, grid),
     }
 }
@@ -1367,7 +1372,7 @@ fn scan_frame(template: &Frame, station: &Station, scan: &Scan, complete: bool) 
 /// lookup is empty, a polar sweep has no code texture.
 fn encode_scan(scan: &Scan, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     match scan {
-        Scan::Polar(sweep) | Scan::Product(sweep, _) => {
+        Scan::Polar(sweep) | Scan::Product(sweep, ..) => {
             encode(sweep, frame).map(|(t, l)| (t, l, Vec::new()))
         }
         Scan::Grid(grid) => {

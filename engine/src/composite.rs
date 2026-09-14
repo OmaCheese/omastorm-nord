@@ -59,6 +59,12 @@ pub fn station() -> Station {
         lon: 16.0,
         alt_m: 0.0,
         kind: SiteKind::Grid,
+        country: "SE".to_owned(),
+        provider: crate::providers::ProviderId::Smhi,
+        range_km: 0.0,
+        attribution: crate::providers::smhi::ATTRIBUTION.to_owned(),
+        aliases: Vec::new(),
+        source: String::new(),
     }
 }
 
@@ -361,6 +367,7 @@ pub fn frame(template: &Frame, station: &Station, grid: &Grid) -> Frame {
         },
         palette: template.palette.clone(),
         bounds: template.bounds.clone(),
+        attribution: station.attribution.clone(),
         grid: Some(grid.placement()),
     }
 }

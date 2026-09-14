@@ -3,6 +3,7 @@ mod composite;
 mod odim;
 mod osm;
 mod protocol;
+mod providers;
 mod smhi_live;
 mod sweep;
 mod tiles;
@@ -11,12 +12,12 @@ use catalog::Entry;
 use chrono::{DateTime, Utc};
 use protocol::{
     Basemap, Command, Connection, ConnectionStatus, Frame, FrameKind, FrameStatus, Geometry,
-    Handshake, Hello, Message, NaturalEarth, Places, Rejection, SiteKind, SiteSelection, SiteTable,
-    Source, State, Station, TileReady, TimelineEntry, VERSION, is_texture_path,
+    Handshake, Hello, Message, NaturalEarth, Places, Rejection, SiteKind, SiteSelection, Source,
+    State, Station, TileReady, TimelineEntry, VERSION, is_texture_path,
 };
+use providers::{Scan, Staleness};
 use serde::Deserialize;
 use serde_json::Value;
-use smhi_live::Scan;
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -59,12 +60,8 @@ const RETIRE_AFTER: Duration = Duration::from_secs(30);
 /// `tile_ready` lines in a burst, so the queue holds a couple of those; a
 /// client that still falls behind is dropped by the next broadcast.
 const QUEUE: usize = 128;
-/// A reachable feed whose newest radial for the station is this old or older
-/// is `stale`, and `unavailable` at 30 minutes. 15, not upstream's 10: SMHI's
-/// 5-minute cadence plus ~5 minutes to publish makes a healthy frame 5–10
-/// minutes old, so 10 would flap (DEC-9).
-const STALE_AFTER: Duration = Duration::from_secs(900);
-const UNAVAILABLE_AFTER: Duration = Duration::from_secs(1800);
+/// The credit on an archived Level II frame (the checks' KTLX, DEC-10).
+const LEVEL_II_CREDIT: &str = "NOAA NEXRAD Level II";
 /// Playback advances one frame per tick and loops (DESIGN.md, timeline).
 const PLAY_LOOP: Duration = Duration::from_secs(10);
 const PLAY_STEP_MIN: Duration = Duration::from_millis(250);
@@ -98,10 +95,8 @@ fn build_id() -> &'static str {
 /// The embedded station snapshot (`engine/data/sites.json`, the 12 radars
 /// `scripts/fetch-smhi-sites.sh` writes) plus the national composite, which
 /// that script does not know about (`composite.rs`).
-fn site_table() -> SiteTable {
-    let mut table: SiteTable = serde_json::from_str(include_str!("../data/sites.json")).unwrap();
-    table.sites.push(composite::station());
-    table
+fn site_table() -> providers::Table {
+    providers::table()
 }
 fn hello() -> Hello {
     let table = site_table();
@@ -296,11 +291,17 @@ struct Arrival {
 /// and `Offline` are not judged by age: a switch or the poller set them and
 /// the next sweep clears them. `None` (no radial yet) keeps the current
 /// condition.
-fn feed_condition(current: ConnectionStatus, evidence_age: Option<u64>) -> ConnectionStatus {
+/// The thresholds are the station's provider's (`providers::Staleness`):
+/// SMHI's 15 and 30 minutes (DEC-9).
+fn feed_condition(
+    current: ConnectionStatus,
+    evidence_age: Option<u64>,
+    staleness: Staleness,
+) -> ConnectionStatus {
     match (current, evidence_age) {
         (ConnectionStatus::Loading | ConnectionStatus::Offline, _) | (_, None) => current,
-        (_, Some(age)) if age >= UNAVAILABLE_AFTER.as_secs() => ConnectionStatus::Unavailable,
-        (_, Some(age)) if age >= STALE_AFTER.as_secs() => ConnectionStatus::Stale,
+        (_, Some(age)) if age >= staleness.unavailable.as_secs() => ConnectionStatus::Unavailable,
+        (_, Some(age)) if age >= staleness.stale.as_secs() => ConnectionStatus::Stale,
         _ => ConnectionStatus::Ok,
     }
 }
@@ -312,12 +313,13 @@ fn should_restart_live(
     poller_dead: bool,
     evidence_age: Option<u64>,
     since_restart: Duration,
+    staleness: Staleness,
 ) -> bool {
     if poller_dead {
         return true;
     }
-    evidence_age.is_some_and(|age| age >= UNAVAILABLE_AFTER.as_secs())
-        && since_restart >= UNAVAILABLE_AFTER
+    evidence_age.is_some_and(|age| age >= staleness.unavailable.as_secs())
+        && since_restart >= staleness.unavailable
 }
 /// A sweep already in the catalog may clear `loading` after `select_site`.
 /// Any other status stays put: rediscovery must not flash `ok`.
@@ -358,6 +360,7 @@ fn live_frame(template: &Frame, station: &Station, sweep: &sweep::Sweep, complet
         },
         palette: template.palette.clone(),
         bounds: template.bounds.clone(),
+        attribution: station.attribution.clone(),
         grid: None,
     }
 }
@@ -391,6 +394,7 @@ fn empty_frame(template: &Frame, station: &Station) -> Frame {
         },
         palette: template.palette.clone(),
         bounds: template.bounds.clone(),
+        attribution: station.attribution.clone(),
         grid: None,
     }
 }
@@ -400,13 +404,10 @@ fn empty_frame(template: &Frame, station: &Station) -> Frame {
 /// is empty, so any home the UI names differs from it.
 fn startup_frame(template: &Frame) -> Frame {
     let nowhere = Station {
-        id: String::new(),
-        name: String::new(),
-        state: String::new(),
         lat: 62.0,
         lon: 16.0,
-        alt_m: 0.0,
         kind: SiteKind::Polar,
+        ..Station::default()
     };
     empty_frame(template, &nowhere)
 }
@@ -428,6 +429,8 @@ fn with_archived_station(mut sites: Vec<Station>, frame: &Frame) -> Vec<Station>
             lon: frame.site.lon,
             alt_m: frame.site.alt_m,
             kind: SiteKind::Polar,
+            attribution: frame.attribution.clone(),
+            ..Station::default()
         });
     }
     sites
@@ -560,10 +563,10 @@ struct Shared {
     /// aborted and replaced by a site switch or a quiet-feed restart.
     live: Option<JoinHandle<()>>,
     /// When the poller was last spawned, so an UNAVAILABLE feed is
-    /// rediscovered at most once per `UNAVAILABLE_AFTER` rather than every
-    /// cleanup tick.
+    /// rediscovered at most once per its provider's `unavailable` age rather
+    /// than every cleanup tick.
     last_live_restart: Instant,
-    events: Sender<smhi_live::Event>,
+    events: Sender<providers::Event>,
     /// `scanTime` of the newest complete frame, milliseconds since the
     /// epoch, for `connection.ageSeconds`; `None` while there is none.
     frame_ms: Option<i64>,
@@ -589,13 +592,23 @@ impl Shared {
         // half-finished cut from a station that then fell silent ages like
         // any other evidence.
         if self.state.source == Source::Live {
-            self.state.connection.status =
-                feed_condition(self.state.connection.status, self.evidence_age_secs());
+            self.state.connection.status = feed_condition(
+                self.state.connection.status,
+                self.evidence_age_secs(),
+                self.staleness(),
+            );
         }
         line(&Message::State(&self.state))
     }
     /// Show `frame` with its textures published under `tex/`.
     fn show(&mut self, mut frame: Frame, texture: &[u8], lut: &[u8]) -> io::Result<()> {
+        if frame.attribution.is_empty() {
+            // Catalogued before S14: credit the frame's station.
+            let id = frame.id.split('-').next().unwrap_or_default();
+            if let Some(station) = self.sites.iter().find(|s| s.id == id) {
+                frame.attribution = station.attribution.clone();
+            }
+        }
         publish_frame(&self.dir, &mut frame, texture, lut)?;
         self.state.frame = frame;
         Ok(())
@@ -626,6 +639,16 @@ impl Shared {
             .ok_or_else(|| io::Error::other(format!("{id} is no longer in the catalog")))?;
         self.show(stored.frame, &stored.texture, &stored.azimuth_lut)
     }
+    /// The selected station's staleness thresholds, from its provider's
+    /// cadence; SMHI's before any station is selected.
+    fn staleness(&self) -> Staleness {
+        let provider = self
+            .sites
+            .iter()
+            .find(|s| s.id == self.state.site.id)
+            .map_or(providers::ProviderId::Smhi, |s| s.provider);
+        providers::spec(provider).staleness
+    }
     /// Age of the newest radial received for the live station: the sweep
     /// in progress while one paints, else the newest complete frame.
     fn evidence_age_secs(&self) -> Option<u64> {
@@ -652,8 +675,17 @@ impl Shared {
             task.abort();
         }
         let cached: Vec<i64> = self.timeline.stored.iter().map(|e| e.start_ms).collect();
-        self.live = Some(tokio::spawn(smhi_live::poll(
-            site,
+        let station = self
+            .sites
+            .iter()
+            .find(|s| s.id == site)
+            .cloned()
+            .unwrap_or_else(|| Station {
+                id: site.clone(),
+                ..Station::default()
+            });
+        self.live = Some(tokio::spawn(providers::poll(
+            station,
             self.events.clone(),
             cached,
             skip_known,
@@ -667,13 +699,17 @@ impl Shared {
     /// a finished poller is started again so opening the popover recovers
     /// a wedged feed.
     fn select_site(&mut self, id: &str) -> (bool, Option<String>) {
-        if id == self.state.site.id && self.state.source == Source::Live {
+        // An alias, or the id in another case, names the same station, and
+        // `state.site.id` is always its canonical id (DEC-12).
+        let station = providers::resolve(&self.sites, id).cloned();
+        let target = station.as_ref().map_or(id, |s| s.id.as_str());
+        if target == self.state.site.id && self.state.source == Source::Live {
             if self.live.as_ref().is_none_or(JoinHandle::is_finished) {
                 self.restart_live("poller ended; restarting on reselect", true);
             }
             return (false, None);
         }
-        let Some(station) = self.sites.iter().find(|s| s.id == id).cloned() else {
+        let Some(station) = station else {
             return (
                 false,
                 Some(format!("Unknown site {id}; stations are listed in hello.")),
@@ -1012,6 +1048,7 @@ fn odim_station(site: &odim::OdimSite) -> Station {
                 lon: site.lon,
                 alt_m: site.alt_m,
                 kind: SiteKind::Polar,
+                ..Station::default()
             }
         })
 }
@@ -1029,6 +1066,7 @@ fn decode_and_publish(dir: &Path, template: &Frame, archive: &[u8]) -> io::Resul
         frame = live_frame(template, &odim_station(&site), &sweep, true);
         sweep
     } else {
+        frame.attribution = LEVEL_II_CREDIT.to_owned();
         sweep::lowest_reflectivity(archive).map_err(|e| failed(&e))?
     };
     let decoded = started.elapsed();
@@ -1052,10 +1090,10 @@ fn decode_and_publish(dir: &Path, template: &Frame, archive: &[u8]) -> io::Resul
 /// record complete frames in the catalog, then hand the frame to the
 /// timeline, which publishes it if it is to be shown, and broadcast. An
 /// event for a station that is no longer selected is dropped.
-async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<smhi_live::Event>) {
+async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers::Event>) {
     while let Some(event) = events.recv().await {
         match event {
-            smhi_live::Event::Sweep {
+            providers::Event::Sweep {
                 site,
                 sweep,
                 complete,
@@ -1122,7 +1160,7 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<smhi_live:
                     Err(e) => eprintln!("Live frame: {e}"),
                 }
             }
-            smhi_live::Event::Backfill {
+            providers::Event::Backfill {
                 site,
                 sweep,
                 provenance,
@@ -1176,7 +1214,7 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<smhi_live:
             // The newest volume is already catalogued: the feed is up, so a
             // station opened on its cached frame leaves `loading`. Any other
             // condition stays, as for a catalogued sweep in `arrived`.
-            smhi_live::Event::Current { site } => {
+            providers::Event::Current { site } => {
                 let mut shared = shared.lock().unwrap();
                 if shared.state.site.id == site
                     && shared.state.source == Source::Live
@@ -1186,10 +1224,10 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<smhi_live:
                     shared.broadcast();
                 }
             }
-            smhi_live::Event::Offline { site, reason } => {
+            providers::Event::Offline { site, reason } => {
                 report(&shared, &site, &reason, ConnectionStatus::Offline);
             }
-            smhi_live::Event::Silent { site, reason } => {
+            providers::Event::Silent { site, reason } => {
                 report(&shared, &site, &reason, ConnectionStatus::Unavailable);
             }
         }
@@ -1731,6 +1769,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
                         shared.live.as_ref().is_none_or(JoinHandle::is_finished),
                         shared.evidence_age_secs(),
                         shared.last_live_restart.elapsed(),
+                        shared.staleness(),
                     )
                 {
                     let why = if shared.live.as_ref().is_none_or(JoinHandle::is_finished) {
@@ -2078,23 +2117,42 @@ mod tests {
     #[test]
     fn a_reachable_feed_is_judged_by_the_newest_radial_age() {
         use ConnectionStatus::*;
-        let stale = STALE_AFTER.as_secs();
-        let unavailable = UNAVAILABLE_AFTER.as_secs();
-        for from in [Ok, Stale, Unavailable] {
-            assert_eq!(feed_condition(from, Some(0)), Ok);
-            assert_eq!(feed_condition(from, Some(stale - 1)), Ok);
-            assert_eq!(feed_condition(from, Some(stale)), Stale);
-            assert_eq!(feed_condition(from, Some(unavailable - 1)), Stale);
-            assert_eq!(feed_condition(from, Some(unavailable)), Unavailable);
-            // Nothing received yet: nothing to judge.
-            assert_eq!(feed_condition(from, None), from);
-        }
-        // A switch or the poller set these; only a sweep clears them.
-        for held in [Loading, Offline] {
-            for age in [None, Some(0), Some(stale), Some(unavailable)] {
-                assert_eq!(feed_condition(held, age), held);
+        // SMHI keeps DEC-9's 15 and 30 minutes; a provider publishing every
+        // 15 minutes is stale at 25 and unavailable at 40.
+        let smhi = providers::smhi::SPEC.staleness;
+        assert_eq!(
+            (smhi.stale.as_secs(), smhi.unavailable.as_secs()),
+            (900, 1800)
+        );
+        let slow = Staleness::from_cadence(Duration::from_secs(900));
+        assert_eq!(
+            (slow.stale.as_secs(), slow.unavailable.as_secs()),
+            (1500, 2400)
+        );
+        for staleness in [smhi, slow] {
+            let judge = |from, age| feed_condition(from, age, staleness);
+            let stale = staleness.stale.as_secs();
+            let unavailable = staleness.unavailable.as_secs();
+            for from in [Ok, Stale, Unavailable] {
+                assert_eq!(judge(from, Some(0)), Ok);
+                assert_eq!(judge(from, Some(stale - 1)), Ok);
+                assert_eq!(judge(from, Some(stale)), Stale);
+                assert_eq!(judge(from, Some(unavailable - 1)), Stale);
+                assert_eq!(judge(from, Some(unavailable)), Unavailable);
+                // Nothing received yet: nothing to judge.
+                assert_eq!(judge(from, None), from);
+            }
+            // A switch or the poller set these; only a sweep clears them.
+            for held in [Loading, Offline] {
+                for age in [None, Some(0), Some(stale), Some(unavailable)] {
+                    assert_eq!(judge(held, age), held);
+                }
             }
         }
+        // The same 20-minute-old frame: stale from SMHI, fine from the
+        // 15-minute provider.
+        assert_eq!(feed_condition(Ok, Some(1200), smhi), Stale);
+        assert_eq!(feed_condition(Ok, Some(1200), slow), Ok);
         assert_eq!(
             serde_json::to_string(&Unavailable).unwrap(),
             "\"unavailable\""
@@ -2103,27 +2161,38 @@ mod tests {
 
     #[test]
     fn a_wedged_poller_is_restarted_once_the_feed_is_unavailable() {
-        let cooldown = UNAVAILABLE_AFTER;
+        let s = providers::smhi::SPEC.staleness;
+        let cooldown = s.unavailable;
         assert!(
-            should_restart_live(true, None, Duration::from_secs(0)),
+            should_restart_live(true, None, Duration::from_secs(0), s),
             "a finished poller restarts at once"
         );
         assert!(
             !should_restart_live(
                 false,
-                Some(UNAVAILABLE_AFTER.as_secs()),
-                Duration::from_secs(0)
+                Some(s.unavailable.as_secs()),
+                Duration::from_secs(0),
+                s
             ),
             "do not restart every tick after going unavailable"
         );
         assert!(
-            !should_restart_live(false, Some(STALE_AFTER.as_secs()), cooldown),
+            !should_restart_live(false, Some(s.stale.as_secs()), cooldown, s),
             "stale is not old enough; the inner iterator watchdog fires first"
         );
         assert!(should_restart_live(
             false,
-            Some(UNAVAILABLE_AFTER.as_secs()),
-            cooldown
+            Some(s.unavailable.as_secs()),
+            cooldown,
+            s
+        ));
+        // A slower provider waits for its own unavailable age.
+        let slow = Staleness::from_cadence(Duration::from_secs(900));
+        assert!(!should_restart_live(
+            false,
+            Some(s.unavailable.as_secs()),
+            cooldown,
+            slow
         ));
     }
 
@@ -2250,6 +2319,7 @@ mod handoff_tests {
             lon,
             alt_m: 0.0,
             kind: SiteKind::Polar,
+            ..Station::default()
         }
     }
     /// A point `fraction` of the way from `a` to `b` along the parallel.

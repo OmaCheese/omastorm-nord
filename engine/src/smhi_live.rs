@@ -74,9 +74,12 @@ pub const BACKFILL: usize = 60;
 const BACKFILL_DELAY: Duration = Duration::from_secs(3);
 /// Between backfill volumes, to be gentle with SMHI.
 const BACKFILL_PACE: Duration = Duration::from_millis(250);
-/// A station whose newest volume is this old has gone quiet: `Silent`. Same
-/// as the engine's `UNAVAILABLE_AFTER`.
-const SILENT_AFTER_MS: i64 = 30 * 60 * 1000;
+/// A station whose newest volume is this old has gone quiet: `Silent`. The
+/// SMHI provider's `unavailable` threshold (30 minutes, DEC-9).
+const SILENT_AFTER_MS: i64 = crate::providers::smhi::SPEC
+    .staleness
+    .unavailable
+    .as_millis() as i64;
 /// A newest volume older than this is neither fetched nor backfilled: the
 /// day listings cannot reach it, and a months-old picture is not "live".
 const HORIZON_MS: i64 = 24 * 60 * 60 * 1000;
@@ -95,6 +98,25 @@ pub const BLOCK: u64 = 4 * 1024;
 /// only stop a decoder that wanders through the whole 15 MB file.
 const MAX_REQUESTS: u32 = 64;
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+/// A range reader's plan for one file: the first request's length, the
+/// block every later request is a run of, and the most requests and bytes
+/// the file may cost. Each provider names its own (`providers::Spec`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RangePlan {
+    pub prefetch: u64,
+    pub block: u64,
+    pub max_requests: u32,
+    pub max_bytes: u64,
+}
+
+/// DEC-2's plan for SMHI's volumes and composites.
+pub const DEC2: RangePlan = RangePlan {
+    prefetch: PREFETCH,
+    block: BLOCK,
+    max_requests: MAX_REQUESTS,
+    max_bytes: MAX_BYTES,
+};
 /// Decode failures of one volume before the poller stops retrying it.
 const GIVE_UP_AFTER: u32 = 2;
 /// A prefetch answered `bytes 0-65535/*` (SMHI's cache still fetching the
@@ -583,6 +605,7 @@ impl Traffic {
 /// cost more than `MAX_REQUESTS` or `MAX_BYTES`.
 pub struct RangeReader {
     source: Box<dyn RangeSource>,
+    plan: RangePlan,
     len: u64,
     pos: u64,
     blocks: HashMap<u64, Vec<u8>>,
@@ -601,11 +624,20 @@ impl RangeReader {
     /// fetching), from the HDF5 superblock's end-of-file address. Failing
     /// both, ask again after `pause`, twice that, and four times that
     /// (`LENGTH_RETRIES`), then give up on the volume.
-    pub fn open_with(mut source: Box<dyn RangeSource>, pause: Duration) -> io::Result<Self> {
+    pub fn open_with(source: Box<dyn RangeSource>, pause: Duration) -> io::Result<Self> {
+        Self::open_planned(source, DEC2, pause)
+    }
+
+    /// `open_with` under another provider's `plan`.
+    pub fn open_planned(
+        mut source: Box<dyn RangeSource>,
+        plan: RangePlan,
+        pause: Duration,
+    ) -> io::Result<Self> {
         let mut requests = 0u32;
         let mut fetched = 0u64;
         let (head, len) = loop {
-            let (head, total) = source.get(0, PREFETCH)?;
+            let (head, total) = source.get(0, plan.prefetch)?;
             requests += 1;
             fetched += head.len() as u64;
             match total.or_else(|| hdf5_eof(&head)) {
@@ -618,11 +650,11 @@ impl RangeReader {
                 None => std::thread::sleep(pause * (1 << (requests - 1))),
             }
         };
-        if head.len() as u64 != PREFETCH.min(len) {
+        if head.len() as u64 != plan.prefetch.min(len) {
             return Err(io::Error::other(format!(
                 "short prefetch: {} of {} bytes",
                 head.len(),
-                PREFETCH.min(len)
+                plan.prefetch.min(len)
             )));
         }
         let traffic = Arc::new(Traffic::default());
@@ -631,6 +663,7 @@ impl RangeReader {
         traffic.len.store(len, Ordering::Relaxed);
         let mut reader = RangeReader {
             source,
+            plan,
             len,
             pos: 0,
             blocks: HashMap::new(),
@@ -645,7 +678,7 @@ impl RangeReader {
     }
 
     fn store(&mut self, first_block: u64, bytes: &[u8]) {
-        for (i, chunk) in bytes.chunks(BLOCK as usize).enumerate() {
+        for (i, chunk) in bytes.chunks(self.plan.block as usize).enumerate() {
             self.blocks.insert(first_block + i as u64, chunk.to_vec());
         }
     }
@@ -663,11 +696,11 @@ impl RangeReader {
             while block <= last && !self.blocks.contains_key(&block) {
                 block += 1;
             }
-            let start = run * BLOCK;
-            let end = (block * BLOCK).min(self.len);
+            let start = run * self.plan.block;
+            let end = (block * self.plan.block).min(self.len);
             let requests = self.traffic.requests();
             let bytes = self.traffic.bytes();
-            if requests >= MAX_REQUESTS || bytes + (end - start) > MAX_BYTES {
+            if requests >= self.plan.max_requests || bytes + (end - start) > self.plan.max_bytes {
                 return Err(io::Error::other(format!(
                     "range budget spent: {requests} requests, {bytes} bytes"
                 )));
@@ -701,13 +734,14 @@ impl Read for RangeReader {
         if buf.is_empty() || self.pos >= self.len {
             return Ok(0);
         }
+        let size = self.plan.block;
         let end = (self.pos + buf.len() as u64).min(self.len);
-        self.ensure(self.pos / BLOCK, (end - 1) / BLOCK)?;
+        self.ensure(self.pos / size, (end - 1) / size)?;
         let mut out = 0;
         while self.pos < end {
-            let block = self.pos / BLOCK;
+            let block = self.pos / size;
             let bytes = &self.blocks[&block];
-            let at = (self.pos - block * BLOCK) as usize;
+            let at = (self.pos - block * size) as usize;
             let n = (bytes.len() - at).min((end - self.pos) as usize);
             buf[out..out + n].copy_from_slice(&bytes[at..at + n]);
             out += n;

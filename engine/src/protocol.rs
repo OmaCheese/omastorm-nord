@@ -5,6 +5,7 @@
     reason = "wire fields are written by Serialize for the UI and never read here"
 )]
 
+use crate::providers::ProviderId;
 use serde::{Deserialize, Serialize};
 
 /// 2 since the composite (S8): `frame.kind`, `frame.grid`, `hello.sites[].kind`.
@@ -100,18 +101,13 @@ pub struct Handshake {
     pub build: String,
 }
 
-/// `engine/data/sites.json`.
-#[derive(Deserialize)]
-pub struct SiteTable {
-    pub source: String,
-    pub retrieved: String,
-    pub notes: String,
-    pub sites: Vec<Station>,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+/// One `hello.sites[]` entry. `engine/data/sites.json` rows become these in
+/// `providers::table`, which fills in each provider's defaults.
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Station {
+    /// DEC-12: an SMHI area key for a Swedish radar, else the ODIM node code;
+    /// a region word for a composite.
     pub id: String,
     pub name: String,
     pub state: String,
@@ -121,6 +117,25 @@ pub struct Station {
     /// Always sent. `sites.json` lists radars only, so it defaults to polar.
     #[serde(default)]
     pub kind: SiteKind,
+    /// ISO 3166-1 alpha-2 of the station's network; empty for a composite
+    /// spanning countries (S14, like every field below).
+    #[serde(default)]
+    pub country: String,
+    #[serde(default)]
+    pub provider: ProviderId,
+    /// The far edge of the lowest tilt's last gate; 0 for a grid station.
+    #[serde(default)]
+    pub range_km: f64,
+    /// The licence's credit, shown verbatim.
+    #[serde(default)]
+    pub attribution: String,
+    /// Other ids `select_site` accepts for this station.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// The station's key at its provider when it is not `id` (an ORD
+    /// location id). Engine-only: never on the wire.
+    #[serde(skip)]
+    pub source: String,
 }
 
 /// What a station is: one radar, or the national composite, which has no
@@ -345,6 +360,10 @@ pub struct Frame {
     pub site: Geometry,
     pub palette: Vec<String>,
     pub bounds: Vec<i32>,
+    /// The credit for this frame's data, shown verbatim (S14). Frames
+    /// catalogued earlier read back empty and get their station's.
+    #[serde(default)]
+    pub attribution: String,
     /// The texture's placement on a grid frame; absent on polar frames.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid: Option<GridPlacement>,

@@ -296,7 +296,8 @@ Item {
     // 25 km up to the whole sweep, which forgets it.
     Reach { id: reachStore }
     readonly property real reachKm: reachStore.km(app.siteId)
-    readonly property bool reachable: !!app.scan && app.scan.kind === "polar" && app.siteId !== ""
+    // A radar frame on screen: not a composite, not the loading placeholder.
+    readonly property bool reachable: map.drawable && !map.grid && app.siteId !== ""
     function stepReach(delta) {
         var full = Math.round(map.coverageKm), now = reachKm > 0 && reachKm < full ? reachKm : full;
         var next = delta < 0 ? Math.max(25, Math.ceil(now / 25) * 25 - 25) : Math.floor(now / 25) * 25 + 25;
@@ -1359,41 +1360,45 @@ Item {
                     }
                     // S29: Height's height above sea level, and this radar's
                     // reach, each with its steps.
-                    Item {
+                    ColumnLayout {
                         Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        Layout.leftMargin: 10; Layout.rightMargin: 10
                         visible: app.heightM > 0
-                        implicitHeight: 42
+                        spacing: 2
                         LabelText {
-                            anchors.left: parent.left; anchors.leftMargin: 10; anchors.top: parent.top; anchors.topMargin: 4
-                            text: "ABOVE SEA · BEAM 1.7 KM THICK AT 100 KM"; font.pixelSize: 9; opacity: .55
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: "HEIGHT ABOVE SEA · THE BEAM IS 1.7 KM THICK AT 100 KM, SO FINER STEPS REPEAT FAR OUT"
+                            font.pixelSize: 9; opacity: .55
                         }
                         RowLayout {
-                            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                            anchors.leftMargin: 10; anchors.rightMargin: 10
-                            height: 24
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 24
                             spacing: 4
-                            LabelText { text: "HEIGHT"; Layout.fillWidth: true }
+                            LabelText { text: app.heightM / 1000 + " KM"; color: app.theme.accent; Layout.fillWidth: true }
                             MenuStep { label: "−"; enabled: app.heightM > 500; onActivated: app.stepHeight(-1) }
-                            LabelText { text: app.heightM / 1000 + " KM"; color: app.theme.accent; horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 50 }
                             MenuStep { label: "+"; enabled: app.heightM < 12000; onActivated: app.stepHeight(1) }
                         }
                     }
-                    Item {
+                    ColumnLayout {
                         Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        Layout.leftMargin: 10; Layout.rightMargin: 10
                         visible: app.reachable
-                        implicitHeight: 42
+                        spacing: 2
                         LabelText {
-                            anchors.left: parent.left; anchors.leftMargin: 10; anchors.top: parent.top; anchors.topMargin: 4
-                            text: "REACH · DRAWN THIS FAR OUT"; font.pixelSize: 9; opacity: .55
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: "REACH · THIS RADAR DRAWN ONLY THIS FAR OUT"
+                            font.pixelSize: 9; opacity: .55
                         }
                         RowLayout {
-                            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                            anchors.leftMargin: 10; anchors.rightMargin: 10
-                            height: 24
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 24
                             spacing: 4
-                            LabelText { text: "REACH"; Layout.fillWidth: true }
+                            LabelText { text: app.reachKm > 0 ? Math.round(app.reachKm) + " KM" : "FULL"; color: app.theme.accent; Layout.fillWidth: true }
                             MenuStep { label: "−"; enabled: app.reachKm === 0 || app.reachKm > 25; onActivated: app.stepReach(-1) }
-                            LabelText { text: app.reachKm > 0 ? Math.round(app.reachKm) + " KM" : "FULL"; color: app.theme.accent; horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 50 }
                             MenuStep { label: "+"; enabled: app.reachKm > 0; onActivated: app.stepReach(1) }
                             MenuStep { label: "FULL"; enabled: app.reachKm > 0; onActivated: reachStore.set(app.siteId, 0) }
                         }

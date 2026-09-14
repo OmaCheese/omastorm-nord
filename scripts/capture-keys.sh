@@ -21,7 +21,8 @@ bash scripts/cargo.sh build --offline --locked --quiet
 # build, so the installed plugin's engine would be replaced by this debug one.
 export XDG_RUNTIME_DIR="$scratch/runtime"
 mkdir -p "$XDG_RUNTIME_DIR"
-trap 'target/debug/omastorm-engine stop > /dev/null 2>&1 || true' EXIT
+engine="$PWD/target/debug/omastorm-engine" # absolute: the script ends in review/
+trap '"$engine" stop > /dev/null 2>&1 || true' EXIT
 target/debug/omastorm-engine ensure
 sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.3 - "UNIX-CONNECT:$sock" > /dev/null; }

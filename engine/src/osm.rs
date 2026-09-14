@@ -613,8 +613,12 @@ fn stroke(feature: &Feature, scale: f64, rings: bool, strokes: &mut Strokes) {
         _ => {}
     }
 }
-/// A `place` feature inside the tile as a label: `name:en` over `name`,
-/// class `capital` for a national capital, else city, town, or village.
+/// A `place` feature inside the tile as a label: the local name in Latin
+/// script (`name:latin`: Göteborg, Tromsø, the same spelling the Natural
+/// Earth labels and the location picker use), else `name`. Not `name:en`
+/// (Gothenburg), and not `name` first, which is Cyrillic across the Russian
+/// and Belarusian borders. Class `capital` for a national capital, else
+/// city, town, or village.
 fn place(feature: &Feature, scale: f64, key: TileKey) -> Option<Label> {
     let point = match &feature.geometry {
         Geometry::Point(point) => point.0,
@@ -630,7 +634,7 @@ fn place(feature: &Feature, scale: f64, key: TileKey) -> Option<Label> {
     if !PLACES.contains(&class) {
         return None;
     }
-    let name = string(feature, "name:en")
+    let name = string(feature, "name:latin")
         .filter(|n| !n.is_empty())
         .or_else(|| string(feature, "name"))
         .filter(|n| !n.is_empty())?;
@@ -967,6 +971,22 @@ mod tests {
                 .iter()
                 .any(|l| l.name == "Moore" && l.class == "town")
         );
+    }
+
+    #[test]
+    fn swedish_tile_labels_use_the_local_latin_name() {
+        // A z7 tile over Västra Götaland whose Göteborg carries
+        // `name:en` = Gothenburg: the label is the local spelling, as on the
+        // Natural Earth labels and in the location picker.
+        let (_, labels) = render(
+            &fs::read(format!("{RECORDED}/7-68-38.pbf")).unwrap(),
+            TileKey { z: 7, x: 68, y: 38 },
+        )
+        .unwrap();
+        let names: Vec<&str> = labels.iter().map(|l| l.name.as_str()).collect();
+        assert!(names.contains(&"Göteborg"), "{names:?}");
+        assert!(!names.contains(&"Gothenburg"), "{names:?}");
+        assert!(names.contains(&"Borås"), "{names:?}");
     }
 
     #[test]

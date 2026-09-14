@@ -52,11 +52,17 @@ QtObject {
     /// its RGBA grid texture (docs/protocol.md, code texture); RadarMap then
     /// rebuilds each texel's class from the frame's bounds.
     readonly property bool codes: !!frame && frame.kind === "grid" && !!frame.codes
-    readonly property string texture: frame ? "file://" + runtime + (codes ? frame.codes : frame.texture) : ""
+    /// The files to draw: none once a surface that showed this client has
+    /// closed (`active` back to false), so a closed window lets the frame on
+    /// screen go too, not only the loop's. A client never made active (the
+    /// map checks and tests) draws as it always did.
+    readonly property bool drawing: active || !everActive
+    property bool everActive: false
+    readonly property string texture: frame && drawing ? "file://" + runtime + (codes ? frame.codes : frame.texture) : ""
     /// A grid frame has no azimuth lookup (docs/protocol.md, frame.kind). The
     /// shader never reads one for a grid, but its sampler still wants an
     /// image, so the grid texture stands in.
-    readonly property string azimuthLut: frame ? (frame.kind === "grid" ? texture : "file://" + runtime + frame.azimuthLut) : ""
+    readonly property string azimuthLut: frame && drawing ? (frame.kind === "grid" ? texture : "file://" + runtime + frame.azimuthLut) : ""
     /// The selected station's row from `hello`, or null before it arrives.
     readonly property var site: state ? (sites.find(s => s.id === state.site.id) || null) : null
 
@@ -92,8 +98,14 @@ QtObject {
         var m = /MemAvailable:\s+(\d+) kB/.exec(meminfo.text());
         memAvailable = m ? Number(m[1]) * 1024 : 0;
     }
-    onActiveChanged: if (active) readMemory()
-    Component.onCompleted: if (active) readMemory()
+    // Closing drops the loop's Images and the frame on screen (`texture`
+    // empties); a collection then frees the JS garbage of the states that
+    // arrived while it was open (once a second while live).
+    onActiveChanged: {
+        if (active) { everActive = true; readMemory(); }
+        else Qt.callLater(gc);
+    }
+    Component.onCompleted: if (active) { everActive = true; readMemory(); }
     readonly property int bufferLimit: 24     // two hours of 5-minute scans, as on the web
     readonly property int minStart: 6         // the loop starts with this many ready, or all there are
     readonly property int stepMs: 250         // a frame's time on screen

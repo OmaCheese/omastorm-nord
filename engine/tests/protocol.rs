@@ -147,10 +147,12 @@ fn fixture_transport_and_shared_commands() {
     let initial = read(&mut first);
     assert_eq!(initial["frame"]["scanTime"], "2013-05-20T20:16:43Z");
     assert_eq!(initial["source"], "archived");
-    // The timeline lists what `seek` accepts: here the one archived frame.
+    // The timeline lists what `seek` accepts: here the one archived frame,
+    // which is not catalogued and so names no stable textures (S19).
     assert_eq!(
         initial["timeline"],
-        json!([{"id": initial["frame"]["id"], "scanTime": "2013-05-20T20:16:43Z", "status": "complete"}])
+        json!([{"id": initial["frame"]["id"], "scanTime": "2013-05-20T20:16:43Z", "status": "complete",
+                "texture": "", "azimuthLut": ""}])
     );
     assert_eq!(initial["playing"], false);
     assert!(initial["connection"]["ageSeconds"].as_u64().unwrap() > 400_000_000);

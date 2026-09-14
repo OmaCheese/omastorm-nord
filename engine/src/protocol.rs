@@ -260,10 +260,16 @@ pub fn is_tile_path(path: &str) -> bool {
 impl State {
     /// Every file under `$XDG_RUNTIME_DIR/omastorm-se/` a client may currently be
     /// reading. Texture cleanup retires a file 30 s after it leaves this set,
-    /// so any new path field (azimuth tables, timeline frames) is added here.
+    /// so any new path field is added here. Every timeline entry's textures
+    /// count (S19): a client may fetch any frame of the loop at any time.
     pub fn referenced_files(&self) -> impl Iterator<Item = &str> {
         [self.frame.texture.as_str(), self.frame.azimuth_lut.as_str()]
             .into_iter()
+            .chain(
+                self.timeline
+                    .iter()
+                    .flat_map(|e| [e.texture.as_str(), e.azimuth_lut.as_str()]),
+            )
             .filter(|path| !path.is_empty())
     }
 }
@@ -315,6 +321,46 @@ pub struct TimelineEntry {
     pub id: String,
     pub scan_time: String,
     pub status: FrameStatus,
+    /// The entry's own textures (S19): a catalogued frame's stable names,
+    /// `""` for the sweep in progress and an archived frame.
+    pub texture: String,
+    pub azimuth_lut: String,
+    /// Only where the entry would draw differently from `state.frame`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Placement>,
+}
+
+/// Everything that places a frame's textures on the map (`docs/protocol.md`,
+/// timeline textures). A timeline entry carries it only where it differs
+/// from `state.frame`'s, which keeps the once-a-second `state` small.
+#[derive(Serialize, PartialEq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Placement {
+    pub kind: FrameKind,
+    pub rays: u32,
+    pub gates: u32,
+    pub first_gate_m: u32,
+    pub gate_spacing_m: u32,
+    pub elevation_deg: f64,
+    pub site: Geometry,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid: Option<GridPlacement>,
+}
+
+impl Frame {
+    /// The frame's placement, to compare with a timeline entry's.
+    pub fn placement(&self) -> Placement {
+        Placement {
+            kind: self.kind,
+            rays: self.rays,
+            gates: self.gates,
+            first_gate_m: self.first_gate_m,
+            gate_spacing_m: self.gate_spacing_m,
+            elevation_deg: self.elevation_deg,
+            site: self.site.clone(),
+            grid: self.grid.clone(),
+        }
+    }
 }
 
 /// `engine/data/fixture.json` plus what the engine decodes and publishes: the

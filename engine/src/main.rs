@@ -254,11 +254,28 @@ impl Timeline {
             _ => false,
         }
     }
-    fn entries(&self) -> Vec<TimelineEntry> {
-        let entry = |e: &Entry, status| TimelineEntry {
-            id: e.id.clone(),
-            scan_time: e.scan_time.clone(),
-            status,
+    /// `state.timeline`: each entry with its stable textures (a catalogued
+    /// frame's; none for the sweep in progress or an archived frame), and
+    /// its placement where it differs from `shown`'s, the frame on screen
+    /// (`docs/protocol.md`, timeline textures).
+    fn entries(&self, shown: &Frame) -> Vec<TimelineEntry> {
+        let reference = shown.placement();
+        let entry = |e: &Entry, status| {
+            let record = e
+                .record
+                .as_ref()
+                .filter(|_| status == FrameStatus::Complete);
+            let (texture, azimuth_lut) = record.map(stable_paths).unwrap_or_default();
+            TimelineEntry {
+                id: e.id.clone(),
+                scan_time: e.scan_time.clone(),
+                status,
+                texture,
+                azimuth_lut,
+                placement: record
+                    .map(|r| r.frame.placement())
+                    .filter(|p| *p != reference),
+            }
         };
         self.stored
             .iter()
@@ -286,6 +303,8 @@ struct Arrival {
     lut: Vec<u8>,
     start_ms: i64,
     end_ms: i64,
+    /// The frame as the catalog lists it, once complete and stored.
+    stored: Option<Entry>,
 }
 /// The condition of a reachable feed from the age of the newest radial the
 /// station has published: `Ok`, then `Stale`, then `Unavailable`. `Loading`
@@ -587,7 +606,7 @@ impl Shared {
             .frame_ms
             .map_or(0, |ms| now_ms().saturating_sub(ms).max(0) as u64 / 1000);
         self.state.connection.age_seconds = age;
-        self.state.timeline = self.timeline.entries();
+        self.state.timeline = self.timeline.entries(&self.state.frame);
         // Live, the condition follows the newest radial received: the sweep
         // in progress while one paints, else the newest complete frame. A
         // half-finished cut from a station that then fell silent ages like
@@ -601,23 +620,51 @@ impl Shared {
         }
         line(&Message::State(&self.state))
     }
-    /// Show `frame` with its textures published under `tex/`.
-    fn show(&mut self, mut frame: Frame, texture: &[u8], lut: &[u8]) -> io::Result<()> {
+    /// A frame catalogued before S14 has no credit: give it its station's.
+    fn credit(&self, frame: &mut Frame) {
         if frame.attribution.is_empty() {
-            // Catalogued before S14: credit the frame's station.
             let id = frame.id.split('-').next().unwrap_or_default();
             if let Some(station) = self.sites.iter().find(|s| s.id == id) {
                 frame.attribution = station.attribution.clone();
             }
         }
+    }
+    /// Show `frame` with its textures published under `tex/` as a new
+    /// revision: the sweep in progress, the loading placeholder, or a
+    /// complete frame the catalog could not take.
+    fn show(&mut self, mut frame: Frame, texture: &[u8], lut: &[u8]) -> io::Result<()> {
+        self.credit(&mut frame);
         publish_frame(&self.dir, &mut frame, texture, lut)?;
         self.state.frame = frame;
         Ok(())
     }
+    /// Show a catalogued frame under its stable names (`stable_paths`), the
+    /// ones its timeline entry lists; nothing is read from the catalog.
+    fn show_entry(&mut self, entry: &Entry) -> io::Result<()> {
+        let record = entry
+            .record
+            .as_ref()
+            .ok_or_else(|| io::Error::other(format!("{} has no catalogued textures", entry.id)))?;
+        link_record(&self.dir, record)?;
+        let mut frame = record.frame.clone();
+        (frame.texture, frame.azimuth_lut) = stable_paths(record);
+        self.credit(&mut frame);
+        self.state.frame = frame;
+        Ok(())
+    }
+    /// A catalogued frame joined the timeline: publish its files under their
+    /// stable names. A failure is only logged; a client that cannot fetch
+    /// the entry's textures falls back to `seek`.
+    fn link(&self, entry: &Entry) {
+        if let Some(record) = &entry.record
+            && let Err(e) = link_record(&self.dir, record)
+        {
+            eprintln!("Publishing {}: {e}", entry.id);
+        }
+    }
     /// Show the timeline's frame at `index`: the sweep in progress from
-    /// memory, a stored frame read back from the catalog. Either way the
-    /// textures are published under a new revision, since anything shown
-    /// earlier may have been retired.
+    /// memory under a new revision, a catalogued frame under its stable
+    /// names.
     fn show_position(&mut self, index: usize) -> io::Result<()> {
         if self.timeline.is_partial(index) {
             let pending = self
@@ -629,16 +676,13 @@ impl Shared {
             self.state.frame = frame;
             return Ok(());
         }
-        let id = self
+        let entry = self
             .timeline
-            .id_at(index)
-            .ok_or_else(|| io::Error::other(format!("no frame at {index}")))?
-            .to_owned();
-        let stored = self
-            .catalog
-            .load(&id)?
-            .ok_or_else(|| io::Error::other(format!("{id} is no longer in the catalog")))?;
-        self.show(stored.frame, &stored.texture, &stored.azimuth_lut)
+            .stored
+            .get(index)
+            .cloned()
+            .ok_or_else(|| io::Error::other(format!("no frame at {index}")))?;
+        self.show_entry(&entry)
     }
     /// The selected station's staleness thresholds, from its provider's
     /// cadence; SMHI's before any station is selected.
@@ -720,19 +764,13 @@ impl Shared {
             eprintln!("Frame catalog: {e}");
             Vec::new()
         });
-        let cached = match listed.last() {
-            Some(newest) => self.catalog.load(&newest.id).unwrap_or_else(|e| {
-                eprintln!("Frame catalog: {e}");
-                None
-            }),
-            None => None,
-        };
-        let shown = match cached {
-            Some(stored) => {
-                let start_ms = stored.start_ms;
-                self.show(stored.frame, &stored.texture, &stored.azimuth_lut)
-                    .map(|()| Some(start_ms))
-            }
+        // The whole ring is published under stable names, so a client can
+        // fetch any frame of the loop without a seek.
+        for entry in &listed {
+            self.link(entry);
+        }
+        let shown = match listed.iter().rev().find(|e| e.record.is_some()) {
+            Some(newest) => self.show_entry(newest).map(|()| Some(newest.start_ms)),
             None => {
                 let frame = empty_frame(&self.template, &station);
                 blank_textures(&frame)
@@ -794,15 +832,34 @@ impl Shared {
             lut,
             start_ms,
             end_ms,
+            stored,
         } = arrival;
-        let entry = Entry {
+        // A complete frame comes back from the catalog with its record; a
+        // sweep in progress has none.
+        let entry = stored.unwrap_or_else(|| Entry {
             id: frame.id.clone(),
             scan_time: frame.scan_time.clone(),
             start_ms,
-        };
-        if self.timeline.stored.iter().any(|e| e.start_ms == start_ms) {
-            if known_sweep_clears_loading(self.state.connection.status) {
+            record: None,
+        });
+        if let Some(known) = self.timeline.stored.iter().find(|e| e.start_ms == start_ms) {
+            // A catalogued replay. Stored again with other bytes, it names
+            // other files now, and the entry follows them.
+            let tag = |e: &Entry| e.record.as_ref().map(|r| r.tag.clone());
+            let refreshed = entry.record.is_some() && tag(known) != tag(&entry);
+            if refreshed {
+                self.link(&entry);
+                let on_screen = self.state.frame.id == entry.id;
+                self.timeline.insert(entry.clone());
+                if on_screen {
+                    self.show_entry(&entry)?;
+                }
+            }
+            let cleared = known_sweep_clears_loading(self.state.connection.status);
+            if cleared {
                 self.state.connection.status = ConnectionStatus::Ok;
+            }
+            if refreshed || cleared {
                 self.broadcast();
             }
             return Ok(());
@@ -812,8 +869,11 @@ impl Shared {
         let shown = if complete {
             self.frame_ms = Some(start_ms);
             self.pending = None;
-            let dropped = self.timeline.complete(entry);
-            if following {
+            self.link(&entry);
+            let dropped = self.timeline.complete(entry.clone());
+            if following && entry.record.is_some() {
+                self.show_entry(&entry)
+            } else if following {
                 self.show(frame, &texture, &lut)
             } else if dropped {
                 self.show_position(0)
@@ -844,6 +904,7 @@ impl Shared {
         if self.frame_ms.is_none_or(|ms| entry.start_ms > ms) {
             self.frame_ms = Some(entry.start_ms);
         }
+        self.link(&entry);
         let shown = if self.timeline.insert(entry) {
             self.show_position(0)
         } else {
@@ -1008,6 +1069,48 @@ fn publish_frame(dir: &Path, frame: &mut Frame, texture: &[u8], lut: &[u8]) -> i
     };
     Ok(())
 }
+/// A catalogued frame's stable texture paths (`docs/protocol.md`, texture
+/// files): one name per file version for as long as the catalog holds it.
+/// A grid frame has no lookup.
+fn stable_paths(record: &catalog::Record) -> (String, String) {
+    let id = &record.frame.id;
+    let texture = format!("tex/sweep-{id}-{}.png", record.tag);
+    let lut = match record.frame.kind {
+        FrameKind::Polar => format!("tex/azlut-{id}-{}.png", record.tag),
+        FrameKind::Grid => String::new(),
+    };
+    (texture, lut)
+}
+/// Publish a catalogued frame under its stable names: symbolic links into
+/// the catalog, whose files never change under a tag, made once and left
+/// alone while they point where they should.
+fn link_record(dir: &Path, record: &catalog::Record) -> io::Result<()> {
+    let (texture, lut) = stable_paths(record);
+    fs::create_dir_all(dir.join("tex"))?;
+    for (name, target) in [(texture, &record.texture), (lut, &record.azimuth_lut)] {
+        if name.is_empty() {
+            continue;
+        }
+        if !is_texture_path(&name) {
+            return Err(io::Error::other(format!(
+                "Refusing to publish texture path {name:?}; see docs/protocol.md"
+            )));
+        }
+        let path = dir.join(&name);
+        if fs::read_link(&path).is_ok_and(|to| to == *target) {
+            continue;
+        }
+        let temporary = dir.join(format!("{name}.{}.tmp", std::process::id()));
+        match fs::remove_file(&temporary) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        std::os::unix::fs::symlink(target, &temporary)?;
+        fs::rename(&temporary, &path)?;
+    }
+    Ok(())
+}
 /// Encode a sweep's texture and lookup as PNGs.
 fn encode(sweep: &sweep::Sweep, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)> {
     let pixels = sweep.texture(&frame.bounds, frame.palette.len());
@@ -1116,16 +1219,18 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                 let encoded = spawn_blocking(move || -> io::Result<Arrival> {
                     let started = Instant::now();
                     let (texture, lut) = encode_scan(&sweep, &frame)?;
-                    if complete {
-                        catalog.store(
+                    let stored = if complete {
+                        Some(catalog.store(
                             &site,
                             &frame,
                             sweep.start_ms(),
                             &texture,
                             &lut,
                             &provenance,
-                        )?;
-                    }
+                        )?)
+                    } else {
+                        None
+                    };
                     eprintln!(
                         "{} Live {site}: {} {} in {:.0?}",
                         iso(now_ms()),
@@ -1139,6 +1244,7 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                         lut,
                         start_ms: sweep.start_ms(),
                         end_ms: sweep.end_ms(),
+                        stored,
                     })
                 })
                 .await
@@ -1181,18 +1287,21 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                 };
                 let stored = spawn_blocking(move || -> io::Result<Entry> {
                     let (texture, lut) = encode_scan(&sweep, &frame)?;
-                    catalog.store(&site, &frame, sweep.start_ms(), &texture, &lut, &provenance)?;
+                    let entry = catalog.store(
+                        &site,
+                        &frame,
+                        sweep.start_ms(),
+                        &texture,
+                        &lut,
+                        &provenance,
+                    )?;
                     eprintln!(
                         "{} Live {site}: backfilled {} from {}",
                         iso(now_ms()),
                         frame.scan_time,
                         provenance
                     );
-                    Ok(Entry {
-                        id: frame.id,
-                        scan_time: frame.scan_time,
-                        start_ms: sweep.start_ms(),
-                    })
+                    Ok(entry)
                 })
                 .await
                 .map_err(io::Error::other)
@@ -1318,20 +1427,24 @@ impl Retirement {
     }
 }
 fn cleanup(dir: &Path, shared: &Mutex<Shared>, retirement: &mut Retirement) -> io::Result<()> {
+    let mut present = Vec::new();
+    for entry in fs::read_dir(dir.join("tex"))? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        // A catalogued frame's stable names are symbolic links (S19).
+        if kind.is_file() || kind.is_symlink() {
+            present.push(entry.path());
+        }
+    }
+    // Judged and deleted under the lock: a stable name can be referenced
+    // again at any moment (the station reselected), and must not be
+    // deleted after that.
+    let shared = shared.lock().unwrap();
     let referenced: HashSet<PathBuf> = shared
-        .lock()
-        .unwrap()
         .state
         .referenced_files()
         .map(|path| dir.join(path))
         .collect();
-    let mut present = Vec::new();
-    for entry in fs::read_dir(dir.join("tex"))? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            present.push(entry.path());
-        }
-    }
     for path in retirement.sweep(present, &referenced, Instant::now()) {
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -1685,6 +1798,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
                 id: frame.id.clone(),
                 scan_time: frame.scan_time.clone(),
                 start_ms: ms,
+                record: None,
             };
             (
                 frame,
@@ -1979,11 +2093,72 @@ mod tests {
             id: format!("KJAX-20260907T00{minute:02}00Z-e0"),
             scan_time: format!("2026-09-07T00:{minute:02}:00Z"),
             start_ms: 1_788_998_400_000 + minute * 60_000,
+            record: None,
         }
+    }
+    #[test]
+    fn catalogued_frames_keep_stable_names_and_name_them_in_the_timeline() {
+        let root = std::env::temp_dir().join(format!("omastorm-stable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let catalog = catalog::Catalog::open(root.join("frames")).unwrap();
+        let dir = root.join("runtime");
+        let mut frame = fixture_frame();
+        frame.id = "vara-20260914T100000Z-e0".into();
+        let first = catalog
+            .store("vara", &frame, 1, b"sweep-a", b"lut-a", "p")
+            .unwrap();
+        let mut other = frame.clone();
+        other.id = "vara-20260914T100500Z-e0".into();
+        other.rays += 1; // a blank row: another placement
+        let second = catalog
+            .store("vara", &other, 2, b"sweep-b", b"lut-b", "p")
+            .unwrap();
+        let timeline = Timeline::new(catalog.list("vara").unwrap());
+        assert_eq!(timeline.stored, vec![first.clone(), second.clone()]);
+        let entries = timeline.entries(&frame);
+        let tag = &first.record.as_ref().unwrap().tag;
+        assert_eq!(
+            entries[0].texture,
+            format!("tex/sweep-vara-20260914T100000Z-e0-{tag}.png")
+        );
+        assert_eq!(
+            entries[0].azimuth_lut,
+            format!("tex/azlut-vara-20260914T100000Z-e0-{tag}.png")
+        );
+        assert_eq!(entries[0].placement, None, "drawn like the frame on screen");
+        assert_eq!(
+            entries[1].placement.as_ref().map(|p| p.rays),
+            Some(other.rays)
+        );
+        for e in [&first, &second] {
+            link_record(&dir, e.record.as_ref().unwrap()).unwrap();
+        }
+        assert_eq!(fs::read(dir.join(&entries[0].texture)).unwrap(), b"sweep-a");
+        assert_eq!(
+            fs::read(dir.join(&entries[1].azimuth_lut)).unwrap(),
+            b"lut-b"
+        );
+        // Linking again changes nothing, and a later listing (a reselect, an
+        // engine restart) names the same files.
+        link_record(&dir, first.record.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            Timeline::new(catalog.list("vara").unwrap()).entries(&frame),
+            entries
+        );
+        // A grid frame names its texture and no lookup.
+        let mut grid = frame.clone();
+        grid.id = "sweden-20260914T100000Z-e0".into();
+        grid.kind = FrameKind::Grid;
+        let stored = catalog
+            .store("sweden", &grid, 1, b"grid", b"", "p")
+            .unwrap();
+        let (texture, lut) = stable_paths(stored.record.as_ref().unwrap());
+        assert!(texture.starts_with("tex/sweep-sweden-20260914T100000Z-e0-") && lut.is_empty());
+        let _ = fs::remove_dir_all(&root);
     }
     fn ids(timeline: &Timeline) -> Vec<(String, FrameStatus)> {
         timeline
-            .entries()
+            .entries(&fixture_frame())
             .into_iter()
             .map(|e| (e.id, e.status))
             .collect()
@@ -2036,7 +2211,7 @@ mod tests {
         assert_eq!(timeline.len(), 3);
         assert!(
             timeline
-                .entries()
+                .entries(&fixture_frame())
                 .iter()
                 .all(|e| e.status == FrameStatus::Complete)
         );

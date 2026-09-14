@@ -2,10 +2,11 @@
 //! catalog of station, time, elevation, product, and provenance under
 //! `$XDG_CACHE_HOME/omastorm-se/frames/`, with the sweep and lookup PNGs as
 //! files beside it. Storage is a catalog, not a transport: the UI never reads
-//! it. The engine writes each complete live frame here, keeps the newest
-//! `RING` per station, and on a station switch republishes the newest stored
-//! frame to the runtime directory so something real shows while the first
-//! live sweep loads; the timeline session reads the rest.
+//! it directly. The engine writes each complete live frame here and keeps the
+//! newest `RING` per station; the timeline lists the ring, and each listed
+//! frame's files are linked into the runtime directory under names derived
+//! from their content (`docs/protocol.md`, texture files), so a client sees
+//! one name per frame for as long as the ring holds it.
 
 use crate::protocol::Frame;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -24,16 +25,36 @@ pub struct Catalog {
     dir: PathBuf,
 }
 
-/// One catalogued frame as the timeline lists it.
-#[derive(Clone, PartialEq, Debug)]
+/// One frame as the timeline lists it.
+#[derive(Clone, PartialEq, Debug, Default)]
 pub struct Entry {
     pub id: String,
     pub scan_time: String,
     /// `scanTime` in milliseconds since the epoch.
     pub start_ms: i64,
+    /// Where its textures are, for a frame the catalog holds; `None` for
+    /// one it does not (the archived frame).
+    pub record: Option<Record>,
 }
 
-/// A stored frame with its texture bytes, ready to republish.
+/// A catalogued frame's metadata and files.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Record {
+    /// The frame as broadcast, with empty texture paths.
+    pub frame: Frame,
+    /// The sweep (or grid) texture and the azimuth lookup, absolute paths.
+    /// A grid's lookup file is empty and never published.
+    pub texture: PathBuf,
+    pub azimuth_lut: PathBuf,
+    /// 8 hex digits naming this version of the files: from the content hash
+    /// in the file name, or for a pre-S19 file from its size and time. The
+    /// files under a tag never change (`store` writes a new version under a
+    /// new name), so neither does anything published under it.
+    pub tag: String,
+}
+
+/// A stored frame with its texture bytes.
+#[cfg(test)]
 pub struct Stored {
     /// The frame as broadcast, with empty texture paths.
     pub frame: Frame,
@@ -45,6 +66,53 @@ pub struct Stored {
 
 fn sql(e: rusqlite::Error) -> io::Error {
     io::Error::other(format!("frame catalog: {e}"))
+}
+
+/// 64-bit FNV-1a over `parts`, each prefixed by its length. Not
+/// cryptographic: it only has to tell two versions of one frame apart.
+fn fnv1a(parts: &[&[u8]]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for part in parts {
+        eat(&(part.len() as u64).to_le_bytes());
+        eat(part);
+    }
+    hash
+}
+
+/// The tag of the texture file at `relative` (under `dir`): the content hash
+/// a post-S19 name carries (`<id>-<16 hex>-sweep.png`), else a hash of the
+/// pre-S19 file's name, size, and modification time.
+fn tag_of(dir: &Path, relative: &str) -> String {
+    let hashed = relative
+        .strip_suffix("-sweep.png")
+        .and_then(|stem| stem.rsplit_once('-'))
+        .map(|(_, hex)| hex)
+        .filter(|hex| hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+    if let Some(hex) = hashed {
+        return hex[..8].to_owned();
+    }
+    let (len, nanos) = fs::metadata(dir.join(relative))
+        .map(|m| {
+            let nanos = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            (m.len(), nanos)
+        })
+        .unwrap_or_default();
+    let hash = fnv1a(&[
+        relative.as_bytes(),
+        &len.to_le_bytes(),
+        &nanos.to_le_bytes(),
+    ]);
+    format!("{hash:016x}")[..8].to_owned()
 }
 
 impl Catalog {
@@ -79,6 +147,10 @@ impl Catalog {
 
     /// Record a complete frame and its textures, then drop the station's
     /// frames past the ring, files included. Replaces a frame of the same id.
+    /// The files are named by their content, so the same bytes again write
+    /// nothing, and other bytes for the same frame go under a new name while
+    /// the old version's files are removed: a published name never sees its
+    /// bytes change. Returns the frame as the timeline lists it.
     pub fn store(
         &self,
         site: &str,
@@ -87,19 +159,31 @@ impl Catalog {
         texture: &[u8],
         azimuth_lut: &[u8],
         provenance: &str,
-    ) -> io::Result<()> {
+    ) -> io::Result<Entry> {
         let mut record = frame.clone();
         record.texture.clear();
         record.azimuth_lut.clear();
-        let texture_path = format!("{site}/{}-sweep.png", frame.id);
-        let lut_path = format!("{site}/{}-azlut.png", frame.id);
-        write(&self.dir.join(&texture_path), texture)?;
-        write(&self.dir.join(&lut_path), azimuth_lut)?;
+        let hash = format!("{:016x}", fnv1a(&[texture, azimuth_lut]));
+        let texture_path = format!("{site}/{}-{hash}-sweep.png", frame.id);
+        let lut_path = format!("{site}/{}-{hash}-azlut.png", frame.id);
+        for (path, bytes) in [(&texture_path, texture), (&lut_path, azimuth_lut)] {
+            if !self.dir.join(path).is_file() {
+                write(&self.dir.join(path), bytes)?;
+            }
+        }
         let stored_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
         let conn = self.conn.lock().unwrap();
+        let previous: Option<(String, String)> = conn
+            .query_row(
+                "SELECT texture, azimuth_lut FROM frames WHERE id = ?1",
+                params![frame.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sql)?;
         conn.execute(
             "INSERT OR REPLACE INTO frames (id, site, product, elevation_deg, start_ms, scan_time,
                  sweep_end, provenance, stored_ms, frame, texture, azimuth_lut)
@@ -120,6 +204,12 @@ impl Catalog {
             ],
         )
         .map_err(sql)?;
+        let mut stale: Vec<String> = previous
+            .map(|(t, l)| vec![t, l])
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| *p != texture_path && *p != lut_path)
+            .collect();
         // The ring: everything past the newest RING for this station goes.
         let expired: Vec<(String, String, String)> = conn
             .prepare(
@@ -136,46 +226,85 @@ impl Catalog {
         for (id, texture, lut) in expired {
             conn.execute("DELETE FROM frames WHERE id = ?1", params![id])
                 .map_err(sql)?;
-            for path in [texture, lut] {
-                match fs::remove_file(self.dir.join(path)) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e),
-                }
+            stale.extend([texture, lut]);
+        }
+        for path in stale {
+            match fs::remove_file(self.dir.join(path)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
         }
-        Ok(())
+        Ok(Entry {
+            id: frame.id.clone(),
+            scan_time: frame.scan_time.clone(),
+            start_ms,
+            record: Some(Record {
+                frame: record,
+                tag: tag_of(&self.dir, &texture_path),
+                texture: self.dir.join(texture_path),
+                azimuth_lut: self.dir.join(lut_path),
+            }),
+        })
     }
 
     /// The station's frames, oldest first: the ring's contents, at most
-    /// `RING`, as `state.timeline` lists them.
+    /// `RING`, as `state.timeline` lists them, each with its record.
     pub fn list(&self, site: &str) -> io::Result<Vec<Entry>> {
-        let mut entries: Vec<Entry> = self
+        type Row = (String, String, i64, String, String, String);
+        let rows: Vec<Row> = self
             .conn
             .lock()
             .unwrap()
             .prepare(
-                "SELECT id, scan_time, start_ms FROM frames WHERE site = ?1
-                 ORDER BY start_ms DESC, id DESC LIMIT ?2",
+                "SELECT id, scan_time, start_ms, frame, texture, azimuth_lut FROM frames
+                 WHERE site = ?1 ORDER BY start_ms DESC, id DESC LIMIT ?2",
             )
             .map_err(sql)?
             .query_map(params![site, RING as i64], |row| {
-                Ok(Entry {
-                    id: row.get(0)?,
-                    scan_time: row.get(1)?,
-                    start_ms: row.get(2)?,
-                })
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
             })
             .map_err(sql)?
             .collect::<Result<_, _>>()
             .map_err(sql)?;
+        let mut entries: Vec<Entry> = rows
+            .into_iter()
+            .map(|(id, scan_time, start_ms, frame, texture, lut)| {
+                let record = match serde_json::from_str::<Frame>(&frame) {
+                    Ok(frame) => Some(Record {
+                        frame,
+                        tag: tag_of(&self.dir, &texture),
+                        texture: self.dir.join(texture),
+                        azimuth_lut: self.dir.join(lut),
+                    }),
+                    Err(e) => {
+                        eprintln!("Frame catalog: {id}: {e}");
+                        None
+                    }
+                };
+                Entry {
+                    id,
+                    scan_time,
+                    start_ms,
+                    record,
+                }
+            })
+            .collect();
         entries.reverse();
         Ok(entries)
     }
 
     /// The stored frame `id` with its textures, if the ring still has it.
+    #[cfg(test)]
     pub fn load(&self, id: &str) -> io::Result<Option<Stored>> {
-        let row = self
+        let row: Option<(String, i64, String, String)> = self
             .conn
             .lock()
             .unwrap()
@@ -186,10 +315,6 @@ impl Catalog {
             )
             .optional()
             .map_err(sql)?;
-        self.read(row)
-    }
-
-    fn read(&self, row: Option<(String, i64, String, String)>) -> io::Result<Option<Stored>> {
         let Some((frame, start_ms, texture, lut)) = row else {
             return Ok(None);
         };
@@ -263,10 +388,25 @@ mod tests {
         }
     }
 
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("omastorm-catalog-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn files(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn the_ring_keeps_the_newest_frames_and_their_files() {
-        let dir = std::env::temp_dir().join(format!("omastorm-catalog-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = scratch("ring");
         let catalog = Catalog::open(dir.clone()).unwrap();
         assert!(catalog.list("KTLX").unwrap().is_empty());
         for minute in 0..(RING as u32 + 3) {
@@ -291,7 +431,7 @@ mod tests {
         let listed = catalog.list("KTLX").unwrap();
         let newest = catalog.load(&listed[RING - 1].id).unwrap().unwrap();
         assert_eq!(newest.frame.id, frame("KTLX", RING as u32 + 2).id);
-        // Runtime paths are not stored; the caller republishes.
+        // Runtime paths are not stored; the caller publishes.
         assert_eq!(newest.frame.texture, "");
         assert_eq!(newest.frame.azimuth_lut, "");
         assert_eq!(newest.texture, [(RING as u8 + 2); 16]);
@@ -300,10 +440,7 @@ mod tests {
             newest.start_ms,
             1_757_160_000_000 + (RING as i64 + 2) * 60_000
         );
-        let files: Vec<_> = fs::read_dir(dir.join("KTLX"))
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
+        let files = files(&dir.join("KTLX"));
         assert_eq!(
             files.len(),
             RING * 2,
@@ -317,7 +454,6 @@ mod tests {
         assert!(files.iter().any(|f| f.contains("T120300Z")));
         // The listing is the ring oldest first; a frame loads by id until it
         // falls off the ring.
-        let listed = catalog.list("KTLX").unwrap();
         assert_eq!(listed.len(), RING);
         assert_eq!(listed[0].id, frame("KTLX", 3).id);
         assert_eq!(listed[0].scan_time, "2026-09-06T12:03:00Z");
@@ -330,10 +466,85 @@ mod tests {
         assert!(catalog.load(&frame("KTLX", 1).id).unwrap().is_none());
         assert_eq!(catalog.list("KAMX").unwrap().len(), 1);
         assert!(catalog.list("KOUN").unwrap().is_empty());
-        // Reopening sees the same rows.
+        // Every listed frame names its files, which hold its bytes.
+        let record = listed[1].record.as_ref().unwrap();
+        assert_eq!(fs::read(&record.texture).unwrap(), [4; 16]);
+        assert_eq!(fs::read(&record.azimuth_lut).unwrap(), [1, 2, 3]);
+        assert_eq!(record.frame.id, listed[1].id);
+        assert_eq!(record.tag.len(), 8);
+        // Reopening sees the same rows and the same tags.
         drop(catalog);
         let again = Catalog::open(dir.clone()).unwrap();
         assert_eq!(again.count("KTLX").unwrap(), RING);
+        assert_eq!(again.list("KTLX").unwrap(), listed);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_frame_stored_again_keeps_its_name_unless_its_bytes_change() {
+        let dir = scratch("again");
+        let catalog = Catalog::open(dir.clone()).unwrap();
+        let f = frame("vara", 5);
+        let first = catalog.store("vara", &f, 5, &[7; 32], &[1], "a").unwrap();
+        let before = files(&dir.join("vara"));
+        let modified = fs::metadata(&first.record.as_ref().unwrap().texture)
+            .unwrap()
+            .modified()
+            .unwrap();
+        // The same volume again (a catalogued replay): same name, nothing written.
+        let replay = catalog.store("vara", &f, 5, &[7; 32], &[1], "b").unwrap();
+        assert_eq!(replay.record, first.record);
+        assert_eq!(files(&dir.join("vara")), before);
+        assert_eq!(
+            fs::metadata(&replay.record.as_ref().unwrap().texture)
+                .unwrap()
+                .modified()
+                .unwrap(),
+            modified
+        );
+        // Other bytes for the same frame: a new tag, and the old files go.
+        let changed = catalog.store("vara", &f, 5, &[8; 32], &[1], "c").unwrap();
+        let (old, new) = (first.record.unwrap(), changed.record.unwrap());
+        assert_ne!(old.tag, new.tag);
+        assert!(!old.texture.exists() && !old.azimuth_lut.exists());
+        assert_eq!(fs::read(&new.texture).unwrap(), [8; 32]);
+        assert_eq!(files(&dir.join("vara")).len(), 2);
+        assert_eq!(catalog.list("vara").unwrap()[0].record.as_ref(), Some(&new));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pre_s19_file_gets_a_tag_from_its_size_and_time() {
+        let dir = scratch("legacy");
+        let catalog = Catalog::open(dir.clone()).unwrap();
+        let f = frame("vara", 5);
+        let stored = catalog.store("vara", &f, 5, &[7; 32], &[1], "a").unwrap();
+        let record = stored.record.unwrap();
+        // Rename the files to the pre-S19 scheme, as an older engine left them.
+        let legacy = |suffix: &str| format!("vara/{}-{suffix}.png", f.id);
+        fs::rename(&record.texture, dir.join(legacy("sweep"))).unwrap();
+        fs::rename(&record.azimuth_lut, dir.join(legacy("azlut"))).unwrap();
+        catalog
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE frames SET texture = ?1, azimuth_lut = ?2",
+                params![legacy("sweep"), legacy("azlut")],
+            )
+            .unwrap();
+        let tag = catalog.list("vara").unwrap()[0].record.clone().unwrap().tag;
+        assert_eq!(tag.len(), 8);
+        assert_ne!(tag, record.tag);
+        assert_eq!(
+            catalog.list("vara").unwrap()[0]
+                .record
+                .as_ref()
+                .unwrap()
+                .tag,
+            tag,
+            "stable while the file is unchanged"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

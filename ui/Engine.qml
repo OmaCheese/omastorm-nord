@@ -20,6 +20,8 @@ QtObject {
     /// Places answering this client's `search_places`; a reply, not state.
     signal placesReady(var message)
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-se/"
+    /// `state.timeline`, or none (a harness state may leave it out).
+    readonly property var timeline: state && state.timeline ? state.timeline : []
 
     // The frame on screen (docs/protocol.md, timeline textures). While this
     // client plays its own loop, or has just stepped or scrubbed and waits
@@ -30,17 +32,17 @@ QtObject {
         if (!state) return null;
         var id = shownId !== "" ? shownId : pendingId;
         if (id !== "" && id !== state.frame.id) {
-            var e = state.timeline.find(t => t.id === id);
+            var e = timeline.find(t => t.id === id);
             if (e && bufferable(e)) return entryFrame(e);
         }
         // The engine's frame, through its timeline entry when that names the
         // same files: a grid entry's code texture is the smaller one to read,
         // under the loop's rule (loopCodes) so pausing never switches kind.
-        var own = state.timeline.find(t => t.id === state.frame.id && t.texture === state.frame.texture);
+        var own = timeline.find(t => t.id === state.frame.id && t.texture === state.frame.texture);
         if (own && own.codes && loopCodes && state.frame.kind === "grid") return Object.assign({}, state.frame, {codes: own.codes});
         return state.frame;
     }
-    readonly property bool playing: looping || (!!state && state.playing)
+    readonly property bool playing: looping || (!!state && !!state.playing)
     /// True when `texture` is a grid's one-channel code texture rather than
     /// its RGBA grid texture (docs/protocol.md, code texture); RadarMap then
     /// rebuilds each texel's class from the frame's bounds.
@@ -102,7 +104,7 @@ QtObject {
     /// loop about 50 ms in the harness. Such rows leave the ring within hours.
     readonly property bool loopCodes: {
         if (!state) return false;
-        var n = 0, tl = state.timeline;
+        var n = 0, tl = timeline;
         for (var i = tl.length - 1; i >= 0 && n < bufferLimit; i--) {
             if (tl[i].status !== "complete" || !tl[i].texture) continue;
             if (!tl[i].codes) return false;
@@ -137,7 +139,7 @@ QtObject {
     readonly property var loopFrames: {
         var out = [], bytes = 0;
         if (!active || !state) return out;
-        var tl = state.timeline;
+        var tl = timeline;
         for (var i = tl.length - 1; i >= 0 && out.length < bufferLimit; i--) {
             if (!bufferable(tl[i])) continue;
             var f = entryFrame(tl[i]), b = frameBytes(f);
@@ -256,7 +258,7 @@ QtObject {
             // client shows the same frame.
             var id = shownId;
             requestLoop("");
-            if (id !== "" && id !== state.frame.id && state.timeline.some(t => t.id === id)) {
+            if (id !== "" && id !== state.frame.id && timeline.some(t => t.id === id)) {
                 pin(id);
                 send({type: "seek", id: id});
             }
@@ -264,7 +266,7 @@ QtObject {
             send({type: "pause"});  // the engine's own loop, started by another client
         } else if (canLoop) {
             requestLoop(state.site.id);
-        } else if (state.timeline.filter(f => f.status === "complete").length > 1) {
+        } else if (timeline.filter(f => f.status === "complete").length > 1) {
             send({type: "play"});
         }
     }
@@ -273,16 +275,16 @@ QtObject {
     function seekTo(id) {
         if (!state || !id) return;
         if (looping) requestLoop("");
-        var e = state.timeline.find(t => t.id === id);
+        var e = timeline.find(t => t.id === id);
         if (e && bufferable(e)) pin(id);
         if (id !== state.frame.id || state.playing) send({type: "seek", id: id});
     }
     /// Move `delta` entries from the frame on screen; without stable
     /// textures the engine steps from its own position, as before.
     function stepBy(delta) {
-        if (!state || state.timeline.length < 2) return;
+        if (!state || timeline.length < 2) return;
         if (!canLoop) { send({type: "step", delta: delta}); return; }
-        var tl = state.timeline, at = tl.findIndex(t => t.id === (frame ? frame.id : ""));
+        var tl = timeline, at = tl.findIndex(t => t.id === (frame ? frame.id : ""));
         seekTo(tl[Math.max(0, Math.min(tl.length - 1, (at < 0 ? tl.length - 1 : at) + delta))].id);
     }
 
@@ -345,7 +347,7 @@ QtObject {
                             throw new Error("Invalid timeline texture path: " + JSON.stringify(e[key]));
                 state = message;
                 error = "";
-                if (pendingId !== "" && (frame.id === pendingId || !message.timeline.some(t => t.id === pendingId))) pendingId = "";
+                if (pendingId !== "" && (frame.id === pendingId || !(message.timeline || []).some(t => t.id === pendingId))) pendingId = "";
                 // A loop belongs to its station; another station ends it.
                 if (loopSite !== "" && message.site.id !== loopSite) requestLoop("");
             } else if (message.type === "error") {

@@ -30,7 +30,7 @@ FocusScope {
         if (condition === "archived") return "ARCHIVED";
         var label = condition === "ok" ? "LIVE" : condition.toUpperCase();
         var complete = frames.filter(f => f.status === "complete");
-        if (!scan.scanTime || !complete.length) return label;
+        if (!scan || !scan.scanTime || !complete.length) return label;
         var age = Math.max(0, state.connection.ageSeconds +
             Math.round((Date.parse(complete[complete.length - 1].scanTime) - Date.parse(scan.scanTime)) / 1000));
         var minutes = Math.floor(age / 60);

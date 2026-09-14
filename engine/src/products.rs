@@ -23,8 +23,12 @@
 //! elevation `e`, `r = R sin(s/R) / cos(e + s/R)`; the beam centre is
 //! `h = R cos(e) / cos(e + s/R) − R` above the antenna.
 
+use crate::protocol::{SiteKind, Station};
+use crate::providers::ProviderId;
 use crate::sweep::{OUTSIDE_COVERAGE, Ray, Sweep};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::LazyLock;
 
 /// The effective earth radius of the lookup rule (`ui/shaders/radar.frag`).
 pub const EARTH_M: f64 = 6_371_000.0 * 4.0 / 3.0;
@@ -94,12 +98,6 @@ impl Default for Choice {
     }
 }
 
-impl Choice {
-    pub fn is_lowest(&self) -> bool {
-        self.id == REF && self.elevation_index == 0
-    }
-}
-
 /// A radar's blockage table (`engine/data/blockage.json`): per degree of
 /// azimuth, the lowest angle the terrain does not block, in tenths of a
 /// degree.
@@ -126,7 +124,11 @@ pub enum Want {
 impl Want {
     /// The product a choice names on a station with these nominal angles
     /// and blockage table; `None` when the station cannot make it.
-    pub fn of(choice: &Choice, elevations: &[f64], blockage: Option<&'static Blockage>) -> Option<Want> {
+    pub fn of(
+        choice: &Choice,
+        elevations: &[f64],
+        blockage: Option<&'static Blockage>,
+    ) -> Option<Want> {
         let index = choice.elevation_index as usize;
         match choice.id.as_str() {
             REF if index == 0 => Some(Want::Lowest),
@@ -182,6 +184,154 @@ impl Want {
 /// The frame id variant of a frame id (its last `-` part).
 pub fn variant_of(frame_id: &str) -> &str {
     frame_id.rsplit('-').next().unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Stations: their angles and products
+// ---------------------------------------------------------------------------
+
+/// One `hello.sites[].elevations` entry: a nominal angle and its beam
+/// centre's height above the antenna at 50 and 100 km, in km to 0.1.
+#[derive(Serialize, PartialEq, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Elevation {
+    pub deg: f64,
+    pub beam_km50: f64,
+    pub beam_km100: f64,
+}
+
+/// SMHI's ten angles, the same at every radar (the Vara volume of
+/// 2026-09-13, and the key listing of the others).
+const SMHI_ANGLES: [f64; 10] = [0.5, 1.0, 1.5, 2.0, 2.5, 4.0, 8.0, 14.0, 24.0, 40.0];
+/// MET Norway's 12-angle set (`nohur@20260914T0930@0.5_1.0_…_15.5@DBZH`); a
+/// 10-angle set alternates with it, and the volume's own nearest is used.
+const NO_ANGLES: [f64; 12] = [
+    0.5, 1.0, 1.6, 2.4, 3.2, 4.2, 5.4, 6.8, 8.5, 10.4, 12.8, 15.5,
+];
+/// DMI's ten (`dksin@20260914T0940@0.49_0.66_…_15.01`), to 0.1°.
+const DK_ANGLES: [f64; 10] = [0.5, 0.7, 1.0, 1.5, 2.4, 4.8, 8.4, 10.0, 13.0, 15.0];
+
+/// A station's nominal angles, ascending: empty for a composite, and for
+/// a radar whose provider publishes one file per angle (FMI in ORD's
+/// cache), whose products would need a file per angle per frame.
+pub fn nominal_angles(station: &Station) -> &'static [f64] {
+    match (station.kind, station.provider, station.country.as_str()) {
+        (SiteKind::Grid, ..) => &[],
+        (_, ProviderId::Smhi, _) => &SMHI_ANGLES,
+        (_, ProviderId::Ord, "NO") => &NO_ANGLES,
+        (_, ProviderId::Ord, "DK") => &DK_ANGLES,
+        _ => &[],
+    }
+}
+
+/// `hello.sites[].products` and `elevations`: nothing for a grid station;
+/// the lowest scan for any radar; every product built from several angles
+/// where the engine knows the radar's angles, `HYBRID` only where it also
+/// has a blockage table.
+pub fn for_station(station: &Station) -> (Vec<&'static str>, Vec<Elevation>) {
+    if station.kind == SiteKind::Grid {
+        return (Vec::new(), Vec::new());
+    }
+    let angles = nominal_angles(station);
+    let km = |m: f64| (m / 100.0).round() / 10.0;
+    let elevations = angles
+        .iter()
+        .map(|&deg| Elevation {
+            deg,
+            beam_km50: km(beam_height_m(deg, 50_000.0)),
+            beam_km100: km(beam_height_m(deg, 100_000.0)),
+        })
+        .collect();
+    let products = VOCABULARY
+        .iter()
+        .map(|p| p.id)
+        .filter(|&id| match id {
+            REF => true,
+            HYBRID => !angles.is_empty() && blockage(&station.id).is_some(),
+            _ => !angles.is_empty(),
+        })
+        .collect();
+    (products, elevations)
+}
+
+/// A station as `hello.sites[]` sends it.
+pub fn site_entry(station: Station) -> crate::protocol::SiteEntry {
+    let (products, elevations) = for_station(&station);
+    crate::protocol::SiteEntry {
+        station,
+        products,
+        elevations,
+    }
+}
+
+/// What `choice` makes on `station`; `None` when the station cannot make it
+/// (a grid station makes nothing to choose).
+pub fn want_for(station: &Station, choice: &Choice) -> Option<Want> {
+    let (products, _) = for_station(station);
+    if !products.contains(&choice.id.as_str()) {
+        return None;
+    }
+    Want::of(choice, nominal_angles(station), blockage(&station.id))
+}
+
+/// The angle a `REF` choice names on `station`, in degrees; `None` for any
+/// other choice.
+pub fn angle_deg(station: &Station, choice: &Choice) -> Option<f64> {
+    (choice.id == REF && choice.elevation_index > 0)
+        .then(|| {
+            nominal_angles(station)
+                .get(choice.elevation_index as usize)
+                .copied()
+        })
+        .flatten()
+}
+
+/// The choice after switching to `to` (`docs/protocol.md`, station
+/// switches): kept on a grid station for the next radar; a single angle
+/// (`deg`, from the radar before) becomes `to`'s nearest in degrees; a
+/// product `to` cannot make falls back to the lowest scan.
+pub fn carry(choice: &Choice, deg: Option<f64>, to: &Station) -> Choice {
+    if to.kind == SiteKind::Grid {
+        return choice.clone();
+    }
+    if choice.id == REF {
+        let index = deg
+            .and_then(|d| nearest_index(nominal_angles(to), d))
+            .unwrap_or(0);
+        return Choice {
+            id: REF.to_owned(),
+            elevation_index: index as u32,
+        };
+    }
+    if want_for(to, choice).is_some() {
+        choice.clone()
+    } else {
+        Choice::default()
+    }
+}
+
+/// `engine/data/blockage.json`: per radar id, 360 bytes (`Blockage`),
+/// written by `scripts/blockage-tables.py`.
+#[derive(Deserialize)]
+struct BlockageFile {
+    radars: HashMap<String, Vec<u8>>,
+}
+
+static BLOCKAGE: LazyLock<HashMap<String, &'static Blockage>> = LazyLock::new(|| {
+    let file: BlockageFile = serde_json::from_str(include_str!("../data/blockage.json"))
+        .expect("engine/data/blockage.json is valid");
+    file.radars
+        .into_iter()
+        .filter_map(|(id, tenths)| {
+            let tenths: [u8; 360] = tenths.try_into().ok()?;
+            Some((id, &*Box::leak(Box::new(Blockage { tenths }))))
+        })
+        .collect()
+});
+
+/// A radar's blockage table, when the engine has one.
+pub fn blockage(id: &str) -> Option<&'static Blockage> {
+    BLOCKAGE.get(id).copied()
 }
 
 /// The index into `elevations` nearest `deg` (ties: the lower angle).
@@ -279,8 +429,9 @@ fn hits(infos: &[TiltInfo], lowest: usize) -> Vec<Vec<Option<Hit>>> {
                         return None;
                     }
                     let r = EARTH_M * theta.sin() / c;
-                    let gate =
-                        ((r - f64::from(info.first_gate_m)) / f64::from(info.gate_spacing_m)).round();
+                    let gate = ((r - f64::from(info.first_gate_m))
+                        / f64::from(info.gate_spacing_m))
+                    .round();
                     (gate >= 0.0 && gate < f64::from(info.gates)).then(|| Hit {
                         gate: gate as usize,
                         height: EARTH_M * e.cos() / c - EARTH_M,
@@ -307,7 +458,10 @@ fn lowest_of(infos: &[TiltInfo]) -> usize {
 fn nearest_of(infos: &[TiltInfo], deg: f64) -> usize {
     let mut best = 0;
     for (i, info) in infos.iter().enumerate() {
-        let (d, held) = ((info.elangle - deg).abs(), (infos[best].elangle - deg).abs());
+        let (d, held) = (
+            (info.elangle - deg).abs(),
+            (infos[best].elangle - deg).abs(),
+        );
         if d < held || (d == held && info.elangle < infos[best].elangle) {
             best = i;
         }
@@ -317,14 +471,21 @@ fn nearest_of(infos: &[TiltInfo], deg: f64) -> usize {
 
 /// The pseudo-CAPPI's scan at one output gate: of those covering it, the
 /// one whose beam centre is nearest `height`; the lower angle on a tie.
-fn cappi_pick(hits: &[Vec<Option<Hit>>], infos: &[TiltInfo], g: usize, height: f64) -> Option<usize> {
+fn cappi_pick(
+    hits: &[Vec<Option<Hit>>],
+    infos: &[TiltInfo],
+    g: usize,
+    height: f64,
+) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (k, per_gate) in hits.iter().enumerate() {
         let Some(hit) = per_gate[g] else { continue };
         let d = (hit.height - height).abs();
         let better = match best {
             None => true,
-            Some((held, held_d)) => d < held_d || (d == held_d && infos[k].elangle < infos[held].elangle),
+            Some((held, held_d)) => {
+                d < held_d || (d == held_d && infos[k].elangle < infos[held].elangle)
+            }
         };
         if better {
             best = Some((k, d));
@@ -428,7 +589,10 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
     let hits = hits(&infos, 0);
     let base = &tilts[0].sweep;
     let gates = usize::from(base.gates);
-    let maps: Vec<Vec<Option<usize>>> = tilts.iter().map(|t| ray_map(&base.rays, &t.sweep.rays)).collect();
+    let maps: Vec<Vec<Option<usize>>> = tilts
+        .iter()
+        .map(|t| ray_map(&base.rays, &t.sweep.rays))
+        .collect();
     // The value scan `k` gives output ray `i` at output gate `g`.
     let value = |k: usize, i: usize, g: usize| -> Option<u8> {
         let hit = hits[k][g]?;
@@ -438,7 +602,9 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
         })
     };
     let per_gate_pick: Vec<Option<usize>> = match want {
-        Want::Cappi(height) => (0..gates).map(|g| cappi_pick(&hits, &infos, g, height)).collect(),
+        Want::Cappi(height) => (0..gates)
+            .map(|g| cappi_pick(&hits, &infos, g, height))
+            .collect(),
         _ => Vec::new(),
     };
     let elevation = placement_deg(tilts[0].elangle) as f32;
@@ -459,7 +625,9 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
                     let (mut top, mut below) = (None::<u8>, false);
                     for k in 0..tilts.len() {
                         match value(k, i, g) {
-                            Some(code) if code >= 2 => top = Some(top.map_or(code, |t| t.max(code))),
+                            Some(code) if code >= 2 => {
+                                top = Some(top.map_or(code, |t| t.max(code)))
+                            }
                             Some(0) => below = true,
                             _ => {}
                         }
@@ -479,7 +647,11 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
     Ok(Sweep {
         rays,
         start_ms: base.start_ms,
-        end_ms: tilts.iter().map(|t| t.sweep.end_ms).max().unwrap_or(base.end_ms),
+        end_ms: tilts
+            .iter()
+            .map(|t| t.sweep.end_ms)
+            .max()
+            .unwrap_or(base.end_ms),
         gates: base.gates,
         first_gate_m: base.first_gate_m,
         gate_spacing_m: base.gate_spacing_m,
@@ -489,13 +661,48 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
     })
 }
 
+/// What `want` makes of one ODIM volume: the lowest scan as the provider has
+/// always decoded it (`lowest`: SMHI's first dataset, ORD's lowest angle),
+/// or the scans `needed` names, composed (`Scan::Product`).
+pub fn decode_volume<R: std::io::Read + std::io::Seek + Send + 'static>(
+    reader: R,
+    want: Want,
+    lowest: crate::odim::Tilt,
+) -> Result<crate::smhi_live::Scan, String> {
+    use crate::smhi_live::Scan;
+    if want.is_lowest() {
+        return crate::odim::decode_lowest(reader, lowest)
+            .map(Scan::Polar)
+            .map_err(|e| e.to_string());
+    }
+    let tilts = crate::odim::decode_tilts(reader, |infos| needed(want, infos))
+        .map_err(|e| e.to_string())?;
+    compose(want, tilts).map(|sweep| Scan::Product(sweep, want))
+}
+
+/// ` cappi1` after a provenance's file name for a product other than the
+/// lowest scan, so engine.log's bytes per frame say which product paid them.
+pub fn provenance_tag(want: Want) -> String {
+    if want.is_lowest() {
+        String::new()
+    } else {
+        format!(" [{}]", want.variant())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// A scan of `rays` rays and `gates` gates at `elangle`, every code
     /// `code` (or `f(ray, gate)`).
-    fn scan(elangle: f64, rays: usize, gates: u16, spacing: u32, f: impl Fn(usize, usize) -> u8) -> Tilt {
+    fn scan(
+        elangle: f64,
+        rays: usize,
+        gates: u16,
+        spacing: u32,
+        f: impl Fn(usize, usize) -> u8,
+    ) -> Tilt {
         Tilt {
             elangle,
             sweep: Sweep {
@@ -552,12 +759,29 @@ mod tests {
             id: id.into(),
             elevation_index: index,
         };
-        assert_eq!(Want::of(&Choice::default(), &elevations, None), Some(Want::Lowest));
-        assert_eq!(Want::of(&choice("REF", 2), &elevations, None), Some(Want::Angle(1.5)));
+        assert_eq!(
+            Want::of(&Choice::default(), &elevations, None),
+            Some(Want::Lowest)
+        );
+        assert_eq!(
+            Want::of(&choice("REF", 2), &elevations, None),
+            Some(Want::Angle(1.5))
+        );
         assert_eq!(Want::of(&choice("REF", 3), &elevations, None), None);
-        assert_eq!(Want::of(&choice("CAPPI1", 0), &[], None), Some(Want::Cappi(1000.0)));
-        assert_eq!(Want::of(&choice("CAPPI2", 1), &elevations, None), None, "an index with another product");
-        assert_eq!(Want::of(&choice("HYBRID", 0), &elevations, None), None, "no blockage table");
+        assert_eq!(
+            Want::of(&choice("CAPPI1", 0), &[], None),
+            Some(Want::Cappi(1000.0))
+        );
+        assert_eq!(
+            Want::of(&choice("CAPPI2", 1), &elevations, None),
+            None,
+            "an index with another product"
+        );
+        assert_eq!(
+            Want::of(&choice("HYBRID", 0), &elevations, None),
+            None,
+            "no blockage table"
+        );
         assert_eq!(Want::of(&choice("VIL", 0), &elevations, None), None);
         for (want, variant, id) in [
             (Want::Lowest, "e0", "REF"),
@@ -574,18 +798,40 @@ mod tests {
         assert_eq!(Want::Lowest.backfill(60), 60);
         assert_eq!(Want::ColMax.backfill(60), 24);
         assert_eq!(nearest_index(&[0.5, 1.0, 2.4, 3.2], 2.6), Some(2));
-        assert_eq!(nearest_index(&[0.5, 1.0], 0.75), Some(0), "a tie takes the lower");
+        assert_eq!(
+            nearest_index(&[0.5, 1.0], 0.75),
+            Some(0),
+            "a tie takes the lower"
+        );
         assert_eq!(nearest_index(&[], 1.0), None);
     }
 
-    /// The plan's table (§S20): beam centre at 50 and 100 km.
+    /// The plan's table (§S20), rounded by hand, within 0.2 km: beam centre
+    /// at 50 and 100 km. The exact values are the contract's formula (8° is
+    /// 7.18 and 14.67 km, where the plan wrote 7.1 and 14.5).
     #[test]
     fn beam_heights_match_the_plans_table() {
-        for (deg, at50, at100) in [(0.5, 0.6, 1.5), (1.0, 1.0, 2.3), (2.0, 1.9, 4.1), (4.0, 3.6, 7.6), (8.0, 7.1, 14.5)] {
-            let km = |m: f64| (m / 100.0).round() / 10.0;
-            assert_eq!(km(beam_height_m(deg, 50_000.0)), at50, "{deg}° at 50 km");
-            assert_eq!(km(beam_height_m(deg, 100_000.0)), at100, "{deg}° at 100 km");
+        for (deg, at50, at100) in [
+            (0.5, 0.6, 1.5),
+            (1.0, 1.0, 2.3),
+            (2.0, 1.9, 4.1),
+            (4.0, 3.6, 7.6),
+            (8.0, 7.1, 14.5),
+        ] {
+            let km = |m: f64| m / 1000.0;
+            let at = |ground: f64| km(beam_height_m(deg, ground));
+            assert!(
+                (at(50_000.0) - at50).abs() <= 0.2,
+                "{deg}° at 50 km: {}",
+                at(50_000.0)
+            );
+            assert!(
+                (at(100_000.0) - at100).abs() <= 0.2,
+                "{deg}° at 100 km: {}",
+                at(100_000.0)
+            );
         }
+        assert_eq!((beam_height_m(8.0, 50_000.0) / 10.0).round() / 100.0, 7.18);
     }
 
     #[test]
@@ -593,7 +839,11 @@ mod tests {
         let infos = smhi();
         let hits = hits(&infos, 0);
         for (g, hit) in hits[0].iter().enumerate() {
-            assert_eq!(hit.map(|h| h.gate), Some(g), "the lowest scan covers its own gates");
+            assert_eq!(
+                hit.map(|h| h.gate),
+                Some(g),
+                "the lowest scan covers its own gates"
+            );
         }
         // 2.5° reaches 148 km (592 gates of 250 m): about the first 296
         // output gates of 500 m.
@@ -610,12 +860,19 @@ mod tests {
         let infos = smhi();
         assert_eq!(needed(Want::Lowest, &infos), [0]);
         assert_eq!(needed(Want::Angle(4.0), &infos), [5]);
-        assert_eq!(needed(Want::Angle(3.0), &infos), [4], "2.5° is nearer 3.0° than 4.0°");
+        assert_eq!(
+            needed(Want::Angle(3.0), &infos),
+            [4],
+            "2.5° is nearer 3.0° than 4.0°"
+        );
         assert_eq!(needed(Want::ColMax, &infos), (0..10).collect::<Vec<_>>());
         let cappi1 = needed(Want::Cappi(1000.0), &infos);
         let cappi2 = needed(Want::Cappi(2000.0), &infos);
         assert_eq!(cappi1[0], 0);
-        assert!(cappi1.contains(&3) && cappi2.contains(&6), "{cappi1:?} {cappi2:?}");
+        assert!(
+            cappi1.contains(&3) && cappi2.contains(&6),
+            "{cappi1:?} {cappi2:?}"
+        );
         // Near the radar only the high angles reach 1-2 km.
         assert!(cappi1.contains(&9) || cappi1.contains(&8), "{cappi1:?}");
         let blocked = Box::leak(Box::new(Blockage {
@@ -623,7 +880,11 @@ mod tests {
         }));
         assert_eq!(needed(Want::Hybrid(blocked), &infos), [0, 2]);
         let all_high = Box::leak(Box::new(Blockage { tenths: [250; 360] }));
-        assert_eq!(needed(Want::Hybrid(all_high), &infos), [0, 9], "above every angle: the highest");
+        assert_eq!(
+            needed(Want::Hybrid(all_high), &infos),
+            [0, 9],
+            "above every angle: the highest"
+        );
         assert!(needed(Want::ColMax, &[]).is_empty());
     }
 
@@ -638,7 +899,10 @@ mod tests {
             ]
         };
         let out = compose(Want::Cappi(1000.0), tilts()).unwrap();
-        assert_eq!((out.rays.len(), out.gates, out.gate_spacing_m), (360, 480, 500));
+        assert_eq!(
+            (out.rays.len(), out.gates, out.gate_spacing_m),
+            (360, 480, 500)
+        );
         assert_eq!(out.rays[0].elevation_deg, 0.5);
         assert_eq!(out.end_ms, 2040, "the last scan's end");
         let row = &out.rays[17].codes;
@@ -656,9 +920,20 @@ mod tests {
         // Composing from only the needed scans gives the same answer.
         let infos: Vec<TiltInfo> = tilts().iter().map(Tilt::info).collect();
         let keep = needed(Want::Cappi(1000.0), &infos);
-        let subset: Vec<Tilt> = tilts().into_iter().enumerate().filter(|(i, _)| keep.contains(i)).map(|(_, t)| t).collect();
+        let subset: Vec<Tilt> = tilts()
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep.contains(i))
+            .map(|(_, t)| t)
+            .collect();
         let again = compose(Want::Cappi(1000.0), subset).unwrap();
-        assert!(again.rays.iter().zip(&out.rays).all(|(a, b)| a.codes == b.codes));
+        assert!(
+            again
+                .rays
+                .iter()
+                .zip(&out.rays)
+                .all(|(a, b)| a.codes == b.codes)
+        );
     }
 
     #[test]
@@ -681,7 +956,10 @@ mod tests {
     fn an_angle_is_the_scan_itself_and_a_gap_is_nodata() {
         let pick = compose(
             Want::Angle(1.4),
-            vec![scan(0.5, 360, 480, 500, |_, _| 10), scan(1.5, 360, 480, 500, |_, _| 20)],
+            vec![
+                scan(0.5, 360, 480, 500, |_, _| 10),
+                scan(1.5, 360, 480, 500, |_, _| 20),
+            ],
         )
         .unwrap();
         assert_eq!(pick.rays[0].codes[0], 20);

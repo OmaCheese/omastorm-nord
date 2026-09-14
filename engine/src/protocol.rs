@@ -84,7 +84,9 @@ pub struct Hello {
     pub engine: &'static str,
     pub pid: u32,
     pub build: String,
-    pub sites: Vec<Station>,
+    /// The product vocabulary, in the order a chooser lists it (S20).
+    pub products: &'static [crate::products::Info],
+    pub sites: Vec<SiteEntry>,
     pub sites_source: String,
     pub sites_retrieved: String,
     pub sites_notes: String,
@@ -140,6 +142,17 @@ pub struct Station {
     pub source: String,
 }
 
+/// One `hello.sites[]` entry as sent: the station, and what it can show
+/// (S20, `products::for_station`; both empty for a grid station).
+#[derive(Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SiteEntry {
+    #[serde(flatten)]
+    pub station: Station,
+    pub products: Vec<&'static str>,
+    pub elevations: Vec<crate::products::Elevation>,
+}
+
 /// What a station is: one radar, or the national composite, which has no
 /// antenna and is never a hand-off target (`docs/protocol.md`, `hello`).
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Debug, Default)]
@@ -191,6 +204,8 @@ pub struct State {
     /// The tile sources (`docs/protocol.md`, `tile_ready`).
     pub basemap: Basemap,
     pub playing: bool,
+    /// The chosen product, shared by every client like the station (S20).
+    pub product: crate::products::Choice,
 }
 
 /// `state.basemap`: what draws the tiles and, for `osm`, whether it can.
@@ -462,6 +477,8 @@ pub enum Command {
     #[serde(rename_all = "camelCase")]
     SetProduct {
         product: String,
+        /// Optional since S20: 0 when absent.
+        #[serde(default)]
         elevation_index: u32,
     },
     /// The visible inclusive tile rectangle at one zoom, at most 64 tiles

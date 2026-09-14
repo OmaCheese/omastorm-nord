@@ -765,7 +765,11 @@ mod tests {
             .unwrap();
         }
         let catalog = Catalog::open(dir.clone()).unwrap();
-        assert_eq!(catalog.list("vara").unwrap().len(), 1, "the old row is the lowest scan");
+        assert_eq!(
+            catalog.list("vara").unwrap().len(),
+            1,
+            "the old row is the lowest scan"
+        );
         let product = |variant: &str, minute: u32| {
             let mut f = frame("vara", minute);
             f.id = f.id.replace("-e0", &format!("-{variant}"));
@@ -776,7 +780,14 @@ mod tests {
             for minute in 0..(RING as u32 + 2) {
                 stamp += 1;
                 catalog
-                    .store("vara", &product(variant, minute), i64::from(minute), &[stamp as u8, 1], &[2], "p")
+                    .store(
+                        "vara",
+                        &product(variant, minute),
+                        i64::from(minute),
+                        &[stamp as u8, 1],
+                        &[2],
+                        "p",
+                    )
                     .unwrap();
             }
             std::thread::sleep(std::time::Duration::from_millis(3));
@@ -786,7 +797,11 @@ mod tests {
             assert_eq!(listed.len(), RING, "{variant}: its own ring");
             assert!(listed.iter().all(|e| e.id.ends_with(variant)));
         }
-        assert_eq!(catalog.list("vara").unwrap().len(), 1, "the lowest scan untouched");
+        assert_eq!(
+            catalog.list("vara").unwrap().len(),
+            1,
+            "the lowest scan untouched"
+        );
         // Choosing CMAX again: the lowest scan, cmax and the most recent
         // other (a40) stay; cappi1 goes, files and all.
         let before = files(&dir.join("vara")).len();

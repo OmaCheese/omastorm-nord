@@ -29,6 +29,7 @@
 
 use super::{Event, ProviderId, RangePlan, Scan, Spec, Staleness};
 use crate::odim::{self, Tilt};
+use crate::products::Want;
 use crate::protocol::Station;
 use crate::smhi_live::{Decode, Fail, RangeReader, RangeSource, back_off};
 use chrono::{DateTime, NaiveDateTime};
@@ -539,6 +540,7 @@ async fn fetch_file(
     base: &str,
     file: &Listed,
     decode: Decode,
+    want: Want,
 ) -> Result<(Scan, String), FileError> {
     let permit = FETCHER
         .clone()
@@ -558,7 +560,7 @@ async fn fetch_file(
         let reader = RangeReader::open_planned(Box::new(source), plan, Duration::from_secs(1))
             .map_err(|e| e.to_string())?;
         let traffic = reader.traffic();
-        decode(reader).map(|scan| (scan, traffic))
+        decode(reader, want).map(|scan| (scan, traffic))
     })
     .await;
     let name = file.key.rsplit('/').next().unwrap_or(&file.key);
@@ -566,7 +568,8 @@ async fn fetch_file(
         Ok(Ok((scan, traffic))) => Ok((
             scan,
             format!(
-                "ORD {name}: {} range requests, {} of {} bytes",
+                "ORD {name}{}: {} range requests, {} of {} bytes",
+                crate::products::provenance_tag(want),
                 traffic.requests(),
                 traffic.bytes(),
                 traffic.total()
@@ -595,6 +598,8 @@ pub struct Config {
     pub backfill_pace: Duration,
     pub now_ms: fn() -> i64,
     pub decode: Decode,
+    /// The product the poller follows (S20); its backfill depth too.
+    pub want: Want,
 }
 
 impl Config {
@@ -607,21 +612,33 @@ impl Config {
             backfill_pace: BACKFILL_PACE,
             now_ms,
             decode,
+            want: Want::Lowest,
         }
     }
 }
 
-/// The lowest tilt's reflectivity (`odim.rs`), whichever dataset holds it.
-fn decode(reader: RangeReader) -> Result<Scan, String> {
-    odim::decode_lowest(reader, Tilt::Lowest)
-        .map(Scan::Polar)
-        .map_err(|e| e.to_string())
+/// The lowest tilt's reflectivity (`odim.rs`), whichever dataset holds it;
+/// for another product the angles it needs (`products.rs`). A volume file
+/// (MET Norway's, DMI's) holds every angle; FMI's hold one each, so FMI's
+/// stations offer the lowest scan only (`products::for_station`).
+fn decode(reader: RangeReader, want: Want) -> Result<Scan, String> {
+    crate::products::decode_volume(reader, want, Tilt::Lowest)
 }
 
 /// Poll the cache for `station` until the task is aborted or the event
 /// channel closes. Nothing is replayed, so `skip_known` changes nothing.
-pub async fn poll(station: Station, events: Sender<Event>, cached: Vec<i64>, _skip_known: bool) {
-    poll_with(Config::ord(), station, events, cached).await;
+pub async fn poll(
+    station: Station,
+    events: Sender<Event>,
+    cached: Vec<i64>,
+    _skip_known: bool,
+    want: Want,
+) {
+    let cfg = Config {
+        want,
+        ..Config::ord()
+    };
+    poll_with(cfg, station, events, cached).await;
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -693,7 +710,7 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
                     } else if now - file.valid_ms >= HORIZON_MS {
                         true
                     } else {
-                        match fetch_file(&http, &cfg.base, &file, cfg.decode).await {
+                        match fetch_file(&http, &cfg.base, &file, cfg.decode, cfg.want).await {
                             Ok((sweep, provenance)) => {
                                 known.push(sweep.start_ms());
                                 let event = Event::Sweep {
@@ -773,7 +790,7 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
                 http.clone(),
                 site.clone(),
                 events.clone(),
-                backfill_targets(chosen, live.valid_ms, &known, BACKFILL),
+                backfill_targets(chosen, live.valid_ms, &known, cfg.want.backfill(BACKFILL)),
             ))));
         }
 
@@ -818,7 +835,7 @@ async fn backfill(
     let wanted = targets.len();
     let mut fetched = 0;
     for file in targets {
-        match fetch_file(&http, &cfg.base, &file, cfg.decode).await {
+        match fetch_file(&http, &cfg.base, &file, cfg.decode, cfg.want).await {
             Ok((sweep, provenance)) => {
                 let event = Event::Backfill {
                     site: site.clone(),
@@ -1173,7 +1190,7 @@ mod tests {
     /// Reads the key back from the file's first bytes, touches a block
     /// deeper in, and reports a sweep starting 54 s before the key's time
     /// (as MET Norway's do).
-    fn stub_decode(mut reader: RangeReader) -> Result<Scan, String> {
+    fn stub_decode(mut reader: RangeReader, _want: Want) -> Result<Scan, String> {
         let mut head = [0u8; 160];
         reader.read_exact(&mut head).map_err(|e| e.to_string())?;
         let key = std::str::from_utf8(head.split(|&b| b == 0).next().unwrap()).unwrap();
@@ -1288,6 +1305,7 @@ mod tests {
                 backfill_pace: Duration::ZERO,
                 now_ms,
                 decode: stub_decode,
+                want: Want::Lowest,
             };
             let (tx, mut rx) = mpsc::channel(16);
             let poller = tokio::spawn(poll_with(cfg, station(), tx, cached));
@@ -1466,7 +1484,7 @@ mod tests {
             RangeReader::open_planned(Box::new(Local(bytes.to_vec())), plan, Duration::ZERO)
                 .unwrap();
         let traffic = reader.traffic();
-        let Scan::Polar(sweep) = decode(reader).unwrap() else {
+        let Scan::Polar(sweep) = decode(reader, Want::Lowest).unwrap() else {
             panic!("a radar decodes to a polar sweep")
         };
         let mut digest = 0xcbf2_9ce4_8422_2325u64;

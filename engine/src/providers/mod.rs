@@ -11,12 +11,14 @@
 //! - the defaults of its rows in `engine/data/sites.json`: `attribution`,
 //!   `country` and `rangeKm`.
 //!
-//! SMHI is the only provider so far (`smhi.rs`, wrapping `smhi_live.rs`).
-//! S15 adds `ord` and `fmi-s3`, S16 `opera`, each the same way: a variant of
+//! SMHI (`smhi.rs`, wrapping `smhi_live.rs`) and, since S15, ORD's 24-hour
+//! S3 cache for Norway, Finland and Denmark (`ord.rs`, DEC-13). S16 adds
+//! `opera` the same way: a variant of
 //! `ProviderId`, a module with a `Spec` and a `poll`, one arm in `spec` and
 //! one in `poll`, and rows in `sites.json`. Nothing in `main.rs` changes.
 
 pub mod opera;
+pub mod ord;
 pub mod smhi;
 
 use crate::protocol::{SiteKind, Station};
@@ -39,6 +41,9 @@ pub enum ProviderId {
     /// EUMETNET OPERA's European composite, cut to the Nordic box (S16,
     /// DEC-14).
     Opera,
+    /// EUMETNET Open Radar Data's 24-hour S3 cache: the 29 radars of
+    /// Norway, Finland and Denmark (S15, DEC-13).
+    Ord,
 }
 
 /// When a reachable feed is `stale`, and when `unavailable`, by the age of
@@ -95,6 +100,7 @@ pub fn spec(id: ProviderId) -> &'static Spec {
     match id {
         ProviderId::Smhi => &smhi::SPEC,
         ProviderId::Opera => &opera::SPEC,
+        ProviderId::Ord => &ord::SPEC,
     }
 }
 
@@ -105,6 +111,7 @@ pub async fn poll(station: Station, events: Sender<Event>, cached: Vec<i64>, ski
     match station.provider {
         ProviderId::Smhi => smhi::poll(station, events, cached, skip_known).await,
         ProviderId::Opera => opera::poll(station, events, cached, skip_known).await,
+        ProviderId::Ord => ord::poll(station, events, cached, skip_known).await,
     }
 }
 
@@ -321,10 +328,11 @@ mod tests {
     }
 
     #[test]
-    fn the_table_is_smhis_twelve_radars_and_its_composite() {
+    fn the_table_is_smhis_twelve_radars_its_composite_and_ords_twenty_nine() {
         let sites = table().sites;
-        // SMHI's 13, then OPERA's Nordic composite (S16).
-        assert_eq!(sites.len(), 14);
+        // SMHI's 13 (12 radars and sweden), OPERA's Nordic composite (S16)
+        // and ORD's 29 radars (S15).
+        assert_eq!(sites.len(), 13 + 1 + 29);
         assert!(problems(&sites).is_empty(), "{:?}", problems(&sites));
         let nordic = sites.iter().find(|s| s.id == "nordic").unwrap();
         assert_eq!(
@@ -339,8 +347,12 @@ mod tests {
             serde_json::to_string(&ProviderId::Opera).unwrap(),
             "\"opera\""
         );
-        for s in sites.iter().filter(|s| s.provider == ProviderId::Smhi) {
-            assert_eq!(s.provider, ProviderId::Smhi, "{}", s.id);
+        let smhi: Vec<&Station> = sites
+            .iter()
+            .filter(|s| s.provider == ProviderId::Smhi)
+            .collect();
+        assert_eq!(smhi.len(), 13);
+        for s in smhi {
             assert_eq!(s.country, "SE", "{}", s.id);
             assert_eq!(s.attribution, "SMHI, CC BY 4.0", "{}", s.id);
             match s.kind {
@@ -358,6 +370,55 @@ mod tests {
         }
         let vara = sites.iter().find(|s| s.id == "vara").unwrap();
         assert_eq!(vara.aliases, ["sevax"]);
+
+        // DEC-13: 12 Norwegian, 12 Finnish and 5 Danish radars, each id its
+        // node code (DEC-12), each credit its national owner.
+        let ord: Vec<&Station> = sites
+            .iter()
+            .filter(|s| s.provider == ProviderId::Ord)
+            .collect();
+        for (country, count, owner, range) in [
+            ("NO", 12, "MET Norway, CC BY 4.0", 240.0..=240.0),
+            ("FI", 12, "FMI, CC BY 4.0", 250.0..=250.0),
+            ("DK", 5, "DMI, CC BY 4.0", 237.5..=238.0),
+        ] {
+            let of: Vec<&&Station> = ord.iter().filter(|s| s.country == country).collect();
+            assert_eq!(of.len(), count, "{country}");
+            for s in of {
+                assert_eq!(s.kind, SiteKind::Polar, "{}", s.id);
+                assert_eq!(s.attribution, owner, "{}", s.id);
+                assert!(range.contains(&s.range_km), "{} {}", s.id, s.range_km);
+                assert!(
+                    s.id.len() == 5 && s.id.starts_with(&country.to_lowercase()),
+                    "{}",
+                    s.id
+                );
+                assert!(s.aliases.is_empty(), "{}: the node code is the id", s.id);
+                let kind = if country == "FI" { "SCAN" } else { "PVOL" };
+                assert_eq!(s.source, format!("{country}/{}/{kind}", s.id));
+                assert!(
+                    (54.0..72.0).contains(&s.lat) && (4.0..32.0).contains(&s.lon),
+                    "{}",
+                    s.id
+                );
+                assert!(!s.name.is_empty() && !s.state.is_empty(), "{}", s.id);
+            }
+        }
+        assert_eq!(ord.len(), 29);
+        let id = |name: &str| resolve(&sites, name).map(|s| s.id.as_str());
+        assert_eq!(id("nohur"), Some("nohur"));
+        assert_eq!(id("FIKOR"), Some("fikor"));
+        assert_eq!(id("dksin"), Some("dksin"));
+    }
+
+    #[test]
+    fn ords_spec_keeps_dec9s_thresholds_and_the_full_ring() {
+        let ord = spec(ProviderId::Ord);
+        assert_eq!(ord.id, ProviderId::Ord);
+        assert_eq!(ord.staleness, spec(ProviderId::Smhi).staleness);
+        assert_eq!(ord.backfill, crate::catalog::RING);
+        let json = serde_json::to_string(&ProviderId::Ord).unwrap();
+        assert_eq!(json, "\"ord\"");
     }
 
     #[test]

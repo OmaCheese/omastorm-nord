@@ -1,4 +1,4 @@
-# Cut an ODIM_H5 polar volume down to a test fixture: the root groups
+# Cut an ODIM_H5 polar volume (PVOL, or a single-sweep SCAN) down to a test fixture: the root groups
 # (/what, /where, /how and the root attributes, unchanged) plus the
 # lowest-elevation dataset, written as /dataset1 with only the quantities
 # asked for (DBZH by default). Everything kept is copied with H5Ocopy, so
@@ -91,7 +91,7 @@ def main():
     keep = [q.strip() for q in args.keep.split(",") if q.strip()]
 
     src = h5py.File(args.source, "r")
-    assert text(src["what"].attrs["object"]) == "PVOL", "not an ODIM polar volume"
+    assert text(src["what"].attrs["object"]) in ("PVOL", "SCAN"), "not an ODIM polar volume or scan"
     tilts = {k: float(src[k]["where"].attrs["elangle"]) for k in src if k.startswith("dataset")}
     lowest = min(tilts, key=lambda k: (tilts[k], int(k[len("dataset") :])))
     ds = src[lowest]

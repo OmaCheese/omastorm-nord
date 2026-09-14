@@ -92,6 +92,41 @@ only the 11 chunks under the Nordic box (3–33° E, 53–71.5° N).
   and pyproj (PROJ), not the engine's reader or projection, by
   `golden/nordic-20260914/produce.py`, which records its own command line.
 
+## Norwegian, Finnish and Danish fixtures (S15)
+
+One file per country from EUMETNET Open Radar Data's public 24-hour S3
+cache (DEC-13), each vendored as its lowest-tilt extract
+(`uv run --no-project --with h5py python scripts/trim-odim.py ORIGINAL.h5 EXTRACT.h5 --keep …`,
+h5py 3.16, HDF5 2.0.0), each with an h5py answer key in `golden/<id>-20260914/`
+from `golden/produce-odim.py`. The cache keeps files for about a day and a
+half, so none can be fetched again. Licence CC BY 4.0 ("with exceptions
+noted in metadata"; none noted for these radars); credit the national owner.
+
+| Fixture (`data/fixtures/`) | Original (`https://s3.waw3-1.cloudferro.com/openradar-24h/2026/09/14/…`) | Original bytes, sha256 | Extract bytes | Kept | Credit |
+|---|---|---|---|---|---|
+| `ord_nohur_202609140930.h5` | `NO/nohur/PVOL/nohur@20260914T0930@0.5_1.0_1.6_2.4_3.2_4.2_5.4_6.8_8.5_10.4_12.8_15.5@DBZH.h5` | 427,967, `78a32961…2b046c` | 112,271 | DBZH | MET Norway |
+| `ord_fikor_202609140940.h5` | `FI/fikor/SCAN/fikor@20260914T0940@0.5@DBZH_TH_VRADH.h5` | 145,837, `32a83832…dc6866` | 90,964 | TH, DBZH | FMI |
+| `ord_dksin_202609140940.h5` | `DK/dksin/PVOL/dksin@20260914T0940@0.49_0.66_0.96_1.47_2.37_4.81_8.42_9.98_12.99_15.01@DBZH_LDR_PHIDP_RHOHV_TH_VRAD_WRAD_ZDR.h5` | 1,293,200, `8ad2cdde…a12d` | 74,822 | DBZH, TH | DMI |
+
+What each proves in `engine/src/odim.rs` (the decoder quirks):
+
+- **Hurum** (MET Norway, ODIM 2.2 `PVOL`, superblock 1 with 4-byte
+  offsets): one quantity per file, uint8 (gain 0.5, offset −32, nodata 255,
+  undetect 0), 720 rays × 960 gates of 250 m from 0 km, no `how/startazA` or
+  ray times at all (equal half-degree sectors, nominal times), `a1gate` 501,
+  and a sweep that starts 54 s before the file's nominal time.
+- **Korppoo** (FMI, ODIM 2.3 `SCAN`, superblock 0 with 8-byte offsets): one
+  file per elevation, `TH` stored as `data1` and `DBZH` as `data2`,
+  `startazA`/`stopazA` but no ray times, 360 rays × 500 gates of 500 m.
+- **Sindal** (DMI, ODIM 2.0 `PVOL`, superblock 0): eight quantities in
+  90 × 119 chunks, ray angles only in ODIM 2.0's `how/azangles` string,
+  spelled `azangels`, and `rstart` 0.5 km (first gate at 750 m).
+
+All three store the lowest tilt as `/dataset1`, as do all 29 radars
+(`scripts/fetch-ord-sites.sh`, 2026-09-14); the decoder still picks the
+lowest `elangle` (`Tilt::Lowest`). `produce-odim.py` gives the same
+`sweep0.u8` from the original and from the extract.
+
 ## Fixture rule for new radars and countries
 
 A full volume per country would add 100–300 MB to every clone across

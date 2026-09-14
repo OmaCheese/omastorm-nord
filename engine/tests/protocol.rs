@@ -117,10 +117,10 @@ fn fixture_transport_and_shared_commands() {
     assert_eq!(hello["v"], 2);
     assert_eq!(hello["build"].as_str().unwrap().len(), 16);
     let sites = hello["sites"].as_array().unwrap();
-    // The 12 SMHI radars, the national composite (protocol v2) and OPERA's
-    // Nordic composite (S16): every station says its kind, and the
-    // composites are the grids.
-    assert_eq!(sites.len(), 14);
+    // The 12 SMHI radars, ORD's 29 of Norway, Finland and Denmark (S15),
+    // the national composite (protocol v2) and OPERA's Nordic composite
+    // (S16): every station says its kind, and the composites are the grids.
+    assert_eq!(sites.len(), 43);
     assert!(
         sites
             .iter()

@@ -36,10 +36,10 @@ ShellRoot {
         onTriggered: {
             try {
                 if (stage === 0) {
-                    // 12 radars and the composites (protocol v2, S8; Nordic, S16), which get no marker.
-                    check(map.sites.length === 14 && map.sites.filter(s => s.kind === "polar").length === 12, "Missing engine station table");
+                    // 41 radars (12 SMHI, 29 ORD: S15) and the composites (protocol v2, S8; Nordic, S16), which get no marker.
+                    check(map.sites.length === 43 && map.sites.filter(s => s.kind === "polar").length === 41, "Missing engine station table");
                     checkCoverageOrigin();
-                    // hello lists SMHI only; none sit inside the archived KTLX viewport.
+                    // hello lists Nordic radars only; none sit inside the archived KTLX viewport.
                     check(map.siteLabels.length === 0, "Unexpected station labels over Oklahoma");
                     check(!map.siteLabels.some(s => s.name === "KTLX"), "Duplicate active marker label");
                     var active = map.coverageSites.filter(s => s.id === "KTLX");

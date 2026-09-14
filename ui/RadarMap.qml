@@ -6,7 +6,8 @@ import Quickshell
 // overlay, and pointer handling. Surfaces place it, feed it state,
 // and drive the camera through center, span,
 // reset(), zoom(), and maxSpan. It draws no chrome and holds no station or
-// product strings; every input arrives through its properties. Tiles come and
+// product strings, except the caption of its own rings (`ringNote`, S29);
+// every input arrives through its properties. Tiles come and
 // go through tilesNeeded and tileReady(); the surface connects them to the
 // engine so the map knows nothing of sockets.
 Item {
@@ -46,6 +47,73 @@ Item {
         var slantM = (s.firstGateM || 0) + (s.gates - .5) * s.gateSpacingM;
         var e = (s.elevationDeg || 0) * Math.PI / 180, earthM = 6371000 * 4 / 3;
         return earthM * Math.atan2(slantM * Math.cos(e), earthM + slantM * Math.sin(e)) / 1000;
+    }
+    // S29: the active radar's rings follow what is shown. `product` is the
+    // engine's state.product (the height of a CAPPI frame); `reachKm` the
+    // reach the surface remembers for this radar (Reach.qml), 0 for the
+    // whole sweep: the shader draws nothing past it and the rings follow.
+    property var product: null
+    property real reachKm: 0
+    readonly property real reachShownKm: reachKm > 0 && reachKm < coverageKm ? reachKm : 0
+    readonly property real weatherTopM: 12000
+    readonly property real lowBeamM: 2000
+    // Where the beam centre at `deg` is `m` metres above the antenna, in
+    // ground km on the 4/3 earth: cos(e + s/R) = R cos(e) / (R + m). 0 when
+    // it never gets there.
+    function groundKmAt(deg, m) {
+        var earthM = 6371000 * 4 / 3, e = deg * Math.PI / 180, c = earthM * Math.cos(e) / (earthM + m);
+        if (!(m > 0) || c >= 1) return 0;
+        return Math.max(0, earthM * (Math.acos(c) - e) / 1000);
+    }
+    // Each ring: its radius, whether it is the solid (strong) one, and what
+    // it marks. The lowest scan, Clear view and Column max: the data's edge
+    // and a faint ring where the lowest beam is 2 km up (inside it the scan
+    // is rain near the ground, outside it rain aloft). One angle: where its
+    // beam passes 12 km, if that comes before the data's edge. A height:
+    // solid where the lowest beam's centre reaches it, faint at the data's
+    // edge. A reach drops the rings beyond it and becomes the circle.
+    readonly property var rings: {
+        if (!drawable || grid || !scan) return [];
+        var data = coverageKm, e = scan.elevationDeg || 0, id = scan.product || "REF", out = [];
+        var here = activeSite;
+        var lowest = here && here.elevations && here.elevations.length ? here.elevations[0].deg : e;
+        if (id === "CAPPI" || id === "CAPPI1" || id === "CAPPI2") {
+            // CAPPI (S29) is above sea level; an older engine's CAPPI1/2 were
+            // 1 and 2 km above the antenna.
+            var sea = id === "CAPPI";
+            var asl = product && product.id === "CAPPI" && product.heightM > 0 ? product.heightM : 2000;
+            var above = sea ? asl - (here && here.altM ? here.altM : 0) : id === "CAPPI1" ? 1000 : 2000;
+            var at = groundKmAt(e, above);
+            if (at > 0 && at < data) {
+                out.push({km: at, strong: true, what: "height", heightM: sea ? asl : above, sea: sea});
+                out.push({km: data, strong: false, what: "data"});
+            } else out.push({km: data, strong: true, what: "data"});
+        } else if (id === "REF" && e > lowest + .25) {
+            var top = groundKmAt(e, weatherTopM);
+            out.push(top > 0 && top < data ? {km: top, strong: true, what: "top", deg: e} : {km: data, strong: true, what: "data"});
+        } else {
+            out.push({km: data, strong: true, what: "data"});
+            var low = groundKmAt(e, lowBeamM);
+            if (low > 0 && low < data) out.push({km: low, strong: false, what: "low", deg: e});
+        }
+        if (reachShownKm > 0) {
+            out = out.filter(r => r.km < reachShownKm);
+            out.unshift({km: reachShownKm, strong: true, what: "reach"});
+        }
+        return out;
+    }
+    // What each ring means, in the order drawn; the surface shows it.
+    readonly property string ringNote: {
+        var parts = [], km = v => Math.round(v) + " km";
+        for (var r of rings) {
+            if (r.what === "reach") parts.push("circle " + km(r.km) + ": the reach you set");
+            else if (r.what === "data") parts.push((r.strong ? "circle " : "faint ring ") + km(r.km) + ": edge of the data");
+            else if (r.what === "top") parts.push("circle " + km(r.km) + ": the " + r.deg.toFixed(1) + "° beam passes 12 km");
+            else if (r.what === "low") parts.push("faint ring " + km(r.km) + ": the " + r.deg.toFixed(1) + "° beam 2 km up, rain aloft beyond");
+            else if (r.what === "height") parts.push("circle " + km(r.km) + ": the lowest beam at " + (r.heightM / 1000) + " km" + (r.sea ? " above sea" : " up"));
+        }
+        if (drawable && scan && scan.product === "CAPPI") parts.push("hatched: no radar at this height");
+        return parts.join(" · ");
     }
     property string tileRoot: ""     // file URL of the runtime directory, for tile paths
     property var theme
@@ -446,9 +514,11 @@ Item {
     // Mercator. A screen-space ellipse is wrong at high latitudes. Geometry
     // stays fixed inside the padded region; zoom scales points and pan
     // translates the parent. Unwrap longitude about each station.
+    // A ring `s.km` from the station (S29), else the data's edge.
+    function ringKm(s) { return s.km !== undefined ? s.km : coverageKm; }
     function coveragePoints(s) {
         var phi = s.lat * Math.PI / 180, lambda = s.lon * Math.PI / 180;
-        var d = coverageKm / 6371, points = [];
+        var d = ringKm(s) / 6371, points = [];
         for (var i = 0; i <= 360; i++) {
             var bearing = (i % 360) * Math.PI / 180;
             var lat = Math.asin(Math.sin(phi)*Math.cos(d) + Math.cos(phi)*Math.sin(d)*Math.cos(bearing));
@@ -462,7 +532,7 @@ Item {
         // Mercator ground scale never exceeds its equatorial scale. This
         // conservative padded-view radius cannot cull an arc crossing the view.
         var radius = Math.hypot(overlayHalfX, overlayHalfY)*2*Math.PI*6371;
-        return Math.abs(distance-coverageKm) <= radius;
+        return Math.abs(distance-ringKm(s)) <= radius;
     }
     // Clip before Qt tessellates dashes, including circles whose centres are
     // outside the view. Coordinates remain relative to the active-site copy.
@@ -495,8 +565,13 @@ Item {
         if (!drawable || !site || grid) return [];
         // Only the active radar gets a footprint; overlapping network circles
         // obscure geography at continental zoom. Use the measured scan site.
-        return [{id:siteId, lat:site.lat, lon:site.lon}];
+        // Its solid rings (S29: one, or the reach and a height inside it).
+        return rings.filter(r => r.strong).map(r => ({id:siteId, lat:site.lat, lon:site.lon, km:r.km}));
     }
+    // The faint rings (S29): the data's edge under a height, the lowest
+    // beam 2 km up.
+    readonly property var faintSites: !drawable || !site || grid ? []
+        : rings.filter(r => !r.strong).map(r => ({id:siteId, lat:site.lat, lon:site.lon, km:r.km}))
 
     // Upload the immutable sweep and its azimuth lookup once. Pan/zoom updates
     // shader uniforms; the polar-to-screen lookup runs in the shader and no
@@ -625,6 +700,11 @@ Item {
         property real unitsPerPixel: map.unitsPerPixel
         property real siteLatDeg: map.siteLat
         property int treatment: map.treatment === "PIXELS" ? 0 : map.treatment === "GLYPHS" ? 1 : 2
+        // S29: a height slice's no-data texels hatched, and the reach.
+        property int hatchNodata: map.scan && map.scan.product === "CAPPI" ? 1 : 0
+        property real reachM: map.reachShownKm * 1000
+        property color hatchInk: map.theme ? map.theme.foreground : "white"
+        property vector4d hatchColor: Qt.vector4d(hatchInk.r, hatchInk.g, hatchInk.b, .45)
         fragmentShader: "shaders/radar.frag.qsb"
     }
     Item {
@@ -648,10 +728,34 @@ Item {
                     transform: Scale { xScale: map.worldPixels/100000; yScale: xScale }
                     ShapePath {
                         fillColor: "transparent"
-                        strokeColor: Qt.alpha(map.theme.foreground, .12)
+                        // The circle of what is shown (S29), in accent.
+                        strokeColor: Qt.alpha(map.theme.accent, .6)
                         strokeWidth: 100000/map.worldPixels
                         strokeStyle: ShapePath.DashLine
                         dashPattern: [3, 5]
+                        PathMultiline {
+                            paths: map.clippedCoverage(vertices)
+                        }
+                    }
+                }
+            }
+        }
+        // The faint rings (S29), finer dashes in the foreground.
+        Repeater {
+            model: map.faintSites
+            Loader {
+                id: faintRing
+                required property var modelData
+                active: map.coverageInReach(modelData)
+                sourceComponent: Shape {
+                    readonly property var vertices: map.coveragePoints(faintRing.modelData)
+                    transform: Scale { xScale: map.worldPixels/100000; yScale: xScale }
+                    ShapePath {
+                        fillColor: "transparent"
+                        strokeColor: Qt.alpha(map.theme.foreground, .3)
+                        strokeWidth: 100000/map.worldPixels
+                        strokeStyle: ShapePath.DashLine
+                        dashPattern: [1, 4]
                         PathMultiline {
                             paths: map.clippedCoverage(vertices)
                         }
@@ -664,7 +768,7 @@ Item {
         // Every 50 km inside the sweep; the dashed footprint marks its edge
         // (240 km for SMHI), so a short-range radar never shows a ring past it.
         Repeater {
-            model: map.grid ? [] : [50, 100, 150, 200].filter(r => r < map.coverageKm)
+            model: map.grid ? [] : [50, 100, 150, 200].filter(r => r < (map.reachShownKm || map.coverageKm))
             Rectangle {
                 required property int modelData
                 visible: map.siteId !== ""

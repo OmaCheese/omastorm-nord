@@ -260,11 +260,47 @@ Item {
         var st = engine.state;
         if (!st || !st.product) return "";
         var row = productRows.find(r => r.product === st.product.id && r.index === st.product.elevationIndex);
-        return row ? row.label : st.product.id;
+        return (row ? row.label : st.product.id) + (heightM > 0 ? " " + heightM / 1000 + " KM" : "");
     }
     function chooseProduct(row) {
         productMenu.close();
-        engine.send({type: "set_product", product: row.product, elevationIndex: row.index});
+        var command = {type: "set_product", product: row.product, elevationIndex: row.index};
+        // Height again keeps the height on screen (S29); else the engine's
+        // default, 2 km.
+        if (row.product === "CAPPI" && heightM > 0) command.heightM = heightM;
+        engine.send(command);
+    }
+    // S29: the Height product's height above sea level in 500 m steps, the
+    // − and + of the product menu. A step shows at once and is sent when the
+    // clicking pauses, so a run of steps restarts the engine's poller once.
+    readonly property int chosenHeight: {
+        var p = engine.state && engine.state.product;
+        return p && p.id === "CAPPI" && p.heightM > 0 ? p.heightM : 0;
+    }
+    property int pendingHeight: 0
+    readonly property int heightM: chosenHeight > 0 ? (pendingHeight || chosenHeight) : 0
+    onChosenHeightChanged: pendingHeight = 0
+    function stepHeight(delta) {
+        if (!heightM) return;
+        pendingHeight = Math.max(500, Math.min(12000, heightM + 500 * delta));
+        heightSend.restart();
+    }
+    Timer {
+        id: heightSend
+        interval: 350
+        onTriggered: if (app.pendingHeight > 0 && app.pendingHeight !== app.chosenHeight)
+            engine.send({type: "set_product", product: "CAPPI", heightM: app.pendingHeight})
+    }
+    Connections { target: engine; function onRejectionChanged() { if (engine.rejection) app.pendingHeight = 0; } }
+    // S29: the reach, remembered per radar (Reach.qml): 25 km steps from
+    // 25 km up to the whole sweep, which forgets it.
+    Reach { id: reachStore }
+    readonly property real reachKm: reachStore.km(app.siteId)
+    readonly property bool reachable: !!app.scan && app.scan.kind === "polar" && app.siteId !== ""
+    function stepReach(delta) {
+        var full = Math.round(map.coverageKm), now = reachKm > 0 && reachKm < full ? reachKm : full;
+        var next = delta < 0 ? Math.max(25, Math.ceil(now / 25) * 25 - 25) : Math.floor(now / 25) * 25 + 25;
+        reachStore.set(app.siteId, next >= full ? 0 : next);
     }
     function run(action) {
         switch (action) {
@@ -299,7 +335,13 @@ Item {
         function errors(): string { return JSON.stringify(app.configErrors); }
         function menu(open: bool): void { if (open) treatmentMenu.show(); else treatmentMenu.close(); }
         function productChooser(open: bool): void { if (open) productMenu.show(); else productMenu.close(); }
-        function products(): string { return JSON.stringify({label: app.productLabel, rows: app.productRows, menu: productMenu.opened}); }
+        function products(): string {
+            return JSON.stringify({label: app.productLabel, rows: app.productRows, menu: productMenu.opened,
+                                   heightM: app.heightM, reachKm: app.reachKm, coverageKm: map.coverageKm, rings: map.rings, ringNote: map.ringNote});
+        }
+        // S29: the menu's height and reach steps, for checks and captures.
+        function setHeight(m: int): void { if (app.heightM > 0) { app.pendingHeight = m; heightSend.restart(); } }
+        function setReach(km: int): void { reachStore.set(app.siteId, km); }
         function field(name: string): string { var value = JSON.parse(status())[name]; return value === undefined ? "" : String(value); }
         function status(): string {
             return JSON.stringify({sheet: sheet.open, menu: treatmentMenu.opened, treatment: app.treatment, weakFloor: app.weakFloor === null ? "off" : app.weakFloor, error: app.configError,
@@ -664,9 +706,21 @@ Item {
                         spacing: 8
                         visible: !!app.scan
                         LabelText {
+                            id: productText
                             // An angle only for one scan angle (REF, S20); a
                             // product built from several has none to show.
                             text: !app.scan ? "" : app.scan.productName.toUpperCase() + (!app.scan.scanTime ? "" : app.scan.kind === "grid" ? " / COMPOSITE" : (app.scan.product || "REF") === "REF" ? " / " + app.scan.elevationDeg.toFixed(1) + "°" : "")
+                            font.underline: productTextArea.containsMouse && productTextArea.enabled
+                            // The product menu opens from here (S29): the
+                            // chip row that held its chip is hidden.
+                            MouseArea {
+                                id: productTextArea
+                                anchors.fill: parent
+                                enabled: app.productRows.length > 0
+                                hoverEnabled: true
+                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onClicked: productMenu.opened ? productMenu.close() : productMenu.show()
+                            }
                         }
                         // The source's credit, verbatim (SMHI, MET Norway, FMI, DMI, OPERA).
                         LabelText {
@@ -722,6 +776,8 @@ Item {
                     radarOpacity: app.condition === "unavailable" ? .6 : 1
                     labelSize: win.compact ? 10 : 12
                     locked: app.locked
+                    product: app.state ? app.state.product : null
+                    reachKm: app.reachKm
                     interactive: !app.store.needsLocation && !locationPicker.open
                     onNavigated: (lat, lon, spanKm) => app.store.userNavigated(lat, lon, spanKm)
                     // A settled pan hands the centre to the engine, which switches
@@ -862,6 +918,24 @@ Item {
                             width: 1; height: 5
                             color: Qt.alpha(app.theme.foreground, .65)
                         }
+                    }
+                }
+                // What the rings mean (S29), above the scale bar.
+                Rectangle {
+                    id: ringCaptionBox
+                    anchors.bottom: scaleBar.top; anchors.left: parent.left
+                    anchors.leftMargin: 10; anchors.bottomMargin: 6
+                    visible: map.ringNote !== ""
+                    width: ringCaption.contentWidth + 10
+                    height: ringCaption.contentHeight + 6
+                    color: Qt.alpha(app.theme.background, .9)
+                    LabelText {
+                        id: ringCaption
+                        x: 5; y: 3
+                        width: Math.min(mapFrame.width * .6, 460)
+                        wrapMode: Text.Wrap
+                        text: map.ringNote.toUpperCase()
+                        font.pixelSize: 10; opacity: .75
                     }
                 }
                 // OSM ODbL safe harbour: short credit in a map corner. Full
@@ -1199,6 +1273,20 @@ Item {
           // click outside or Escape closes it, Up, Down and Return choose.
           Item {
             id: productMenu
+            // A − / + / FULL step in the menu (S29).
+            component MenuStep: Rectangle {
+                id: stepButton
+                property string label
+                signal activated()
+                implicitWidth: Math.max(22, stepLabel.implicitWidth + 10)
+                implicitHeight: 20
+                color: stepArea.containsMouse && enabled ? Qt.alpha(app.theme.accent, .18) : "transparent"
+                border.width: 1
+                border.color: Qt.alpha(app.theme.foreground, enabled ? .3 : .12)
+                opacity: enabled ? 1 : .4
+                LabelText { id: stepLabel; anchors.centerIn: parent; text: stepButton.label; font.pixelSize: 10 }
+                MouseArea { id: stepArea; anchors.fill: parent; hoverEnabled: true; enabled: stepButton.enabled; onClicked: stepButton.activated() }
+            }
             anchors.fill: parent
             property bool opened: false
             property int cursor: -1
@@ -1218,10 +1306,16 @@ Item {
             }
             MouseArea { anchors.fill: parent; onClicked: productMenu.close() }
             Rectangle {
-                readonly property point anchor: productMenu.opened ? productChip.mapToItem(productMenu, productChip.width, 0) : Qt.point(0, 0)
+                // Above the product chip when it shows; else, the chip row
+                // being hidden, below the header's product line, which
+                // opens it (S29).
+                readonly property bool fromChip: productChip.visible
+                readonly property point anchor: !productMenu.opened ? Qt.point(0, 0)
+                    : fromChip ? productChip.mapToItem(productMenu, productChip.width, 0)
+                    : productText.mapToItem(productMenu, productText.width, productText.height)
                 x: Math.max(4, Math.round(anchor.x - width))
-                y: Math.max(4, Math.round(anchor.y - height - 6))
-                width: 196
+                y: Math.max(4, Math.round(fromChip ? anchor.y - height - 6 : anchor.y + 6))
+                width: 214
                 height: productRowsColumn.implicitHeight + 12
                 color: Qt.alpha(app.theme.background, .95)
                 border.width: 1
@@ -1261,6 +1355,47 @@ Item {
                                 LabelText { text: productRow.modelData.note; color: productRow.ink; font.pixelSize: 10; opacity: .6 }
                             }
                             MouseArea { id: productArea; anchors.fill: parent; hoverEnabled: true; onClicked: app.chooseProduct(productRow.modelData) }
+                        }
+                    }
+                    // S29: Height's height above sea level, and this radar's
+                    // reach, each with its steps.
+                    Item {
+                        Layout.fillWidth: true
+                        visible: app.heightM > 0
+                        implicitHeight: 42
+                        LabelText {
+                            anchors.left: parent.left; anchors.leftMargin: 10; anchors.top: parent.top; anchors.topMargin: 4
+                            text: "ABOVE SEA · BEAM 1.7 KM THICK AT 100 KM"; font.pixelSize: 9; opacity: .55
+                        }
+                        RowLayout {
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                            anchors.leftMargin: 10; anchors.rightMargin: 10
+                            height: 24
+                            spacing: 4
+                            LabelText { text: "HEIGHT"; Layout.fillWidth: true }
+                            MenuStep { label: "−"; enabled: app.heightM > 500; onActivated: app.stepHeight(-1) }
+                            LabelText { text: app.heightM / 1000 + " KM"; color: app.theme.accent; horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 50 }
+                            MenuStep { label: "+"; enabled: app.heightM < 12000; onActivated: app.stepHeight(1) }
+                        }
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                        visible: app.reachable
+                        implicitHeight: 42
+                        LabelText {
+                            anchors.left: parent.left; anchors.leftMargin: 10; anchors.top: parent.top; anchors.topMargin: 4
+                            text: "REACH · DRAWN THIS FAR OUT"; font.pixelSize: 9; opacity: .55
+                        }
+                        RowLayout {
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                            anchors.leftMargin: 10; anchors.rightMargin: 10
+                            height: 24
+                            spacing: 4
+                            LabelText { text: "REACH"; Layout.fillWidth: true }
+                            MenuStep { label: "−"; enabled: app.reachKm === 0 || app.reachKm > 25; onActivated: app.stepReach(-1) }
+                            LabelText { text: app.reachKm > 0 ? Math.round(app.reachKm) + " KM" : "FULL"; color: app.theme.accent; horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 50 }
+                            MenuStep { label: "+"; enabled: app.reachKm > 0; onActivated: app.stepReach(1) }
+                            MenuStep { label: "FULL"; enabled: app.reachKm > 0; onActivated: reachStore.set(app.siteId, 0) }
                         }
                     }
                 }

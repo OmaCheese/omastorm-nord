@@ -11,6 +11,7 @@ mod reference;
 mod smhi_live;
 mod sweep;
 mod tiles;
+mod tilts;
 
 use catalog::Entry;
 use chrono::{DateTime, Utc};

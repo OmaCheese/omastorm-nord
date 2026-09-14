@@ -3,6 +3,7 @@ mod composite;
 mod netstats;
 mod odim;
 mod osm;
+mod products;
 mod protocol;
 mod providers;
 mod reference;

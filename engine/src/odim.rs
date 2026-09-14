@@ -35,7 +35,11 @@
 //!   nominal `startdate`/`starttime` and `enddate`/`endtime` (ORD).
 //! - **Range.** The first gate's centre is `rstart` (km) + `rscale` / 2:
 //!   250 m for SMHI and FMI, 125 m for MET Norway, 750 m for DMI.
+//! - **Other angles (S20).** `decode_tilts` reads every scan's `where`, lets
+//!   `products::needed` pick the scans a product needs, and decodes those
+//!   alike (`products.rs`).
 
+use crate::products::{Tilt as ProductTilt, TiltInfo};
 use crate::sweep::{OUTSIDE_COVERAGE, Ray, Sweep};
 use chrono::NaiveDateTime;
 use hdf5_pure::{AttrValue, File, ReadSeekSource};
@@ -263,16 +267,71 @@ fn tilt_path(file: &File, tilt: Tilt) -> Result<String, OdimError> {
 }
 
 fn lowest_reflectivity(file: &File, tilt: Tilt) -> Result<Sweep, OdimError> {
-    let ds = tilt_path(file, tilt)?;
+    sweep_at(file, &tilt_path(file, tilt)?)
+}
+
+/// Every scan's geometry, then the reflectivity of the scans `select`
+/// names, each with its `where/elangle` (S20, `products::needed`). Only the
+/// `where` groups of the other scans are read, so a ranged read stays small.
+pub fn decode_tilts<R: Read + Seek + Send + 'static>(
+    reader: R,
+    select: impl FnOnce(&[TiltInfo]) -> Vec<usize>,
+) -> Result<Vec<ProductTilt>, OdimError> {
+    let file = open(reader)?;
+    let (mut paths, mut infos) = (Vec::new(), Vec::new());
+    for n in 1.. {
+        let path = format!("/dataset{n}");
+        let wpath = format!("{path}/where");
+        let Ok(where_) = attrs(&file, &wpath) else {
+            break;
+        };
+        let rscale = need(&where_, &wpath, "rscale")?;
+        let rstart = need(&where_, &wpath, "rstart")?;
+        let bins = need(&where_, &wpath, "nbins")? as usize;
+        infos.push(TiltInfo {
+            elangle: need(&where_, &wpath, "elangle")?,
+            // As `sweep_at` writes them into the sweep.
+            first_gate_m: (rstart * 1000.0 + rscale / 2.0).round() as u32,
+            gate_spacing_m: rscale.round() as u32,
+            gates: u16::try_from(bins).map_err(|_| fail(format!("{wpath}: {bins} bins")))?,
+        });
+        paths.push(path);
+    }
+    if infos.is_empty() {
+        return Err(fail("the volume has no /dataset1"));
+    }
+    select(&infos)
+        .into_iter()
+        .map(|k| {
+            let path = paths.get(k).ok_or_else(|| fail(format!("no scan {k}")))?;
+            Ok(ProductTilt {
+                elangle: infos[k].elangle,
+                sweep: sweep_at(&file, path)?,
+            })
+        })
+        .collect()
+}
+
+/// The reflectivity of dataset `ds` (`/datasetN`).
+fn sweep_at(file: &File, ds: &str) -> Result<Sweep, OdimError> {
     let where_ = attrs(file, &format!("{ds}/where"))?;
     let dwhat = attrs(file, &format!("{ds}/what")).unwrap_or_default();
     let how = attrs(file, &format!("{ds}/how")).unwrap_or_default();
-    let moments: Vec<(String, Attrs)> = (1..)
-        .map_while(|m| {
-            let path = format!("{ds}/data{m}");
-            attrs(file, &format!("{path}/what")).ok().map(|a| (path, a))
-        })
-        .collect();
+    // The moments up to the first DBZH, which nothing later can beat
+    // (`REFLECTIVITY`): SMHI stores DBZH first of 15, so a ranged read
+    // touches one moment's header instead of all of them.
+    let mut moments: Vec<(String, Attrs)> = Vec::new();
+    for m in 1.. {
+        let path = format!("{ds}/data{m}");
+        let Ok(what) = attrs(file, &format!("{path}/what")) else {
+            break;
+        };
+        let first_choice = text(&what, "quantity").as_deref() == Some(REFLECTIVITY[0]);
+        moments.push((path, what));
+        if first_choice {
+            break;
+        }
+    }
     let quantities: Vec<String> = moments
         .iter()
         .map(|(_, a)| text(a, "quantity").unwrap_or_default())

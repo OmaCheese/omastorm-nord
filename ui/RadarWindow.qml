@@ -636,7 +636,7 @@ Item {
                         spacing: 8
                         visible: !!app.scan
                         LabelText {
-                            text: !app.scan ? "" : app.scan.productName.toUpperCase() + (app.scan.scanTime ? " / " + app.scan.elevationDeg.toFixed(1) + "°" : "")
+                            text: !app.scan ? "" : app.scan.productName.toUpperCase() + (app.scan.scanTime ? " / " + (app.scan.kind === "grid" ? "COMPOSITE" : app.scan.elevationDeg.toFixed(1) + "°") : "")
                         }
                         // The source's credit, verbatim (SMHI, MET Norway, FMI, DMI, OPERA).
                         LabelText {
@@ -684,6 +684,7 @@ Item {
                     codes: engine.codes
                     siteId: app.siteId
                     sites: engine.sites
+                    referenceSites: engine.referenceSites
                     tileRoot: "file://" + engine.runtime
                     theme: app.theme
                     treatment: app.treatment

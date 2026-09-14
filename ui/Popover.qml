@@ -136,6 +136,7 @@ FocusScope {
                 codes: connection.codes
                 siteId: card.state ? card.state.site.id : ""
                 sites: connection.sites
+                referenceSites: connection.referenceSites
                 tileRoot: "file://" + connection.runtime
                 theme: card.theme
                 treatment: card.session.treatment
@@ -166,7 +167,7 @@ FocusScope {
                     implicitWidth: product.implicitWidth + 10; implicitHeight: 20
                     color: Qt.alpha(card.theme.background, .92)
                     Label { id: product; anchors.centerIn: parent; font.pixelSize: 10; opacity: .8
-                        text: card.scan ? card.scan.productName.toUpperCase() + " " + card.scan.elevationDeg.toFixed(1) + "°" : "" }
+                        text: card.scan ? card.scan.productName.toUpperCase() + (card.scan.kind === "grid" ? " · COMPOSITE" : " " + card.scan.elevationDeg.toFixed(1) + "°") : "" }
                 }
                 Item { Layout.fillWidth: true }
                 Rectangle {

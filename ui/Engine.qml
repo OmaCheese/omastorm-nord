@@ -6,6 +6,8 @@ QtObject {
     id: engine
     property var state: null
     property var sites: []
+    /// hello.referenceSites (S23): other radars' positions, marks only.
+    property var referenceSites: []
     /// Transport and parsing trouble: disconnected, unreadable message,
     /// unknown protocol version. Cleared by the next valid state.
     property string error: ""
@@ -320,7 +322,10 @@ QtObject {
                 socket.connected = false;
                 return;
             }
-            if (message.type === "hello") sites = message.sites;
+            if (message.type === "hello") {
+                sites = message.sites;
+                referenceSites = message.referenceSites || [];
+            }
             else if (message.type === "state") {
                 var frame = message.frame;
                 if (!frame || !validTexturePath(frame.texture))

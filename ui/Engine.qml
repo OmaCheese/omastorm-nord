@@ -73,12 +73,27 @@ QtObject {
     /// Whether this client shows frames: a visible window or popover. The
     /// session's status connection keeps it off and holds no textures.
     property bool active: false
-    /// Decoded texture memory the buffer may hold, in bytes. Qt keeps each
-    /// image as 4 bytes a texel (a one-channel code texture is widened on
-    /// load) on the CPU and again on the GPU, in the bar's own process, so
-    /// this is below the web's 512 MB: Sweden's two hours (24 frames, about
-    /// 250 MB) fit, Nordic's 15 MB frames give about an hour and a half.
-    property real bufferCap: 280 * 1024 * 1024
+    /// Decoded texture memory the buffer may hold, in bytes (DESIGN.md, loop
+    /// buffer): a quarter of the machine's MemAvailable, read each time this
+    /// client opens, at least `bufferFloor` and at most `bufferCeiling`. Qt
+    /// keeps each image as 4 bytes a texel (a one-channel code texture is
+    /// widened on load) in the shell's own memory and again on the GPU, so
+    /// the ceiling sits below the web's 512 MB: Sweden's two hours (24
+    /// frames, about 250 MB) fit, Nordic's 15 MB frames give 18 or so.
+    property real bufferCeiling: 280 * 1024 * 1024
+    readonly property real bufferFloor: 96 * 1024 * 1024
+    /// MemAvailable in bytes when this client last opened, 0 when unknown.
+    property real memAvailable: 0
+    readonly property real bufferCap: memAvailable > 0
+        ? Math.max(bufferFloor, Math.min(bufferCeiling, memAvailable / 4)) : bufferCeiling
+    property FileView meminfo: FileView { path: "/proc/meminfo"; blockLoading: true }
+    function readMemory() {
+        meminfo.reload();
+        var m = /MemAvailable:\s+(\d+) kB/.exec(meminfo.text());
+        memAvailable = m ? Number(m[1]) * 1024 : 0;
+    }
+    onActiveChanged: if (active) readMemory()
+    Component.onCompleted: if (active) readMemory()
     readonly property int bufferLimit: 24     // two hours of 5-minute scans, as on the web
     readonly property int minStart: 6         // the loop starts with this many ready, or all there are
     readonly property int stepMs: 250         // a frame's time on screen
@@ -163,6 +178,20 @@ QtObject {
     readonly property int bufferReady: readyFrames.length
     readonly property int bufferTarget: loopFrames.length
     readonly property real bufferMB: Math.round(loopFrames.reduce((n, f) => n + frameBytes(f), 0) / 1048576)
+    readonly property int bufferCapMB: Math.round(bufferCap / 1048576)
+    /// Bufferable entries within `bufferLimit` that the cap left out.
+    readonly property int bufferDropped: {
+        if (!active || !state) return 0;
+        var n = 0, tl = timeline;
+        for (var i = tl.length - 1; i >= 0 && n < bufferLimit; i--) if (bufferable(tl[i])) n++;
+        return Math.max(0, n - loopFrames.length);
+    }
+    /// What the buffer holds and costs, as the web's Loop note says it:
+    /// "19/19 frames · 278 MB of 280 MB · 5 older left out".
+    readonly property string bufferNote: bufferTarget > 0
+        ? bufferReady + "/" + bufferTarget + " frames · " + bufferMB + " MB of " + bufferCapMB + " MB"
+          + (bufferDropped > 0 ? " · " + bufferDropped + " older left out" : "")
+        : ""
     readonly property bool looping: active && canLoop && !!state && loopSite !== "" && loopSite === state.site.id
 
     // One hidden Image per file of the loop, newest first, kept while the

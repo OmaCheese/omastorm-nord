@@ -20,7 +20,7 @@
 //!
 //! **Where.** `$XDG_CACHE_HOME/omastorm-se/tilts/`: `index.sqlite` (its own
 //! WAL database, next to `frames/catalog.sqlite`, which stays as it is), and
-//! `<station>/<YYYYMMDDTHHMMZ>-<tenths>-<dataset>.u8z` per tilt.
+//! `<station>/<YYYYMMDDTHHMMSSZ>-<tenths>-<dataset>.u8z` per tilt.
 //!
 //! **Cap.** `OMASTORM_TILTS_MB` (default 256; 0 turns the store off), in
 //! 10^6 bytes of `.u8z` files. After each save the least recently used
@@ -362,10 +362,6 @@ impl Store {
         })
     }
 
-    pub fn cap_bytes(&self) -> u64 {
-        self.cap
-    }
-
     /// A station's stored volumes, newest first: their times and source
     /// files. Only volumes with at least one tilt.
     pub fn volumes(&self, station: &str) -> io::Result<Vec<(i64, String)>> {
@@ -471,6 +467,10 @@ impl Store {
         }
     }
 
+    #[allow(
+        dead_code,
+        reason = "the API S24a, S24b and S25 compose from (engine/README.md)"
+    )]
     /// Every stored tilt of a volume, by dataset, with its index.
     pub fn tilts(&self, station: &str, time_ms: i64) -> io::Result<Vec<(usize, Tilt)>> {
         let Some(volume) = self.volume(station, time_ms)? else {
@@ -561,7 +561,7 @@ impl Store {
         )
         .map_err(sql)?;
         let used = now_ms();
-        let stamp = format_ms(time_ms, "%Y%m%dT%H%MZ");
+        let stamp = format_ms(time_ms, "%Y%m%dT%H%M%SZ");
         for (dataset, tilt, blob) in &blobs {
             let t = tenths(tilt.elangle);
             let file = format!("{sub}/{stamp}-{t}-{dataset}.u8z");
@@ -629,7 +629,7 @@ impl Store {
                 r.get(0)
             })
             .map_err(sql)?;
-        let mut over = total - self.cap as i64;
+        let mut over = total - i64::try_from(self.cap).unwrap_or(i64::MAX);
         if over <= 0 {
             return Ok(Usage::default());
         }
@@ -809,19 +809,20 @@ fn finish(
 /// `products::decode_volume` through the store: read from the file only the
 /// tilts `want` needs that `slot` lacks, keep them (and the angle table),
 /// and compose from both. The same answer as `decode_volume`, byte for
-/// byte; with no slot, the same reads too.
+/// byte; with no slot, `decode_volume` itself.
 pub fn decode<R: Read + Seek + Send + 'static>(
     reader: R,
     want: Want,
     which: Which,
     slot: Option<&Slot>,
 ) -> Result<Scan, String> {
+    let Some(slot) = slot else {
+        return crate::products::decode_volume(reader, want, which);
+    };
     if want.is_lowest() && which == Which::First {
         // DEC-2: `/dataset1` alone; no angle table.
         let tilt = crate::odim::decode_first(reader).map_err(|e| e.to_string())?;
-        if let Some(slot) = slot {
-            slot.save(None, &[(0, &tilt)]);
-        }
+        slot.save(None, &[(0, &tilt)]);
         return Ok(Scan::Polar(tilt.sweep));
     }
     let mut table: Vec<TiltInfo> = Vec::new();
@@ -830,7 +831,7 @@ pub fn decode<R: Read + Seek + Send + 'static>(
     let decoded = crate::odim::decode_tilts(reader, |infos| {
         table = infos.to_vec();
         for k in needed(want, infos) {
-            match slot.and_then(|s| s.stored(k, &infos[k])) {
+            match slot.stored(k, &infos[k]) {
                 Some(tilt) => kept.push((k, tilt)),
                 None => read.push(k),
             }
@@ -839,10 +840,8 @@ pub fn decode<R: Read + Seek + Send + 'static>(
     })
     .map_err(|e| e.to_string())?;
     let fetched: Vec<(usize, Tilt)> = read.into_iter().zip(decoded).collect();
-    if let Some(slot) = slot {
-        let refs: Vec<(usize, &Tilt)> = fetched.iter().map(|(k, t)| (*k, t)).collect();
-        slot.save(Some(&table), &refs);
-    }
+    let refs: Vec<(usize, &Tilt)> = fetched.iter().map(|(k, t)| (*k, t)).collect();
+    slot.save(Some(&table), &refs);
     kept.extend(fetched);
     finish(want, which, Some(&table), kept)
 }
@@ -953,7 +952,11 @@ mod tests {
             }
             let used = store.usage(Some(station)).unwrap();
             assert_eq!(used.tilts, tilts.len() as u64);
-            eprintln!("{station}: {} bytes stored: {}", used.bytes, sizes.join(" "));
+            eprintln!(
+                "{station}: {} bytes stored: {}",
+                used.bytes,
+                sizes.join(" ")
+            );
         }
         assert!(decode_file(b"not zlib").is_err());
         let _ = fs::remove_dir_all(dir);
@@ -1084,6 +1087,8 @@ mod tests {
     /// oldest volume first on a tie, files and all; a read counts as a use.
     #[test]
     fn eviction_drops_the_least_recently_used() {
+        // Five-minute volumes, as the pollers key them.
+        const M: i64 = 300_000;
         let dir = scratch("evict");
         let tilts = all_tilts(FIXTURES[1].0);
         let one = encode(&tilts[0]).unwrap().len() as u64;
@@ -1091,7 +1096,7 @@ mod tests {
         let store = Store::open(dir.clone(), one * 5 + one / 2).unwrap();
         let save = |station: &str, t: i64| {
             store
-                .save(station, t, "src", None, &[(0, &tilts[0])])
+                .save(station, t * M, "src", None, &[(0, &tilts[0])])
                 .unwrap()
         };
         for t in 1..=5 {
@@ -1100,25 +1105,37 @@ mod tests {
         }
         assert_eq!(store.usage(None).unwrap().tilts, 5);
         // Reading the oldest makes it the newest in use.
-        assert!(store.tilt("b", 1, 0).unwrap().is_some());
+        assert!(store.tilt("b", M, 0).unwrap().is_some());
         std::thread::sleep(std::time::Duration::from_millis(2));
         save("a", 6);
         assert_eq!(store.usage(None).unwrap().tilts, 5);
-        assert!(store.volume("a", 2).unwrap().is_none(), "the least recently used");
-        assert!(store.volume("b", 1).unwrap().is_some(), "read, so kept");
-        assert_eq!(
-            store.volumes("a").unwrap().iter().map(|v| v.0).collect::<Vec<_>>(),
-            [6, 4]
+        assert!(
+            store.volume("a", 2 * M).unwrap().is_none(),
+            "the least recently used"
         );
-        let files = fs::read_dir(dir.join("a")).unwrap().count() + fs::read_dir(dir.join("b")).unwrap().count();
+        assert!(store.volume("b", M).unwrap().is_some(), "read, so kept");
+        assert_eq!(
+            store
+                .volumes("a")
+                .unwrap()
+                .iter()
+                .map(|v| v.0)
+                .collect::<Vec<_>>(),
+            [6 * M, 4 * M]
+        );
+        let files = fs::read_dir(dir.join("a")).unwrap().count()
+            + fs::read_dir(dir.join("b")).unwrap().count();
         assert_eq!(files, 5, "evicted files are removed");
         // Another source for the same time replaces the volume.
         store
-            .save("a", 6, "other", None, &[(1, &tilts[1])])
+            .save("a", 6 * M, "other", None, &[(1, &tilts[1])])
             .unwrap();
-        let volume = store.volume("a", 6).unwrap().unwrap();
+        let volume = store.volume("a", 6 * M).unwrap().unwrap();
         assert_eq!(volume.source, "other");
-        assert_eq!(volume.tilts.iter().map(|s| s.dataset).collect::<Vec<_>>(), [1]);
+        assert_eq!(
+            volume.tilts.iter().map(|s| s.dataset).collect::<Vec<_>>(),
+            [1]
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }

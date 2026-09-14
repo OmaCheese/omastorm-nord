@@ -895,8 +895,9 @@ impl RangeSource for HttpRanges {
 
 /// A file's decoder: the lowest-tilt DBZH sweep of a volume (S2, `odim.rs`)
 /// or the composite's grid (S8, `composite.rs`); since S20 the product the
-/// poller follows (`products::Want`), which a composite ignores.
-pub type Decode = fn(RangeReader, Want) -> Result<Scan, String>;
+/// poller follows (`products::Want`), which a composite ignores; since S27
+/// the volume's place in the tilt store (`tilts::Slot`), when there is one.
+pub type Decode = fn(RangeReader, Want, Option<&crate::tilts::Slot>) -> Result<Scan, String>;
 
 enum VolumeError {
     /// SMHI failed to answer: back off.
@@ -905,16 +906,51 @@ enum VolumeError {
     Decode(String),
 }
 
+/// The volume's place in the tilt store, when the poller has a store.
+fn slot(cfg: &Config, site: &str, volume: &Volume) -> Option<crate::tilts::Slot> {
+    cfg.store.clone().map(|store| crate::tilts::Slot {
+        store,
+        station: site.to_owned(),
+        time_ms: volume.valid_ms,
+        source: volume.key.clone(),
+    })
+}
+
+/// A frame's provenance when the tilt store made it.
+fn store_provenance(product: &str, volume: &Volume, want: Want) -> String {
+    format!(
+        "SMHI {product} {}{}: {}",
+        volume.key,
+        crate::products::provenance_tag(want),
+        crate::tilts::FROM_STORE
+    )
+}
+
+/// `want` of a volume from the tilt store alone (S27), when it holds
+/// every tilt: no request, no fetch permit.
+async fn from_store(slot: Option<crate::tilts::Slot>, want: Want) -> Option<Scan> {
+    let slot = slot?;
+    spawn_blocking(move || slot.compose(want, crate::odim::Tilt::First))
+        .await
+        .ok()?
+        .ok()?
+}
+
 /// Read and decode one volume with ranged requests, holding the engine's
-/// single fetch permit. Returns the sweep and its provenance.
+/// single fetch permit. Returns the sweep and its provenance. A volume the
+/// tilt store holds is composed from it, with no request (S27).
 async fn fetch_volume(
     http: &Http,
+    cfg: &Config,
+    site: &str,
     volume: &Volume,
-    product: &str,
-    decode: Decode,
-    want: Want,
-    length_pause: Duration,
 ) -> Result<(Scan, String), VolumeError> {
+    let (product, decode, want, length_pause) =
+        (product(site), cfg.decode, cfg.want, cfg.length_pause);
+    let slot = slot(cfg, site, volume);
+    if let Some(scan) = from_store(slot.clone(), want).await {
+        return Ok((scan, store_provenance(product, volume, want)));
+    }
     let permit = FETCHER
         .clone()
         .acquire_owned()
@@ -938,7 +974,7 @@ async fn fetch_volume(
         }
         .map_err(|e| e.to_string())?;
         let traffic = reader.traffic();
-        decode(reader, want).map(|sweep| (sweep, traffic))
+        decode(reader, want, slot.as_ref()).map(|sweep| (sweep, traffic))
     })
     .await;
     match joined {
@@ -983,6 +1019,9 @@ pub struct Config {
     pub decode: Decode,
     /// The product the poller follows (S20); its backfill depth too.
     pub want: Want,
+    /// The tilt store volumes are read through (S27); `None` reads every
+    /// volume from SMHI, as before.
+    pub store: Option<Arc<crate::tilts::Store>>,
 }
 
 impl Config {
@@ -997,18 +1036,29 @@ impl Config {
             now_ms,
             decode,
             want: Want::Lowest,
+            store: None,
         }
     }
 }
 
 /// S2's ODIM decoder over the ranged reader: `/dataset1` for the lowest
-/// scan, the angles a product needs for any other (`products.rs`).
-fn decode(reader: RangeReader, want: Want) -> Result<Scan, String> {
-    crate::products::decode_volume(reader, want, crate::odim::Tilt::First)
+/// scan, the angles a product needs for any other (`products.rs`), through
+/// the tilt store (`tilts::decode`).
+fn decode(
+    reader: RangeReader,
+    want: Want,
+    slot: Option<&crate::tilts::Slot>,
+) -> Result<Scan, String> {
+    crate::tilts::decode(reader, want, crate::odim::Tilt::First, slot)
 }
 
-/// The composite has no angles: every product is the composite.
-fn decode_composite(reader: RangeReader, _want: Want) -> Result<Scan, String> {
+/// The composite has no angles: every product is the composite, and it
+/// has no tilts to store.
+fn decode_composite(
+    reader: RangeReader,
+    _want: Want,
+    _slot: Option<&crate::tilts::Slot>,
+) -> Result<Scan, String> {
     crate::composite::decode_scan(reader)
 }
 
@@ -1030,6 +1080,7 @@ pub async fn poll(
     } else {
         Config {
             want,
+            store: crate::tilts::shared(),
             ..Config::smhi(decode)
         }
     };
@@ -1131,16 +1182,7 @@ impl Live {
         } else if (cfg.now_ms)() - volume.valid_ms >= HORIZON_MS {
             Outcome::Handled(None)
         } else {
-            match fetch_volume(
-                http,
-                &volume,
-                product(site),
-                cfg.decode,
-                cfg.want,
-                cfg.length_pause,
-            )
-            .await
-            {
+            match fetch_volume(http, cfg, site, &volume).await {
                 Ok((sweep, provenance)) => {
                     self.known.push(sweep.start_ms());
                     Outcome::Handled(Some(Event::Sweep {
@@ -1356,9 +1398,50 @@ async fn backfill(
     site: String,
     events: Sender<Event>,
     live_ms: i64,
-    known: Vec<i64>,
+    mut known: Vec<i64>,
 ) {
     sleep(cfg.backfill_delay).await;
+    // The tilt store first (S27): every stored volume of the loop the
+    // catalog lacks, newest first, with no request and no pacing.
+    let mut stored = 0;
+    // Nominal times the store made, whatever their scans' start times.
+    let mut done: Vec<i64> = Vec::new();
+    if let Some(store) = cfg.store.clone() {
+        let station = site.clone();
+        let volumes = spawn_blocking(move || store.volumes(&station))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        let loop_ = volumes
+            .into_iter()
+            .filter(|(t, _)| *t < live_ms && live_ms - *t < HORIZON_MS)
+            .take(BACKFILL - 1);
+        for (valid_ms, key) in loop_ {
+            if covered(valid_ms, &known) {
+                continue;
+            }
+            let volume = Volume {
+                key,
+                valid_ms,
+                url: String::new(),
+            };
+            let Some(sweep) = from_store(slot(&cfg, &site, &volume), cfg.want).await else {
+                continue;
+            };
+            known.push(sweep.start_ms());
+            done.push(valid_ms);
+            let event = Event::Backfill {
+                site: site.clone(),
+                sweep,
+                provenance: store_provenance(product(&site), &volume, cfg.want),
+            };
+            if !send(&events, event).await {
+                return;
+            }
+            stored += 1;
+        }
+    }
     let day = async |day_ms: i64| -> Result<Vec<Volume>, Fail> {
         match http
             .get(&day_listing_url(&cfg.base, &site, day_ms), None)
@@ -1387,21 +1470,13 @@ async fn backfill(
             Err(fail) => live_log(&site, format_args!("backfill listing (yesterday): {fail}")),
         }
     }
-    let targets = backfill_targets(listed, live_ms, &known, depth);
+    let mut targets = backfill_targets(listed, live_ms, &known, depth);
+    targets.retain(|v| !done.contains(&v.valid_ms));
     let wanted = targets.len();
     let mut fetched = 0;
     let mut undecoded = 0;
     for volume in targets {
-        match fetch_volume(
-            &http,
-            &volume,
-            product(&site),
-            cfg.decode,
-            cfg.want,
-            cfg.length_pause,
-        )
-        .await
-        {
+        match fetch_volume(&http, &cfg, &site, &volume).await {
             Ok((sweep, provenance)) => {
                 let event = Event::Backfill {
                     site: site.clone(),
@@ -1438,7 +1513,9 @@ async fn backfill(
     }
     live_log(
         &site,
-        format_args!("backfilled {fetched} of {wanted} earlier volumes"),
+        format_args!(
+            "backfilled {fetched} of {wanted} earlier volumes, {stored} more from the tilt store"
+        ),
     );
 }
 
@@ -1951,7 +2028,11 @@ mod tests {
     /// The stand-in decoder: reads the key back from the volume's first
     /// bytes, touches two blocks deeper in (as a real decode would), and
     /// reports a sweep that starts 3 s after the key's valid time.
-    fn stub_decode(mut reader: RangeReader, _want: Want) -> Result<Scan, String> {
+    fn stub_decode(
+        mut reader: RangeReader,
+        _want: Want,
+        _slot: Option<&crate::tilts::Slot>,
+    ) -> Result<Scan, String> {
         let mut head = [0u8; 64];
         reader.read_exact(&mut head).map_err(|e| e.to_string())?;
         let key = head.split(|&b| b == 0).next().unwrap();
@@ -1992,8 +2073,12 @@ mod tests {
 
     /// `stub_decode` for a product: the product, with the lowest scan it
     /// read on the way (`products::decode_volume`).
-    fn stub_product(reader: RangeReader, want: Want) -> Result<Scan, String> {
-        let Scan::Polar(sweep) = stub_decode(reader, want)? else {
+    fn stub_product(
+        reader: RangeReader,
+        want: Want,
+        slot: Option<&crate::tilts::Slot>,
+    ) -> Result<Scan, String> {
+        let Scan::Polar(sweep) = stub_decode(reader, want, slot)? else {
             unreachable!()
         };
         let lowest = stub_sweep(sweep.start_ms);
@@ -2011,6 +2096,7 @@ mod tests {
             now_ms: recorded,
             decode: stub_decode,
             want: Want::Lowest,
+            store: None,
         }
     }
 

@@ -48,8 +48,9 @@ Item {
     readonly property string attribution: scan && scan.attribution ? scan.attribution
         : engine.site && engine.site.attribution ? engine.site.attribution : ""
     readonly property string sourceBadge: state ? state.source.toUpperCase() : ""
-    // The timeline (DESIGN.md): the station's frames oldest
-    // first with the sweep in progress last; the engine owns the position.
+    // The timeline (DESIGN.md): the station's frames oldest first with the
+    // sweep in progress last. The engine owns the paused position; a loop
+    // plays from this window's buffer (Engine.qml).
     readonly property var frames: state ? state.timeline : []
     readonly property int frameIndex: scan ? frames.findIndex(f => f.id === scan.id) : -1
     readonly property bool playing: engine.playing

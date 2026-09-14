@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The site picker (DESIGN.md, picker as built) as two captures over the
-# quarter window on the shared daemon: open with the query "tul" over live
+# quarter window on a scratch daemon: open with the query "tul" over live
 # KTLX, and the state after Enter, KINX selected and locked with the camera
 # on its home view (review/picker-open.png, review/picker-chosen.png, and
-# review/picker-sheet.png side by side). The daemon is left on KINX, unlocked.
+# review/picker-sheet.png side by side). The scratch daemon is stopped on exit.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review
@@ -14,6 +14,11 @@ rm -f "$review"/picker-*.png
 scratch=$(mktemp -d /tmp/omastorm-picker.XXXXXX)
 jq -r '.sites[] | select(.id=="KTLX") | "center_lat = \(.lat)\ncenter_lon = \(.lon)\nlocked_radar = \"KTLX\""' engine/data/sites.json > "$scratch/home.toml"
 bash scripts/cargo.sh build --offline --locked --quiet
+# A scratch runtime dir, never the user's: ensure ends an engine of another
+# build, so the installed plugin's engine would be replaced by this debug one.
+export XDG_RUNTIME_DIR="$scratch/runtime"
+mkdir -p "$XDG_RUNTIME_DIR"
+trap 'target/debug/omastorm-engine stop > /dev/null 2>&1 || true' EXIT
 target/debug/omastorm-engine ensure
 sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.3 - "UNIX-CONNECT:$sock" > /dev/null; }

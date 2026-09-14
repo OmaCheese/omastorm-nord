@@ -3,13 +3,13 @@
 # network from Oklahoma City to Jacksonville as a capture series, following
 # and then locked, as review/handoff-*.png and review/handoff-sheet.png.
 #
-# Each capture is a fresh window on the shared daemon with its camera
+# Each capture is a fresh window on one scratch daemon with its camera
 # started at a point along the pan (OMASTORM_VIEW, 500 km across). The
 # settle sends view_center and the daemon hands off for real, so the
 # following row goes live station by station over the network (the loading
 # view, or the replayed cut once it has painted), while the locked row keeps
-# the station it was locked on as the camera leaves it behind. The daemon is
-# left following on the last station.
+# the station it was locked on as the camera leaves it behind. The scratch
+# daemon is stopped on exit.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review
@@ -20,6 +20,11 @@ rm -f "$review"/handoff-*.png
 scratch=$(mktemp -d /tmp/omastorm-handoff.XXXXXX)
 : > "$scratch/none.toml" # no home site: the camera alone picks the station
 bash scripts/cargo.sh build --offline --locked --quiet
+# A scratch runtime dir, never the user's: ensure ends an engine of another
+# build, so the installed plugin's engine would be replaced by this debug one.
+export XDG_RUNTIME_DIR="$scratch/runtime"
+mkdir -p "$XDG_RUNTIME_DIR"
+trap 'target/debug/omastorm-engine stop > /dev/null 2>&1 || true' EXIT
 target/debug/omastorm-engine ensure
 sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.3 - "UNIX-CONNECT:$sock" > /dev/null; }

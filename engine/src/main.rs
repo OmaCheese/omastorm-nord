@@ -5,6 +5,7 @@ mod odim;
 mod osm;
 mod protocol;
 mod providers;
+mod reference;
 mod smhi_live;
 mod sweep;
 mod tiles;
@@ -129,6 +130,7 @@ fn hello() -> Hello {
         sites_source: table.source,
         sites_retrieved: table.retrieved,
         sites_notes: table.notes,
+        reference_sites: reference::sites(),
     }
 }
 fn fixture_frame() -> Frame {

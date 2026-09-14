@@ -20,6 +20,10 @@
 #   - "backfilled … from <SMHI|ORD|EUMETNET OPERA> …: N range requests, B of T bytes"
 #     lines: per-file cost of backfilled frames (live frames are not logged
 #     with their cost), the only numbers an engine older than S18 has.
+#     Frames the tilt store made (S27, "from the tilt store") cost nothing
+#     and are counted apart, in the tilt store section.
+# The tilt store (S27): <cache>/tilts/index.sqlite, opened mode=ro, and the
+# "Tilts …" lines of engine.log.
 # engine.log lives in /run (tmpfs): a reboot empties it, a restart appends.
 set -euo pipefail
 
@@ -116,7 +120,7 @@ net() { # log
 
 files() { # log: per-file cost of backfilled frames, by provider
   local lines
-  lines=$(log_lines "$1" | grep -E ' backfilled [^ ]+ from ' || true)
+  lines=$(log_lines "$1" | grep -E ' backfilled [^ ]+ from ' | grep -v 'from the tilt store' || true)
   [[ -n $lines ]] || { echo "  no backfilled frames"; return; }
   awk -v w="$width" '
     { t = substr($1, 1, w); site = $3; sub(":", "", site)
@@ -128,7 +132,35 @@ files() { # log: per-file cost of backfilled frames, by provider
       printf "  %-13s %-10s %6s %9s %10s %11s %6s\n", "period", "prov", "files", "req/file", "KB/file", "file KB", "read"
       for (i = 1; i <= n; i++) { k = keys[i]; split(k, kk, SUBSEP)
         printf "  %-13s %-10s %6d %9.1f %10.0f %11.0f %5.0f%%\n", kk[1], kk[2], f[k], req[k] / f[k], by[k] / f[k] / 1e3,
-          all[k] / f[k] / 1e3, 100 * by[k] / all[k] } }' <<<"$lines"
+          all[k] / f[k] / 1e3, all[k] ? 100 * by[k] / all[k] : 0 } }' <<<"$lines"
+}
+
+tilts() { # cache dir, log: the tilt store (S27) per station, then its log lines
+  local db=$1/tilts/index.sqlite log=$2
+  if [[ -r $db ]]; then
+    printf '  %-13s %7s %6s %10s  %-17s  %-17s\n' station volumes tilts bytes oldest newest
+    local st vols n b old new
+    while IFS='|' read -r st vols n b old new; do
+      printf '  %-13s %7s %6s %10s  %-17s  %-17s\n' "$st" "$vols" "$n" "$(mb "$b")" "$old" "$new"
+    done < <(sqlite3 -readonly "file:$db?mode=ro" "
+        SELECT station, count(DISTINCT time_ms), count(*), sum(bytes),
+               strftime('%Y-%m-%dT%H:%MZ', min(time_ms) / 1000, 'unixepoch'),
+               strftime('%Y-%m-%dT%H:%MZ', max(time_ms) / 1000, 'unixepoch')
+        FROM tilts GROUP BY station ORDER BY station")
+    local all db_b
+    all=$(sqlite3 -readonly "file:$db?mode=ro" "SELECT count(*) || ' ' || coalesce(sum(bytes), 0) FROM tilts")
+    db_b=$(du -cb "$db"* 2>/dev/null | tail -1 | cut -f1)
+    printf '  tilts: %s tilts, %s of .u8z files; index db %s\n' "${all% *}" "$(mb "${all#* }")" "$(mb "${db_b:-0}")"
+  else
+    echo "  no tilt store at $db (engine older than S27, or OMASTORM_TILTS_MB=0)"
+  fi
+  [[ -r $log ]] || return 0
+  local cap evictions made
+  cap=$(log_lines "$log" | grep -E ' Tilts [^ ]+: .*cap ' | tail -1 | sed -E 's/.*cap ([0-9.]+ MB).*/\1/' || true)
+  evictions=$(log_lines "$log" | grep -c ' Tilts store: evicted' || true)
+  made=$(log_lines "$log" | grep -c 'from the tilt store' || true)
+  printf '  log: cap %s, %s evictions, %s backfilled frames made from the store (0 requests)\n' \
+    "${cap:-?}" "${evictions:-0}" "${made:-0}"
 }
 
 episodes() { # log: condition changes (S18 Status lines) and the pollers' complaints
@@ -162,6 +194,7 @@ report() { # name runtime cache
   echo "--- catalog (frames per station)"; catalog "$cache"
   echo "--- requests per provider per $by (Net lines)"; net "$rt/engine.log"
   echo "--- backfilled files per provider per $by"; files "$rt/engine.log"
+  echo "--- tilt store"; tilts "$cache" "$rt/engine.log"
   echo "--- staleness"; episodes "$rt/engine.log"
   echo
 }

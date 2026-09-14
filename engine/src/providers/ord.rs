@@ -557,15 +557,50 @@ enum FileError {
     Decode(String),
 }
 
+/// The file's place in the tilt store (S27), when the poller has a store.
+fn slot(cfg: &Config, site: &str, file: &Listed) -> Option<crate::tilts::Slot> {
+    cfg.store.clone().map(|store| crate::tilts::Slot {
+        store,
+        station: site.to_owned(),
+        time_ms: file.valid_ms,
+        source: file.key.clone(),
+    })
+}
+
+/// A frame's provenance when the tilt store made it.
+fn store_provenance(key: &str, want: Want) -> String {
+    format!(
+        "ORD {}{}: {}",
+        key.rsplit('/').next().unwrap_or(key),
+        crate::products::provenance_tag(want),
+        crate::tilts::FROM_STORE
+    )
+}
+
+/// `want` of a file from the tilt store alone, when it holds every tilt:
+/// no request, no fetch permit.
+async fn from_store(slot: Option<crate::tilts::Slot>, want: Want) -> Option<Scan> {
+    let slot = slot?;
+    spawn_blocking(move || slot.compose(want, Tilt::Lowest))
+        .await
+        .ok()?
+        .ok()?
+}
+
 /// Read and decode one file with ranged requests, holding the provider's
-/// fetch permit. Returns the scan and its provenance.
+/// fetch permit. Returns the scan and its provenance. A file the tilt store
+/// holds is composed from it, with no request (S27).
 async fn fetch_file(
     http: &Http,
-    base: &str,
+    cfg: &Config,
+    site: &str,
     file: &Listed,
-    decode: Decode,
-    want: Want,
 ) -> Result<(Scan, String), FileError> {
+    let (base, decode, want) = (cfg.base.as_str(), cfg.decode, cfg.want);
+    let slot = slot(cfg, site, file);
+    if let Some(scan) = from_store(slot.clone(), want).await {
+        return Ok((scan, store_provenance(&file.key, want)));
+    }
     let permit = FETCHER
         .clone()
         .acquire_owned()
@@ -584,7 +619,7 @@ async fn fetch_file(
         let reader = RangeReader::open_planned(Box::new(source), plan, Duration::from_secs(1))
             .map_err(|e| e.to_string())?;
         let traffic = reader.traffic();
-        decode(reader, want).map(|scan| (scan, traffic))
+        decode(reader, want, slot.as_ref()).map(|scan| (scan, traffic))
     })
     .await;
     let name = file.key.rsplit('/').next().unwrap_or(&file.key);
@@ -624,6 +659,9 @@ pub struct Config {
     pub decode: Decode,
     /// The product the poller follows (S20); its backfill depth too.
     pub want: Want,
+    /// The tilt store files are read through (S27); `None` reads every
+    /// file from the cache, as before.
+    pub store: Option<Arc<crate::tilts::Store>>,
 }
 
 impl Config {
@@ -637,6 +675,7 @@ impl Config {
             now_ms,
             decode,
             want: Want::Lowest,
+            store: None,
         }
     }
 }
@@ -645,8 +684,13 @@ impl Config {
 /// for another product the angles it needs (`products.rs`). A volume file
 /// (MET Norway's, DMI's) holds every angle; FMI's hold one each, so FMI's
 /// stations offer the lowest scan only (`products::for_station`).
-fn decode(reader: RangeReader, want: Want) -> Result<Scan, String> {
-    crate::products::decode_volume(reader, want, Tilt::Lowest)
+/// Since S27 through the tilt store (`tilts::decode`).
+fn decode(
+    reader: RangeReader,
+    want: Want,
+    slot: Option<&crate::tilts::Slot>,
+) -> Result<Scan, String> {
+    crate::tilts::decode(reader, want, Tilt::Lowest, slot)
 }
 
 /// Poll the cache for `station` until the task is aborted or the event
@@ -660,6 +704,7 @@ pub async fn poll(
 ) {
     let cfg = Config {
         want,
+        store: crate::tilts::shared(),
         ..Config::ord()
     };
     poll_with(cfg, station, events, cached).await;
@@ -733,7 +778,7 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
                     } else if now - file.valid_ms >= HORIZON_MS {
                         true
                     } else {
-                        match fetch_file(&http, &cfg.base, &file, cfg.decode, cfg.want).await {
+                        match fetch_file(&http, &cfg, &site, &file).await {
                             Ok((sweep, provenance)) => {
                                 known.push(sweep.start_ms());
                                 let event = Event::Sweep {
@@ -813,12 +858,9 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
                 http.clone(),
                 site.clone(),
                 events.clone(),
-                backfill_targets(
-                    chosen,
-                    live.valid_ms,
-                    &known,
-                    cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL),
-                ),
+                chosen,
+                live.valid_ms,
+                known.clone(),
             ))));
         }
 
@@ -850,21 +892,74 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
     }
 }
 
-/// Each target in turn, newest first, as `Event::Backfill`. A network
-/// failure ends the backfill; a file that does not decode is skipped.
+/// First every file of the loop the tilt store can make and the catalog
+/// lacks, newest first, with no request and no pacing (S27); then each
+/// remaining target (`backfill_targets` of `chosen`) in turn, newest
+/// first, as `Event::Backfill`. A network failure ends the backfill; a
+/// file that does not decode is skipped.
 async fn backfill(
     cfg: Config,
     http: Http,
     site: String,
     events: Sender<Event>,
-    targets: Vec<Listed>,
+    chosen: Vec<Listed>,
+    live_ms: i64,
+    mut known: Vec<i64>,
 ) {
     sleep(cfg.backfill_delay).await;
+    let mut stored = 0;
+    // Nominal times the store made, whatever their scans' start times.
+    let mut done: Vec<i64> = Vec::new();
+    if let Some(store) = cfg.store.clone() {
+        let station = site.clone();
+        let volumes = spawn_blocking(move || store.volumes(&station))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        let loop_ = volumes
+            .into_iter()
+            .filter(|(t, _)| *t < live_ms && live_ms - *t < HORIZON_MS)
+            .take(BACKFILL - 1);
+        for (valid_ms, key) in loop_ {
+            if covered(valid_ms, &known) {
+                continue;
+            }
+            let file = Listed {
+                key,
+                valid_ms,
+                rank: 0,
+                lowest_deg: 0.0,
+                size: None,
+            };
+            let Some(sweep) = from_store(slot(&cfg, &site, &file), cfg.want).await else {
+                continue;
+            };
+            known.push(sweep.start_ms());
+            done.push(valid_ms);
+            let event = Event::Backfill {
+                site: site.clone(),
+                sweep,
+                provenance: store_provenance(&file.key, cfg.want),
+            };
+            if !send(&events, event).await {
+                return;
+            }
+            stored += 1;
+        }
+    }
+    let mut targets = backfill_targets(
+        chosen,
+        live_ms,
+        &known,
+        cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL),
+    );
+    targets.retain(|f| !done.contains(&f.valid_ms));
     let wanted = targets.len();
     let mut fetched = 0;
     let mut undecoded = 0;
     for file in targets {
-        match fetch_file(&http, &cfg.base, &file, cfg.decode, cfg.want).await {
+        match fetch_file(&http, &cfg, &site, &file).await {
             Ok((sweep, provenance)) => {
                 let event = Event::Backfill {
                     site: site.clone(),
@@ -902,7 +997,9 @@ async fn backfill(
     }
     live_log(
         &site,
-        format_args!("backfilled {fetched} of {wanted} earlier files"),
+        format_args!(
+            "backfilled {fetched} of {wanted} earlier files, {stored} more from the tilt store"
+        ),
     );
 }
 
@@ -1127,7 +1224,12 @@ mod tests {
 
     /// A stand-in S3 bucket holding `keys`, pages of `page` keys; `fail`
     /// answers every listing with that status instead.
-    async fn bucket(keys: Vec<String>, page: usize, fail: Option<u16>) -> (String, Served) {
+    async fn bucket(
+        keys: Vec<String>,
+        page: usize,
+        fail: Option<u16>,
+        body: fn(&str) -> Vec<u8>,
+    ) -> (String, Served) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let served: Served = Arc::default();
@@ -1202,7 +1304,7 @@ mod tests {
                     } else {
                         let key = path.trim_start_matches('/').to_owned();
                         let key = decode_query(&key);
-                        let bytes = fake_file(&key);
+                        let bytes = body(&key);
                         let (a, b) = range
                             .as_deref()
                             .and_then(|r| r.trim().split_once('-'))
@@ -1232,7 +1334,11 @@ mod tests {
     /// Reads the key back from the file's first bytes, touches a block
     /// deeper in, and reports a sweep starting 54 s before the key's time
     /// (as MET Norway's do).
-    fn stub_decode(mut reader: RangeReader, _want: Want) -> Result<Scan, String> {
+    fn stub_decode(
+        mut reader: RangeReader,
+        _want: Want,
+        _slot: Option<&crate::tilts::Slot>,
+    ) -> Result<Scan, String> {
         let mut head = [0u8; 160];
         reader.read_exact(&mut head).map_err(|e| e.to_string())?;
         let key = std::str::from_utf8(head.split(|&b| b == 0).next().unwrap()).unwrap();
@@ -1273,8 +1379,12 @@ mod tests {
 
     /// `stub_decode` for a product: the product, with the lowest scan it
     /// read on the way (`products::decode_volume`).
-    fn stub_product(reader: RangeReader, want: Want) -> Result<Scan, String> {
-        let Scan::Polar(sweep) = stub_decode(reader, want)? else {
+    fn stub_product(
+        reader: RangeReader,
+        want: Want,
+        slot: Option<&crate::tilts::Slot>,
+    ) -> Result<Scan, String> {
+        let Scan::Polar(sweep) = stub_decode(reader, want, slot)? else {
             unreachable!()
         };
         let lowest = stub_sweep(sweep.start_ms);
@@ -1367,12 +1477,42 @@ mod tests {
         until: impl Fn(&[Event]) -> bool,
         linger: Duration,
     ) -> (Vec<Event>, Vec<String>) {
+        run_full(
+            (want, decode, None, fake_file),
+            keys,
+            fail,
+            now_ms,
+            cached,
+            until,
+            linger,
+        )
+    }
+
+    /// The poller's product, decoder and tilt store (S27), and what the
+    /// bucket serves for a key.
+    type Setup = (
+        Want,
+        Decode,
+        Option<Arc<crate::tilts::Store>>,
+        fn(&str) -> Vec<u8>,
+    );
+
+    /// `run_as` through a tilt store, the bucket serving `body` for a key.
+    fn run_full(
+        (want, decode, store, body): Setup,
+        keys: Vec<String>,
+        fail: Option<u16>,
+        now_ms: fn() -> i64,
+        cached: Vec<i64>,
+        until: impl Fn(&[Event]) -> bool,
+        linger: Duration,
+    ) -> (Vec<Event>, Vec<String>) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         runtime.block_on(async {
-            let (base, served) = bucket(keys, 100, fail).await;
+            let (base, served) = bucket(keys, 100, fail, body).await;
             let cfg = Config {
                 base,
                 poll: Duration::from_millis(40),
@@ -1382,6 +1522,7 @@ mod tests {
                 now_ms,
                 decode,
                 want,
+                store,
             };
             let (tx, mut rx) = mpsc::channel(16);
             let poller = tokio::spawn(poll_with(cfg, station(), tx, cached));
@@ -1401,6 +1542,76 @@ mod tests {
             let served = served.lock().unwrap().clone();
             (events, served)
         })
+    }
+
+    /// S20's multi-angle Hurum file, whatever the key.
+    fn nohur_file(_key: &str) -> Vec<u8> {
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../data/raw/ord_nohur_202609140930_tilts.h5"
+        ))
+        .unwrap()
+    }
+
+    /// S27's exit, offline: CMAX reads each file once and keeps its tilts
+    /// (the real decoder, through the tilt store); a switch to CAPPI1, back
+    /// to CMAX, then to the lowest scan reads no file at all, listings
+    /// aside, and each run makes the same frames. Every key serves the
+    /// same file, whose scan starts 09:29:06, so the poller counts 09:30
+    /// as catalogued once it has read it: 8 files of the 9 times.
+    #[test]
+    fn a_second_product_reads_no_file() {
+        let dir = std::env::temp_dir().join(format!("omastorm-ord-tilts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Arc::new(crate::tilts::Store::open(dir.clone(), u64::MAX).unwrap());
+        let keys = hurum(utc(14, 9, 0), utc(14, 9, 40));
+        const FILES: usize = 8;
+        let mut gets = Vec::new();
+        for want in [
+            Want::ColMax,
+            Want::Cappi(1000.0),
+            Want::ColMax,
+            Want::Lowest,
+        ] {
+            // A product sends its free lowest scan too.
+            let expected = if want.is_lowest() { FILES } else { 2 * FILES };
+            let (events, served) = run_full(
+                (want, decode, Some(store.clone()), nohur_file),
+                keys.clone(),
+                None,
+                recorded,
+                Vec::new(),
+                |events| events.len() >= expected,
+                Duration::from_millis(300),
+            );
+            let label = want.variant();
+            assert_eq!(events.len(), expected, "{label}");
+            let from_store = events
+                .iter()
+                .filter(|e| match e {
+                    Event::Sweep { provenance, .. } | Event::Backfill { provenance, .. } => {
+                        provenance.contains(crate::tilts::FROM_STORE)
+                    }
+                    _ => false,
+                })
+                .count();
+            let read = served.iter().filter(|s| s.starts_with("get")).count();
+            eprintln!("{label}: {read} file requests, {from_store} frames from the store");
+            gets.push(read);
+            if gets.len() > 1 {
+                assert_eq!(read, 0, "{label}: {served:?}");
+                // The free lowest scans name the read they rode along with.
+                assert_eq!(from_store, FILES, "{label}");
+            }
+        }
+        assert!(gets[0] >= FILES, "{gets:?}");
+        let used = store.usage(Some("nohur")).unwrap();
+        assert_eq!(
+            used.tilts,
+            FILES as u64 * 4,
+            "the fixture's four tilts a file"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1619,7 +1830,7 @@ mod tests {
             RangeReader::open_planned(Box::new(Local(bytes.to_vec())), plan, Duration::ZERO)
                 .unwrap();
         let traffic = reader.traffic();
-        let sweep = match decode(reader, want).unwrap() {
+        let sweep = match decode(reader, want, None).unwrap() {
             Scan::Polar(sweep) | Scan::Product(sweep, ..) => sweep,
             Scan::Grid(_) => panic!("a radar decodes to a polar sweep"),
         };

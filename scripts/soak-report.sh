@@ -103,12 +103,13 @@ net() { # log
   fi
   awk -v w="$width" '
     { t = substr($1, 1, w); p = $3; sub(":", "", p)
+      if (!((t, p, substr($1, 1, 13)) in hours)) { hours[t, p, substr($1, 1, 13)] = 1; active[t, p]++ }
       for (i = 4; i <= NF; i++) { split($i, kv, "="); v[t, p, kv[1]] += kv[2] }
       if (!((t, p) in seen)) { seen[t, p] = 1; keys[++n] = t SUBSEP p } }
     END {
-      printf "  %-13s %-6s %9s %9s %11s %5s %5s %5s %6s\n", "period", "prov", "requests", "req/h", "bytes", "429", "5xx", "4xx", "failed"
+      printf "  %-13s %-6s %9s %9s %11s %5s %5s %5s %6s\n", "period", "prov", "requests", "req/act.h", "bytes", "429", "5xx", "4xx", "failed"
       for (i = 1; i <= n; i++) { split(keys[i], k, SUBSEP); t = k[1]; p = k[2]
-        h = v[t, p, "secs"] / 3600; if (h <= 0) h = 1
+        h = active[t, p]  # hours that logged traffic; an idle hour logs nothing
         printf "  %-13s %-6s %9d %9.0f %8.1f MB %5d %5d %5d %6d\n", t, p, v[t, p, "requests"], v[t, p, "requests"] / h,
           v[t, p, "bytes"] / 1e6, v[t, p, "http429"], v[t, p, "http5xx"], v[t, p, "http4xx"], v[t, p, "failed"] } }' <<<"$lines"
 }

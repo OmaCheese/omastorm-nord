@@ -541,11 +541,8 @@ mod tests {
     /// file's nominal 09:30.
     #[test]
     fn met_norway_hurum_matches_its_golden() {
-        let (sweep, site, golden) = matches_golden(
-            "ord_nohur_202609140930.h5",
-            "nohur-20260914",
-            Tilt::Lowest,
-        );
+        let (sweep, site, golden) =
+            matches_golden("ord_nohur_202609140930.h5", "nohur-20260914", Tilt::Lowest);
         assert_eq!(golden.odim_dataset, "/dataset1/data1");
         assert_eq!((sweep.rays.len(), sweep.gates), (720, 960));
         assert_eq!((sweep.first_gate_m, sweep.gate_spacing_m), (125, 250));
@@ -562,11 +559,8 @@ mod tests {
     /// DBZH as data2; `startazA`/`stopazA` but no ray times.
     #[test]
     fn fmi_korppoo_reads_dbzh_not_the_th_stored_first() {
-        let (sweep, site, golden) = matches_golden(
-            "ord_fikor_202609140940.h5",
-            "fikor-20260914",
-            Tilt::Lowest,
-        );
+        let (sweep, site, golden) =
+            matches_golden("ord_fikor_202609140940.h5", "fikor-20260914", Tilt::Lowest);
         assert_eq!(golden.odim_dataset, "/dataset1/data2");
         assert_eq!((sweep.rays.len(), sweep.gates), (360, 500));
         assert_eq!((sweep.first_gate_m, sweep.gate_spacing_m), (250, 500));
@@ -580,17 +574,18 @@ mod tests {
     /// 0.5 km.
     #[test]
     fn dmi_sindal_takes_its_angles_from_the_azangels_string() {
-        let (sweep, site, golden) = matches_golden(
-            "ord_dksin_202609140940.h5",
-            "dksin-20260914",
-            Tilt::Lowest,
-        );
+        let (sweep, site, golden) =
+            matches_golden("ord_dksin_202609140940.h5", "dksin-20260914", Tilt::Lowest);
         assert_eq!(golden.odim_dataset, "/dataset1/data1");
         assert_eq!((sweep.rays.len(), sweep.gates), (360, 475));
         assert_eq!((sweep.first_gate_m, sweep.gate_spacing_m), (750, 500));
         // Row 0 spans 359.561°..0.505°: its centre is just east of north,
         // where equal sectors would have put it at 0.5°.
-        assert!(sweep.rays[0].azimuth_deg < 0.1, "{}", sweep.rays[0].azimuth_deg);
+        assert!(
+            sweep.rays[0].azimuth_deg < 0.1,
+            "{}",
+            sweep.rays[0].azimuth_deg
+        );
         assert_eq!(site.source_item("PLC"), Some("Sindal"));
         assert_eq!(site.source_item("NOD"), Some("dksin"));
     }

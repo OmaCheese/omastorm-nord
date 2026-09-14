@@ -347,7 +347,10 @@ mod tests {
             serde_json::to_string(&ProviderId::Opera).unwrap(),
             "\"opera\""
         );
-        let smhi: Vec<&Station> = sites.iter().filter(|s| s.provider == ProviderId::Smhi).collect();
+        let smhi: Vec<&Station> = sites
+            .iter()
+            .filter(|s| s.provider == ProviderId::Smhi)
+            .collect();
         assert_eq!(smhi.len(), 13);
         for s in smhi {
             assert_eq!(s.country, "SE", "{}", s.id);
@@ -370,7 +373,10 @@ mod tests {
 
         // DEC-13: 12 Norwegian, 12 Finnish and 5 Danish radars, each id its
         // node code (DEC-12), each credit its national owner.
-        let ord: Vec<&Station> = sites.iter().filter(|s| s.provider == ProviderId::Ord).collect();
+        let ord: Vec<&Station> = sites
+            .iter()
+            .filter(|s| s.provider == ProviderId::Ord)
+            .collect();
         for (country, count, owner, range) in [
             ("NO", 12, "MET Norway, CC BY 4.0", 240.0..=240.0),
             ("FI", 12, "FMI, CC BY 4.0", 250.0..=250.0),
@@ -382,11 +388,19 @@ mod tests {
                 assert_eq!(s.kind, SiteKind::Polar, "{}", s.id);
                 assert_eq!(s.attribution, owner, "{}", s.id);
                 assert!(range.contains(&s.range_km), "{} {}", s.id, s.range_km);
-                assert!(s.id.len() == 5 && s.id.starts_with(&country.to_lowercase()), "{}", s.id);
+                assert!(
+                    s.id.len() == 5 && s.id.starts_with(&country.to_lowercase()),
+                    "{}",
+                    s.id
+                );
                 assert!(s.aliases.is_empty(), "{}: the node code is the id", s.id);
                 let kind = if country == "FI" { "SCAN" } else { "PVOL" };
                 assert_eq!(s.source, format!("{country}/{}/{kind}", s.id));
-                assert!((54.0..72.0).contains(&s.lat) && (4.0..32.0).contains(&s.lon), "{}", s.id);
+                assert!(
+                    (54.0..72.0).contains(&s.lat) && (4.0..32.0).contains(&s.lon),
+                    "{}",
+                    s.id
+                );
                 assert!(!s.name.is_empty() && !s.state.is_empty(), "{}", s.id);
             }
         }

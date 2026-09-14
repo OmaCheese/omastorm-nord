@@ -212,7 +212,9 @@ pub fn choose(listed: &[Listed]) -> Vec<Listed> {
 
 /// Whether a catalogued sweep start is the file valid at `valid_ms`.
 pub fn covered(valid_ms: i64, known: &[i64]) -> bool {
-    known.iter().any(|&start| (start - valid_ms).abs() < MATCH_MS)
+    known
+        .iter()
+        .any(|&start| (start - valid_ms).abs() < MATCH_MS)
 }
 
 /// What a backfill fetches: of the newest `n` files up to and including the
@@ -251,7 +253,12 @@ fn encode(value: &str) -> String {
 }
 
 /// One page of `ListObjectsV2`.
-pub fn list_url(base: &str, prefix: &str, start_after: Option<&str>, token: Option<&str>) -> String {
+pub fn list_url(
+    base: &str,
+    prefix: &str,
+    start_after: Option<&str>,
+    token: Option<&str>,
+) -> String {
     let mut url = format!("{base}/?list-type=2&prefix={}", encode(prefix));
     if let Some(after) = start_after {
         url += &format!("&start-after={}", encode(after));
@@ -302,7 +309,13 @@ pub fn parse_listing(xml: &str) -> Result<(Vec<String>, Option<String>), String>
 // ---------------------------------------------------------------------------
 
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    let seconds = headers.get(RETRY_AFTER)?.to_str().ok()?.trim().parse().ok()?;
+    let seconds = headers
+        .get(RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
     Some(Duration::from_secs(seconds))
 }
 
@@ -358,7 +371,12 @@ impl Http {
             .map_err(|e| Fail::Transport(e.to_string()))
     }
 
-    async fn range(&self, url: &str, offset: u64, len: u64) -> Result<(Vec<u8>, Option<u64>), Fail> {
+    async fn range(
+        &self,
+        url: &str,
+        offset: u64,
+        len: u64,
+    ) -> Result<(Vec<u8>, Option<u64>), Fail> {
         let response = self
             .client
             .get(url)
@@ -411,7 +429,8 @@ impl Http {
         let mut first = true;
         while day <= now_ms {
             let prefix = day_prefix(source, day);
-            let after = first.then(|| format!("{prefix}{nod}@{}", format_ms(since_ms, "%Y%m%dT%H%M")));
+            let after =
+                first.then(|| format!("{prefix}{nod}@{}", format_ms(since_ms, "%Y%m%dT%H%M")));
             let mut token: Option<String> = None;
             loop {
                 let url = list_url(base, &prefix, after.as_deref(), token.as_deref());
@@ -678,7 +697,15 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
                         window_ms / 3_600_000
                     ),
                 };
-                if !send(&events, Event::Silent { site: site.clone(), reason }).await {
+                if !send(
+                    &events,
+                    Event::Silent {
+                        site: site.clone(),
+                        reason,
+                    },
+                )
+                .await
+                {
                     return;
                 }
             }
@@ -706,8 +733,19 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
             wait = back_off(cfg.poll, cfg.max_back_off, failures, retry_of(&fail));
             let reason = format!("ORD cache: {fail}");
             if failures < OFFLINE_AFTER {
-                live_log(&site, format_args!("{reason}; retrying in {}s", wait.as_secs()));
-            } else if !send(&events, Event::Offline { site: site.clone(), reason }).await {
+                live_log(
+                    &site,
+                    format_args!("{reason}; retrying in {}s", wait.as_secs()),
+                );
+            } else if !send(
+                &events,
+                Event::Offline {
+                    site: site.clone(),
+                    reason,
+                },
+            )
+            .await
+            {
                 return;
             }
         } else {
@@ -719,7 +757,13 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
 
 /// Each target in turn, newest first, as `Event::Backfill`. A network
 /// failure ends the backfill; a file that does not decode is skipped.
-async fn backfill(cfg: Config, http: Http, site: String, events: Sender<Event>, targets: Vec<Listed>) {
+async fn backfill(
+    cfg: Config,
+    http: Http,
+    site: String,
+    events: Sender<Event>,
+    targets: Vec<Listed>,
+) {
     sleep(cfg.backfill_delay).await;
     let wanted = targets.len();
     let mut fetched = 0;
@@ -737,14 +781,20 @@ async fn backfill(cfg: Config, http: Http, site: String, events: Sender<Event>, 
                 fetched += 1;
             }
             Err(FileError::Net(fail)) => {
-                live_log(&site, format_args!("backfill {}: {fail}; stopping", file.key));
+                live_log(
+                    &site,
+                    format_args!("backfill {}: {fail}; stopping", file.key),
+                );
                 break;
             }
             Err(FileError::Decode(e)) => live_log(&site, format_args!("backfill: {e}")),
         }
         sleep(cfg.backfill_pace).await;
     }
-    live_log(&site, format_args!("backfilled {fetched} of {wanted} earlier files"));
+    live_log(
+        &site,
+        format_args!("backfilled {fetched} of {wanted} earlier files"),
+    );
 }
 
 #[cfg(test)]
@@ -770,10 +820,14 @@ mod tests {
     #[test]
     fn cache_keys_parse_to_time_quantity_and_elevation() {
         let no = Listed::parse(NO).unwrap();
-        assert_eq!((no.valid_ms, no.rank, no.lowest_deg), (utc(14, 9, 30), 0, 0.5));
+        assert_eq!(
+            (no.valid_ms, no.rank, no.lowest_deg),
+            (utc(14, 9, 30), 0, 0.5)
+        );
         let th = Listed::parse(&NO.replace("@DBZH.h5", "@TH.h5")).unwrap();
         assert_eq!(th.rank, 1);
-        let fi = Listed::parse("2026/09/14/FI/fikor/SCAN/fikor@20260914T0940@0.7@DBZH_TH_VRADH.h5").unwrap();
+        let fi = Listed::parse("2026/09/14/FI/fikor/SCAN/fikor@20260914T0940@0.7@DBZH_TH_VRADH.h5")
+            .unwrap();
         assert_eq!((fi.rank, fi.lowest_deg), (0, 0.7));
         let dk = Listed::parse(
             "2026/09/14/DK/dksin/PVOL/dksin@20260914T0940@0.49_0.66_0.96@DBZH_LDR_PHIDP_RHOHV_TH_VRAD_WRAD_ZDR.h5",
@@ -781,7 +835,10 @@ mod tests {
         .unwrap();
         assert_eq!((dk.rank, dk.lowest_deg), (0, 0.49));
         // No reflectivity, or not a radar file: skipped.
-        assert_eq!(Listed::parse("2026/09/14/NO/nohur/PVOL/nohur@20260914T0936@2.6_5.2@VRADH.h5"), None);
+        assert_eq!(
+            Listed::parse("2026/09/14/NO/nohur/PVOL/nohur@20260914T0936@2.6_5.2@VRADH.h5"),
+            None
+        );
         assert_eq!(Listed::parse("2026/09/14/NO/nohur/PVOL/readme.txt"), None);
         assert_eq!(Listed::parse("a/nohur@2026091409@0.5@DBZH.h5"), None);
         assert_eq!(Listed::parse("a/nohur@20260914T0930@x@DBZH.h5"), None);
@@ -818,24 +875,41 @@ mod tests {
 
     #[test]
     fn the_newest_time_waits_for_its_lowest_scan_and_its_dbzh() {
-        let before = [file(35, "DBZH_TH_VRADH", "0.5"), file(35, "DBZH_TH_VRADH", "0.7")];
+        let before = [
+            file(35, "DBZH_TH_VRADH", "0.5"),
+            file(35, "DBZH_TH_VRADH", "0.7"),
+        ];
         // FMI's 0.7° landed before the 0.5°: 09:40 is not ready.
         let early = choose(&[&before[..], &[file(40, "DBZH_TH_VRADH", "0.7")]].concat());
         assert_eq!(early.last().unwrap().valid_ms, utc(14, 9, 35));
         let ready = choose(
-            &[&before[..], &[file(40, "DBZH_TH_VRADH", "0.7"), file(40, "DBZH_TH_VRADH", "0.5")]].concat(),
+            &[
+                &before[..],
+                &[
+                    file(40, "DBZH_TH_VRADH", "0.7"),
+                    file(40, "DBZH_TH_VRADH", "0.5"),
+                ],
+            ]
+            .concat(),
         );
         assert_eq!(ready.last().unwrap().valid_ms, utc(14, 9, 40));
         // MET Norway's TH file lands first: wait for the DBZH one.
         let th_first = choose(&[file(35, "DBZH", "0.5"), file(40, "TH", "0.5")]);
         assert_eq!(th_first.last().unwrap().valid_ms, utc(14, 9, 35));
         // DMI's lowest tilt wanders a few hundredths: still complete.
-        let dk = choose(&[file(35, "DBZH_TH", "0.46_0.66"), file(40, "DBZH_TH", "0.51_0.65")]);
+        let dk = choose(&[
+            file(35, "DBZH_TH", "0.46_0.66"),
+            file(40, "DBZH_TH", "0.51_0.65"),
+        ]);
         assert_eq!(dk.last().unwrap().valid_ms, utc(14, 9, 40));
         // A lone time has nothing to wait for; an older incomplete time is
         // taken as it is once a later one exists.
         assert_eq!(choose(&[file(40, "TH", "0.7")]).len(), 1);
-        let healed = choose(&[file(35, "DBZH", "0.5"), file(40, "TH", "0.5"), file(45, "TH", "0.5")]);
+        let healed = choose(&[
+            file(35, "DBZH", "0.5"),
+            file(40, "TH", "0.5"),
+            file(45, "TH", "0.5"),
+        ]);
         assert_eq!(healed.len(), 3);
     }
 
@@ -865,7 +939,11 @@ mod tests {
         let live = utc(14, 9, 40);
         let known = [utc(14, 9, 35) - 50_000];
         let targets = backfill_targets(chosen, live, &known, 60);
-        assert_eq!(targets.len(), 58, "60 less the live one and a catalogued one");
+        assert_eq!(
+            targets.len(),
+            58,
+            "60 less the live one and a catalogued one"
+        );
         assert_eq!(targets[0].valid_ms, utc(14, 9, 30));
         assert!(targets.windows(2).all(|w| w[0].valid_ms > w[1].valid_ms));
     }
@@ -880,17 +958,28 @@ mod tests {
         assert_eq!(parse_listing(&last).unwrap().1, None);
         assert!(parse_listing("<Error><Code>NoSuchBucket</Code></Error>").is_err());
         assert_eq!(
-            list_url("B", "2026/09/14/NO/nohur/PVOL/", Some("x/nohur@20260914T0920"), Some("1/2+3=")),
+            list_url(
+                "B",
+                "2026/09/14/NO/nohur/PVOL/",
+                Some("x/nohur@20260914T0920"),
+                Some("1/2+3=")
+            ),
             "B/?list-type=2&prefix=2026%2F09%2F14%2FNO%2Fnohur%2FPVOL%2F\
              &start-after=x%2Fnohur%4020260914T0920&continuation-token=1%2F2%2B3%3D"
         );
-        assert_eq!(day_prefix("FI/fikor/SCAN", utc(14, 23, 59)), "2026/09/14/FI/fikor/SCAN/");
+        assert_eq!(
+            day_prefix("FI/fikor/SCAN", utc(14, 23, 59)),
+            "2026/09/14/FI/fikor/SCAN/"
+        );
     }
 
     #[test]
     fn ords_spec_is_five_minutes_and_sixty_frames() {
         assert_eq!(SPEC.cadence, Duration::from_secs(300));
-        assert_eq!(SPEC.staleness, Staleness::from_cadence(Duration::from_secs(300)));
+        assert_eq!(
+            SPEC.staleness,
+            Staleness::from_cadence(Duration::from_secs(300))
+        );
         assert_eq!(SILENT_AFTER_MS, 30 * 60 * 1000);
         assert_eq!(SPEC.backfill, crate::catalog::RING);
     }
@@ -948,10 +1037,16 @@ mod tests {
                         }
                     }
                     let text = String::from_utf8_lossy(&head).into_owned();
-                    let path = text.split_whitespace().nth(1).unwrap_or_default().to_owned();
-                    let range = text
-                        .lines()
-                        .find_map(|l| l.to_lowercase().strip_prefix("range: bytes=").map(str::to_owned));
+                    let path = text
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let range = text.lines().find_map(|l| {
+                        l.to_lowercase()
+                            .strip_prefix("range: bytes=")
+                            .map(str::to_owned)
+                    });
                     let (status, headers, body) = if let Some(query) = path.strip_prefix("/?") {
                         let q: HashMap<String, String> = query
                             .split('&')
@@ -970,11 +1065,15 @@ mod tests {
                         if let Some(code) = fail {
                             (code, String::new(), b"<Error/>".to_vec())
                         } else {
-                            let from: usize = q.get("continuation-token").map_or(0, |t| t.parse().unwrap());
+                            let from: usize = q
+                                .get("continuation-token")
+                                .map_or(0, |t| t.parse().unwrap());
                             let matching: Vec<&String> = keys
                                 .iter()
                                 .filter(|k| k.starts_with(&q["prefix"]))
-                                .filter(|k| q.get("start-after").is_none_or(|a| k.as_str() > a.as_str()))
+                                .filter(|k| {
+                                    q.get("start-after").is_none_or(|a| k.as_str() > a.as_str())
+                                })
                                 .collect();
                             let end = (from + page).min(matching.len());
                             let mut xml = String::from("<ListBucketResult>");
@@ -984,7 +1083,9 @@ mod tests {
                             let more = end < matching.len();
                             xml += &format!("<IsTruncated>{more}</IsTruncated>");
                             if more {
-                                xml += &format!("<NextContinuationToken>{end}</NextContinuationToken>");
+                                xml += &format!(
+                                    "<NextContinuationToken>{end}</NextContinuationToken>"
+                                );
                             }
                             xml += "</ListBucketResult>";
                             (200, String::new(), xml.into_bytes())
@@ -993,7 +1094,10 @@ mod tests {
                         let key = path.trim_start_matches('/').to_owned();
                         let key = decode_query(&key);
                         let bytes = fake_file(&key);
-                        let (a, b) = range.as_deref().and_then(|r| r.trim().split_once('-')).unwrap();
+                        let (a, b) = range
+                            .as_deref()
+                            .and_then(|r| r.trim().split_once('-'))
+                            .unwrap();
                         let a: usize = a.parse().unwrap();
                         let b = b.parse::<usize>().unwrap().min(bytes.len() - 1);
                         log.lock().unwrap().push(format!("get {key} {a}-{b}"));
@@ -1031,7 +1135,9 @@ mod tests {
             .map_err(|e| e.to_string())?
             .and_utc()
             .timestamp_millis();
-        reader.seek(SeekFrom::Start(150_000)).map_err(|e| e.to_string())?;
+        reader
+            .seek(SeekFrom::Start(150_000))
+            .map_err(|e| e.to_string())?;
         let mut buf = vec![0; 1000];
         reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
         let start_ms = valid - 54_000;
@@ -1072,9 +1178,13 @@ mod tests {
             let (day, stamp) = (format_ms(t, "%Y/%m/%d"), format_ms(t, "%Y%m%dT%H%M"));
             let later = format_ms(t + 60_000, "%Y%m%dT%H%M");
             for q in ["DBZH", "TH"] {
-                keys.push(format!("{day}/NO/nohur/PVOL/nohur@{stamp}@0.5_1.0_1.6@{q}.h5"));
+                keys.push(format!(
+                    "{day}/NO/nohur/PVOL/nohur@{stamp}@0.5_1.0_1.6@{q}.h5"
+                ));
             }
-            keys.push(format!("{day}/NO/nohur/PVOL/nohur@{later}@2.6_5.2@VRADH.h5"));
+            keys.push(format!(
+                "{day}/NO/nohur/PVOL/nohur@{later}@2.6_5.2@VRADH.h5"
+            ));
             t += CADENCE_MS;
         }
         keys.sort();
@@ -1094,8 +1204,12 @@ mod tests {
 
     fn describe(event: &Event) -> String {
         match event {
-            Event::Sweep { sweep, .. } => format!("sweep {}", format_ms(sweep.start_ms(), "%H:%M:%S")),
-            Event::Backfill { sweep, .. } => format!("backfill {}", format_ms(sweep.start_ms(), "%H:%M:%S")),
+            Event::Sweep { sweep, .. } => {
+                format!("sweep {}", format_ms(sweep.start_ms(), "%H:%M:%S"))
+            }
+            Event::Backfill { sweep, .. } => {
+                format!("backfill {}", format_ms(sweep.start_ms(), "%H:%M:%S"))
+            }
             Event::Current { .. } => "current".into(),
             Event::Offline { reason, .. } => format!("offline {reason}"),
             Event::Silent { reason, .. } => format!("silent {reason}"),
@@ -1147,7 +1261,12 @@ mod tests {
 
     #[test]
     fn the_poller_reads_the_newest_dbzh_then_backfills_sixty_frames() {
-        let backfills = |events: &[Event]| events.iter().filter(|e| matches!(e, Event::Backfill { .. })).count();
+        let backfills = |events: &[Event]| {
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::Backfill { .. }))
+                .count()
+        };
         let (events, served) = run(
             hurum(utc(14, 0, 0), utc(14, 9, 40)),
             None,
@@ -1161,16 +1280,26 @@ mod tests {
         assert_eq!(backfills(&events), 59, "{described:?}");
         assert_eq!(described[1], "backfill 09:34:06");
         assert_eq!(described.last().unwrap(), "backfill 04:44:06");
-        assert_eq!(described.len(), 60, "nothing more once caught up: {described:?}");
+        assert_eq!(
+            described.len(),
+            60,
+            "nothing more once caught up: {described:?}"
+        );
         // The first listing reaches back 62 cadences, in two pages of the
         // stand-in's 100 keys; later ones start two cadences before the
         // live file and fit one page.
         let lists: Vec<&String> = served.iter().filter(|s| s.starts_with("list")).collect();
-        let first = "list 2026/09/14/NO/nohur/PVOL/ after=2026/09/14/NO/nohur/PVOL/nohur@20260914T0436";
+        let first =
+            "list 2026/09/14/NO/nohur/PVOL/ after=2026/09/14/NO/nohur/PVOL/nohur@20260914T0436";
         assert_eq!(lists[0], first);
         assert_eq!(*lists[1], format!("{first} token=100"));
         assert!(lists.len() > 3, "{lists:?}");
-        assert!(lists[2..].iter().all(|l| l.ends_with("nohur@20260914T0930")), "{lists:?}");
+        assert!(
+            lists[2..]
+                .iter()
+                .all(|l| l.ends_with("nohur@20260914T0930")),
+            "{lists:?}"
+        );
         // Only DBZH files were read, each once, in a few ranges.
         let gets: Vec<&String> = served.iter().filter(|s| s.starts_with("get")).collect();
         assert!(gets.iter().all(|g| g.contains("@DBZH.h5")), "{gets:?}");
@@ -1182,7 +1311,9 @@ mod tests {
 
     #[test]
     fn a_catalogued_newest_file_is_current_and_not_fetched() {
-        let cached: Vec<i64> = (0..60).map(|i| utc(14, 9, 40) - 54_000 - i * CADENCE_MS).collect();
+        let cached: Vec<i64> = (0..60)
+            .map(|i| utc(14, 9, 40) - 54_000 - i * CADENCE_MS)
+            .collect();
         let (events, served) = run(
             hurum(utc(14, 0, 0), utc(14, 9, 40)),
             None,
@@ -1211,7 +1342,10 @@ mod tests {
         assert!(served.contains(
             &"list 2026/09/14/NO/nohur/PVOL/ after=2026/09/14/NO/nohur/PVOL/nohur@20260914T1856".into()
         ));
-        assert!(served.contains(&"list 2026/09/15/NO/nohur/PVOL/ after=-".into()), "{served:?}");
+        assert!(
+            served.contains(&"list 2026/09/15/NO/nohur/PVOL/ after=-".into()),
+            "{served:?}"
+        );
     }
 
     #[test]
@@ -1230,7 +1364,10 @@ mod tests {
             .filter(|e| matches!(e, Event::Silent { .. }))
             .map(describe)
             .collect();
-        assert_eq!(silent, ["silent nohur has published nothing since 2026-09-14 09:00Z"]);
+        assert_eq!(
+            silent,
+            ["silent nohur has published nothing since 2026-09-14 09:00Z"]
+        );
         // The last file still shows.
         assert_eq!(describe(&events[0]), "sweep 08:59:06");
         let (events, served) = run(
@@ -1242,7 +1379,10 @@ mod tests {
             Duration::from_millis(200),
         );
         let described: Vec<String> = events.iter().map(describe).collect();
-        assert_eq!(described, ["silent ORD's cache holds no nohur file from the last 5 hours"]);
+        assert_eq!(
+            described,
+            ["silent ORD's cache holds no nohur file from the last 5 hours"]
+        );
         assert!(!served.iter().any(|s| s.starts_with("get")));
     }
 

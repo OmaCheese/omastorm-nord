@@ -35,10 +35,6 @@ pub const EARTH_M: f64 = 6_371_000.0 * 4.0 / 3.0;
 /// A scan's ray farther than this from an output ray's azimuth does not
 /// reach it (the texture's own gap rule, `sweep::GAP_DEG`).
 pub const GAP_DEG: f64 = 0.75;
-/// Frames any product but the lowest scan backfills after a switch: two
-/// hours, what both clients buffer. Its ring still fills to
-/// `catalog::RING` as live frames arrive.
-pub const BACKFILL: usize = 24;
 /// Products other than the lowest scan a station keeps in its catalog: the
 /// current one and the one before (`catalog::Catalog::keep`).
 pub const KEPT: usize = 2;
@@ -170,13 +166,14 @@ impl Want {
         }
     }
 
-    /// Frames a switch backfills: the provider's own depth for the lowest
-    /// scan, `BACKFILL` for any other product.
-    pub fn backfill(&self, provider: usize) -> usize {
+    /// Frames a switch backfills, by the provider's depths (S26): `lowest`
+    /// for the lowest scan, `product` (at most `lowest`) for any other. A
+    /// product's ring still fills to `catalog::RING` as live frames arrive.
+    pub fn backfill(&self, lowest: usize, product: usize) -> usize {
         if self.is_lowest() {
-            provider
+            lowest
         } else {
-            provider.min(BACKFILL)
+            product.min(lowest)
         }
     }
 }
@@ -852,8 +849,20 @@ mod tests {
         assert_eq!(variant_of("popover-test-0"), "e0");
         assert_eq!(variant_of("vara-loading"), "e0");
         assert_eq!(variant_of("x-abc"), "e0");
-        assert_eq!(Want::Lowest.backfill(60), 60);
-        assert_eq!(Want::ColMax.backfill(60), 24);
+        use crate::providers::ord;
+        use crate::smhi_live as smhi;
+        let smhi_depths = (smhi::BACKFILL, smhi::PRODUCT_BACKFILL);
+        assert_eq!(Want::Lowest.backfill(smhi_depths.0, smhi_depths.1), 60);
+        assert_eq!(Want::ColMax.backfill(smhi_depths.0, smhi_depths.1), 12);
+        assert_eq!(
+            Want::ColMax.backfill(ord::BACKFILL, ord::PRODUCT_BACKFILL),
+            24
+        );
+        assert_eq!(
+            Want::ColMax.backfill(10, 24),
+            10,
+            "never deeper than the lowest scan"
+        );
         assert_eq!(nearest_index(&[0.5, 1.0, 2.4, 3.2], 2.6), Some(2));
         assert_eq!(
             nearest_index(&[0.5, 1.0], 0.75),

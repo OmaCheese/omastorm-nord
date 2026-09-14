@@ -63,6 +63,10 @@ const CADENCE_MS: i64 = 5 * 60 * 1000;
 /// Frames the loop holds after a join, counting the live one. The cache has
 /// no request limit, so the full ring (`catalog::RING`), like SMHI's.
 pub const BACKFILL: usize = 60;
+/// Frames any other product backfills after a switch: two hours, what the
+/// clients buffer. A file is one request (`plan_for`), so deeper than
+/// SMHI's `PRODUCT_BACKFILL` (S26).
+pub const PRODUCT_BACKFILL: usize = 24;
 /// Between listing polls. Files land 1.5–6 minutes after their nominal time.
 const POLL: Duration = Duration::from_secs(60);
 const MAX_BACK_OFF: Duration = Duration::from_secs(600);
@@ -809,7 +813,12 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
                 http.clone(),
                 site.clone(),
                 events.clone(),
-                backfill_targets(chosen, live.valid_ms, &known, cfg.want.backfill(BACKFILL)),
+                backfill_targets(
+                    chosen,
+                    live.valid_ms,
+                    &known,
+                    cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL),
+                ),
             ))));
         }
 
@@ -1449,7 +1458,7 @@ mod tests {
     /// kind (S26), from the same file: no request more.
     #[test]
     fn a_product_read_sends_its_lowest_scan_too() {
-        let depth = Want::ColMax.backfill(BACKFILL);
+        let depth = PRODUCT_BACKFILL;
         let (events, served) = run_as(
             (Want::ColMax, stub_product),
             hurum(utc(14, 0, 0), utc(14, 9, 40)),

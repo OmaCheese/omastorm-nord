@@ -70,6 +70,11 @@ const OFFLINE_AFTER: u32 = 2;
 /// Frames the loop holds after a join, counting the live one (DEC-2 passed:
 /// a volume costs ~100 KB, so 60 of them is ~6 MB). Matches `catalog::RING`.
 pub const BACKFILL: usize = 60;
+/// Frames any other product backfills after a switch (S26): an hour. A
+/// product volume costs ~39 range requests and ~740 KB (all ten tilts for
+/// CAPPI and CMAX, S20), so 24 frames were ~950 requests and 18 MB a
+/// switch; its ring still fills to 60 live.
+pub const PRODUCT_BACKFILL: usize = 12;
 /// The backfill starts this long after a join, so a hand-off passed while
 /// panning costs nothing.
 const BACKFILL_DELAY: Duration = Duration::from_secs(3);
@@ -1374,8 +1379,8 @@ async fn backfill(
             return;
         }
     };
-    // The lowest scan backfills the whole ring, another product two hours.
-    let depth = cfg.want.backfill(BACKFILL);
+    // The lowest scan backfills the whole ring, another product an hour.
+    let depth = cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL);
     if needs_yesterday(listed.len(), depth) {
         match day(live_ms - 24 * 60 * 60 * 1000).await {
             Ok(earlier) => listed.extend(earlier),
@@ -1963,8 +1968,11 @@ mod tests {
             let mut buf = vec![0; len];
             reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
         }
-        let start_ms = valid + 3_000;
-        Ok(Scan::Polar(Sweep {
+        Ok(Scan::Polar(stub_sweep(valid + 3_000)))
+    }
+
+    fn stub_sweep(start_ms: i64) -> Sweep {
+        Sweep {
             rays: vec![Ray {
                 azimuth_deg: 0.5,
                 elevation_deg: 0.5,
@@ -1979,7 +1987,17 @@ mod tests {
             scale: 2.0,
             offset: 66.0,
             code1_status: crate::sweep::OUTSIDE_COVERAGE,
-        }))
+        }
+    }
+
+    /// `stub_decode` for a product: the product, with the lowest scan it
+    /// read on the way (`products::decode_volume`).
+    fn stub_product(reader: RangeReader, want: Want) -> Result<Scan, String> {
+        let Scan::Polar(sweep) = stub_decode(reader, want)? else {
+            unreachable!()
+        };
+        let lowest = stub_sweep(sweep.start_ms);
+        Ok(Scan::Product(sweep, want, Some(Box::new(lowest))))
     }
 
     fn config(base: String) -> Config {
@@ -2025,10 +2043,34 @@ mod tests {
         until: impl Fn(&[Event]) -> bool,
         linger: Duration,
     ) -> (Vec<Event>, Vec<String>) {
+        run_as(
+            (Want::Lowest, stub_decode),
+            site,
+            handler,
+            cached,
+            until,
+            linger,
+        )
+    }
+
+    /// `run` for a poller following `want` through `decode`.
+    fn run_as(
+        (want, decode): (Want, Decode),
+        site: &'static str,
+        handler: Handler,
+        cached: Vec<i64>,
+        until: impl Fn(&[Event]) -> bool,
+        linger: Duration,
+    ) -> (Vec<Event>, Vec<String>) {
         runtime().block_on(async {
             let (base, served) = serve(handler).await;
             let (tx, mut rx) = mpsc::channel(16);
-            let poller = tokio::spawn(poll_with(config(base), site.into(), tx, cached));
+            let cfg = Config {
+                want,
+                decode,
+                ..config(base)
+            };
+            let poller = tokio::spawn(poll_with(cfg, site.into(), tx, cached));
             let mut events = Vec::new();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
             while !until(&events) {
@@ -2052,6 +2094,44 @@ mod tests {
     /// publishes 16:40, overtakes the lagging listing by probing 16:45 and
     /// 16:50, then backfills the rest of the 60-frame loop. After that,
     /// conditional polls fetch nothing more.
+    /// Another product backfills an hour (S26: a product volume costs ~39
+    /// requests), and every read that decoded the lowest scan on the way
+    /// sends it too, as a second event, from the same volume.
+    #[test]
+    fn a_product_backfills_an_hour_and_sends_its_lowest_scans_too() {
+        let (events, served) = run_as(
+            (Want::ColMax, stub_product),
+            "vara",
+            smhi("vara", VARA, VARA_DAY),
+            Vec::new(),
+            |events| events.len() >= 2 * PRODUCT_BACKFILL,
+            Duration::from_millis(300),
+        );
+        let seen: Vec<String> = events.iter().map(describe).collect();
+        assert_eq!(seen.len(), 2 * PRODUCT_BACKFILL, "{seen:?}");
+        assert_eq!(seen[0], "sweep 2026-09-13 16:40Z true");
+        assert_eq!(seen[5], "sweep 2026-09-13 16:50Z true");
+        assert_eq!(seen[6], "backfill 2026-09-13 16:35Z");
+        assert_eq!(seen[2 * PRODUCT_BACKFILL - 1], "backfill 2026-09-13 15:55Z");
+        for (i, pair) in events.chunks(2).enumerate() {
+            let scans = pair.iter().map(|e| match e {
+                Event::Sweep { sweep, .. } | Event::Backfill { sweep, .. } => sweep,
+                _ => panic!("{}", describe(e)),
+            });
+            let [product, lowest] = scans.collect::<Vec<_>>()[..] else {
+                unreachable!()
+            };
+            assert!(
+                matches!(product, Scan::Product(_, Want::ColMax, None)),
+                "{i}"
+            );
+            assert!(matches!(lowest, Scan::Polar(_)), "{i}");
+            assert_eq!(seen[2 * i], seen[2 * i + 1]);
+        }
+        let volumes = served.iter().filter(|s| s.contains(".h5")).count();
+        assert_eq!(volumes, PRODUCT_BACKFILL * 3, "one read per pair");
+    }
+
     #[test]
     fn the_poller_publishes_the_newest_volume_then_backfills_sixty_frames() {
         let (events, served) = run(

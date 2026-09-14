@@ -693,8 +693,12 @@ selected `state.product` keeps the choice for the next radar.
 
 **History.** The catalog keeps each radar's frames per product. After a
 switch the lowest scan backfills its 60 frames as before; any other
-product backfills the newest 24 (two hours, what the clients buffer), and
-its ring fills to 60 as live frames arrive. The engine keeps a station's
+product backfills the newest 12 on an SMHI radar (an hour; each of its
+volumes costs about 39 range requests) and the newest 24 on an ORD radar
+(two hours, one request a file), and its ring fills to 60 as live frames
+arrive. CAPPI, CMAX and HYBRID read the lowest scan anyway, so each of
+their frames also adds the lowest scan's frame of the same volume to the
+station's `-e0` ring, at no extra request. The engine keeps a station's
 lowest scan and at most two other products (the current one and the one
 before); choosing a third deletes the oldest's frames. Keep-warm stations
 (`OMASTORM_WARM`) keep their lowest scan warm whatever product is chosen.

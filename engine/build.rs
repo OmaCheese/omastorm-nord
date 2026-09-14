@@ -202,6 +202,25 @@ fn write_gazetteer(raw: &Path, out: &Path) {
         } else {
             name
         };
+        // Search-only aliases: the GeoNames primary and ASCII names and the
+        // Latin-script alternate names, so "Gothenburg" finds Göteborg and
+        // "Helsingfors" Helsinki. Archaic forms come along too; they only
+        // match below the place's own name. Codes (GOT, CPH) are dropped.
+        let mut aliases: Vec<&str> = Vec::new();
+        for alias in [cols[1], cols[2]].into_iter().chain(cols[3].split(',')) {
+            let latin = !alias.is_empty()
+                && alias.chars().all(|c| {
+                    (c.is_alphabetic() && (c as u32) < 0x250) || matches!(c, ' ' | '-' | '.' | '\'')
+                });
+            let code = alias.len() <= 4 && alias.chars().all(|c| c.is_ascii_uppercase());
+            if latin
+                && !code
+                && alias.to_lowercase() != name.to_lowercase()
+                && !aliases.contains(&alias)
+            {
+                aliases.push(alias);
+            }
+        }
         let class = if fcode == "PPLC" {
             "capital"
         } else if pop >= 100_000.0 {
@@ -240,6 +259,7 @@ fn write_gazetteer(raw: &Path, out: &Path) {
             "rank": rank,
             "region": region,
             "country": country,
+            "aliases": aliases,
         }));
     }
     // Vara hosts the golden SMHI radar but sits under GeoNames' 5000 cut.

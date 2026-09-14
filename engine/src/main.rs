@@ -1,5 +1,6 @@
 mod catalog;
 mod composite;
+mod netstats;
 mod odim;
 mod osm;
 mod protocol;
@@ -622,6 +623,8 @@ struct Shared {
     /// The last `state` line sent, so a tick that changed nothing is not
     /// re-sent.
     last_broadcast: String,
+    /// The selected station and its condition as engine.log last said.
+    logged_condition: Option<(String, ConnectionStatus)>,
 }
 impl Shared {
     fn snapshot(&mut self) -> String {
@@ -1025,6 +1028,7 @@ impl Shared {
     }
     fn broadcast(&mut self) {
         let message = self.snapshot();
+        self.log_condition();
         if message == self.last_broadcast {
             return;
         }
@@ -1032,6 +1036,25 @@ impl Shared {
         // Never let a stalled UI hold up other clients. Its writer closes on EOF.
         self.clients
             .retain(|(_, client)| client.try_send(message.clone()).is_ok());
+    }
+    /// One engine.log line whenever the selected station's condition
+    /// changes (`scripts/soak-report.sh` reads them as episodes).
+    fn log_condition(&mut self) {
+        let now = (self.state.site.id.clone(), self.state.connection.status);
+        if self.state.source != Source::Live
+            || now.0.is_empty()
+            || self.logged_condition.as_ref() == Some(&now)
+        {
+            return;
+        }
+        eprintln!(
+            "{} Status {}: {} (age {}s)",
+            iso(now_ms()),
+            now.0,
+            format!("{:?}", now.1).to_lowercase(),
+            self.state.connection.age_seconds
+        );
+        self.logged_condition = Some(now);
     }
     /// Carry the fetch path's condition into `state.basemap.osm`; a change
     /// is broadcast like any other.
@@ -1456,7 +1479,7 @@ fn report(shared: &Mutex<Shared>, site: &str, reason: &str, condition: Connectio
     if shared.state.site.id != site || shared.state.source != Source::Live {
         return;
     }
-    eprintln!("Live {site}: {reason}");
+    eprintln!("{} Live {site}: {reason}", iso(now_ms()));
     if set(&mut shared.state.connection.status, condition) {
         shared.broadcast();
     }
@@ -1966,6 +1989,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         pending: None,
         wake: wake.clone(),
         last_broadcast: String::new(),
+        logged_condition: None,
     }));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -1977,6 +2001,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     runtime.spawn(live_events(shared.clone(), event_rx));
     runtime.spawn(player(shared.clone(), wake));
+    runtime.spawn(netstats::report(netstats::period()));
     shared.lock().unwrap().keep_warm();
     let cleanup_shared = shared.clone();
     runtime.spawn(async move {

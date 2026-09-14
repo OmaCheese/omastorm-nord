@@ -289,6 +289,7 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 {"type":"search_places","query":"lidköping","lat":58.3,"lon":12.8}
 {"type":"play"}  {"type":"pause"}  {"type":"step","delta":-1}  {"type":"seek","id":"..."}
 {"type":"set_product","product":"REF","elevationIndex":0}
+{"type":"set_product","product":"CAPPI","heightM":3000}
 {"type":"tiles_needed","z":11,"x0":469,"y0":807,"x1":472,"y1":810}
 ```
 
@@ -339,8 +340,10 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
   `region` is the admin-1 name (a Swedish county, a Norwegian county);
   `country` is the ISO 3166-1 alpha-2 code. Either may be omitted when empty.
 - `set_product` chooses the product radars show: `product` is an id from
-  `hello.products`, `elevationIndex` (optional, 0 when absent) an index
-  into the selected station's `elevations`, used with `REF` only. An
+  `hello.products` (or one of the aliases `CAPPI1`, `CAPPI2`),
+  `elevationIndex` (optional, 0 when absent) an index into the selected
+  station's `elevations`, used with `REF` only, and `heightM` (optional,
+  S29) the height above sea level in metres, used with `CAPPI` only. An
   unsupported selection returns an `error` to its sender and retains the
   current frame. The rules are in [Products](#products).
 - `step` moves `delta` entries along `timeline` from the frame shown, stopping
@@ -628,19 +631,21 @@ frame is the composite, whatever product is chosen.
 
 ```json
 "products":[{"id":"REF","name":"Lowest scan"},{"id":"HYBRID","name":"Clear view"},
-            {"id":"CAPPI1","name":"Height 1 km"},{"id":"CAPPI2","name":"Height 2 km"},
-            {"id":"CMAX","name":"Column max"}]
+            {"id":"CAPPI","name":"Height"},{"id":"CMAX","name":"Column max"}]
 ```
+
+Before S29 the list held `CAPPI1` "Height 1 km" and `CAPPI2` "Height 2 km"
+instead of `CAPPI`; they are now aliases `set_product` still accepts (below).
 
 Each `hello.sites[]` entry names what the station can show and its angles:
 
 ```json
-"products":["REF","CAPPI1","CAPPI2","CMAX"],
+"products":["REF","CAPPI","CMAX"],
 "elevations":[{"deg":0.5,"beamKm50":0.6,"beamKm100":1.5},{"deg":1.0,"beamKm50":1.0,"beamKm100":2.3}]
 ```
 
 - `products`: a subset of `hello.products`' ids, in that order; `[]` for a
-  grid station. Every radar can make `REF`. `CAPPI1`, `CAPPI2` and `CMAX`
+  grid station. Every radar can make `REF`. `CAPPI` and `CMAX`
   are offered where one file holds the radar's every angle and the engine
   knows them (SMHI, MET Norway, DMI); FMI's radars, whose files hold one
   angle each in ORD's cache, offer `REF` alone, with `elevations` `[]`.
@@ -654,9 +659,11 @@ Each `hello.sites[]` entry names what the station can show and its angles:
   chosen one, and `frame.elevationDeg` says which it was. Empty when the
   engine does not know them.
 
-`state.product` is the chosen product, `{"id":"CAPPI1","elevationIndex":0}`,
-always sent. It is shared engine state, like the station: one client's
-`set_product` changes it for every client of that engine.
+`state.product` is the chosen product, `{"id":"CMAX","elevationIndex":0}`,
+always sent; for `CAPPI` it also carries the height,
+`{"id":"CAPPI","elevationIndex":0,"heightM":3000}` (S29; `heightM` is sent
+with `CAPPI` only). It is shared engine state, like the station: one
+client's `set_product` changes it for every client of that engine.
 
 `frame.product`, `productName`, and `elevationDeg` describe the frame on
 screen:
@@ -665,20 +672,27 @@ screen:
 |---|---|---|---|
 | `REF` | `Reflectivity` | one scan angle: the lowest (index 0), or the one chosen | that angle |
 | `HYBRID` | `Clear view` | per azimuth, the lowest angle the terrain does not block | the lowest angle (placement only) |
-| `CAPPI1`, `CAPPI2` | `Height 1 km`, `Height 2 km` | pseudo-CAPPI: per gate, the angle whose beam centre is nearest 1 (2) km above the antenna | the lowest angle (placement only) |
+| `CAPPI` | `Height 3 km`, `Height 3.5 km`, … | per gate, of the angles whose beam holds `heightM` above sea level, the one whose beam centre is nearest it; none: no data ("no radar at this height") | the lowest angle (placement only) |
 | `CMAX` | `Column max` | per gate, the strongest return of any angle above it | the lowest angle (placement only) |
 
 A client shows an angle beside the product only for `REF`. The texture
 format, `units` (dBZ), palette, bounds, `scale` and `offset` are the same
 for every product, so nothing else in a client changes.
 
-**`set_product`.** `{"type":"set_product","product":"CAPPI1"}`, or
-`{"type":"set_product","product":"REF","elevationIndex":3}` for one angle.
-It is answered with an `error`, and nothing changes, when the id is not in
-`hello.products`, no station or a grid station is selected, the selected
-station cannot make it, or `elevationIndex` is not an index of its
-`elevations` (any index but 0 with another product). Otherwise, when it
-differs from `state.product`, `state.product` changes and the selected
+**`set_product`.** `{"type":"set_product","product":"CMAX"}`,
+`{"type":"set_product","product":"REF","elevationIndex":3}` for one angle,
+or `{"type":"set_product","product":"CAPPI","heightM":3000}` for a height.
+`heightM` is metres above sea level, 500 to 12,000 in steps of 500; absent,
+it is 2,000. The aliases `CAPPI1` and `CAPPI2` are `CAPPI` at 1,000 and
+2,000 m (any `heightM` sent with them is ignored), so a client that still
+offers them keeps working; `state.product` then says `CAPPI`.
+It is answered with an `error`, and nothing changes, when the id is neither
+in `hello.products` nor an alias, no station or a grid station is selected,
+the selected station cannot make it, `elevationIndex` is not an index of its
+`elevations` (any index but 0 with another product), or `heightM` is outside
+500–12,000, not a multiple of 500, or sent with a product other than `CAPPI`.
+Otherwise, when it differs from `state.product` (another height is another
+choice), `state.product` changes and the selected
 radar's `timeline` becomes its history of that product: the newest frame
 it has shows at once, or the loading placeholder with `connection.status`
 `loading`; its poller fetches the newest volume for the product and then
@@ -687,8 +701,9 @@ changes nothing.
 
 **Station switches.** The product carries over a `select_site` or a
 hand-off. A single angle maps to the new radar's angle nearest in degrees;
-a product the new radar cannot make falls back to `REF` index 0; either
-way `state.product` says what is in effect. While a grid station is
+a product the new radar cannot make falls back to `REF` index 0; a height
+stays the same height above sea level, so over a radar on higher ground it
+reaches less far; either way `state.product` says what is in effect. While a grid station is
 selected `state.product` keeps the choice for the next radar.
 
 **History.** The catalog keeps each radar's frames per product. After a
@@ -721,8 +736,20 @@ with the beam centre `h = R cos(e) / cos(e + s/R) − R` above the antenna.
   its nearest gate, `round((r − firstGateM) / gateSpacingM)` at that scan's
   `r`, is one of its gates; the scan's value there is that gate on its ray
   nearest the output ray's azimuth (within 0.75°; none: code 1).
-- `CAPPI1`, `CAPPI2`: of the scans covering the gate, the one whose `h` is
-  nearest 1,000 (2,000) m, the lower angle on a tie; its value.
+- `CAPPI` at `heightM`: the target is `H = heightM − altM` above the
+  antenna (`altM` from `hello.sites`). The point at the gate's ground
+  distance `s` and height `H` is seen from the antenna at the elevation
+  `eH = atan2((R + H) cos(s/R) − R, (R + H) sin(s/R))`. A scan's beam
+  *holds* the height when `|eH − e| ≤ 0.5°` (half of a nominal 1° beam: the
+  beam is about 1.7 km thick at 100 km). Of the scans covering the gate
+  whose beam holds the height, the one whose `h` is nearest `H`, the lower
+  angle on a tie; its value. None: code 1, no data, drawn as "no radar at
+  this height", never code 0 ("no rain"). So a low height ends where even
+  the lowest beam's lower edge passes above it (1 km at Vara: ~115 km), a
+  height above the highest angle's upper edge is empty over the radar, and
+  between two far-apart high angles it has gaps. The texel is code 1 with G
+  bit 4, like any `nodata`; a client that knows the frame is `CAPPI` may
+  draw such texels as a faint hatch (S29) rather than nothing.
 - `CMAX`: of the scans covering the gate, the highest measured code (2 and
   up); none measured: 0 if any is below threshold, else 1.
 - `HYBRID`: each radar's blockage table (`engine/data/blockage.json`,
@@ -820,3 +847,18 @@ Additive since (S20, still version 2):
   (`frame.product` other than `REF`, or `REF` at another angle); a client
   that ignores `product` still draws it correctly, and shows its
   `productName`.
+
+Additive since (S29, still version 2):
+
+- `hello.products` lists `CAPPI` "Height" in place of `CAPPI1` and
+  `CAPPI2`, and so does `hello.sites[].products`. `set_product` still
+  accepts `CAPPI1` and `CAPPI2`, as `CAPPI` at 1,000 and 2,000 m.
+- `set_product` takes an optional `heightM` (500–12,000 m above sea level,
+  steps of 500) with `CAPPI`; `state.product.heightM` is sent with `CAPPI`.
+- A height is above sea level (the antenna's `altM` plus the beam's height),
+  where `CAPPI1`/`CAPPI2` were above the antenna; where no scan's beam holds
+  the height the gate is no data (code 1), where before the nearest scan
+  filled it whatever its distance from the height. `frame.product` is
+  `CAPPI` and `productName` names the height (`Height 3.5 km`).
+- A client facing an older engine sees `CAPPI1`/`CAPPI2` in `hello` and no
+  `heightM`, and offers those two heights as before.

@@ -980,4 +980,206 @@ mod tests {
         assert_eq!(clear.rays[10].codes[5], 50);
         assert_eq!(clear.rays[200].codes[5], 1);
     }
+
+    fn polar(provider: ProviderId, country: &str) -> Station {
+        Station {
+            id: "x".into(),
+            provider,
+            country: country.into(),
+            kind: SiteKind::Polar,
+            ..Station::default()
+        }
+    }
+
+    #[test]
+    fn what_each_station_offers() {
+        let (products, elevations) = for_station(&polar(ProviderId::Smhi, "SE"));
+        assert_eq!(
+            products,
+            ["REF", "CAPPI1", "CAPPI2", "CMAX"],
+            "no blockage table: no HYBRID"
+        );
+        assert_eq!(elevations.len(), 10);
+        assert_eq!(
+            elevations[0],
+            Elevation {
+                deg: 0.5,
+                beam_km50: 0.6,
+                beam_km100: 1.5
+            }
+        );
+        assert_eq!(for_station(&polar(ProviderId::Ord, "NO")).1.len(), 12);
+        assert_eq!(for_station(&polar(ProviderId::Ord, "DK")).1[1].deg, 0.7);
+        // FMI: one file per angle, so the lowest scan alone.
+        assert_eq!(
+            for_station(&polar(ProviderId::Ord, "FI")),
+            (vec!["REF"], vec![])
+        );
+        let grid = Station {
+            kind: SiteKind::Grid,
+            ..polar(ProviderId::Smhi, "SE")
+        };
+        assert_eq!(for_station(&grid), (vec![], vec![]));
+        let choice = |id: &str, index| Choice {
+            id: id.into(),
+            elevation_index: index,
+        };
+        let smhi = polar(ProviderId::Smhi, "SE");
+        assert_eq!(want_for(&smhi, &choice("CMAX", 0)), Some(Want::ColMax));
+        assert_eq!(want_for(&smhi, &choice("REF", 5)), Some(Want::Angle(4.0)));
+        assert_eq!(want_for(&smhi, &choice("HYBRID", 0)), None);
+        assert_eq!(
+            want_for(&polar(ProviderId::Ord, "FI"), &choice("CMAX", 0)),
+            None
+        );
+        assert_eq!(
+            want_for(&grid, &choice("REF", 0)),
+            None,
+            "a composite has no products"
+        );
+        assert_eq!(angle_deg(&smhi, &choice("REF", 5)), Some(4.0));
+        assert_eq!(angle_deg(&smhi, &choice("CMAX", 0)), None);
+    }
+
+    #[test]
+    fn a_switch_carries_the_product_over() {
+        let choice = |id: &str, index| Choice {
+            id: id.into(),
+            elevation_index: index,
+        };
+        let (smhi, norway, finland) = (
+            polar(ProviderId::Smhi, "SE"),
+            polar(ProviderId::Ord, "NO"),
+            polar(ProviderId::Ord, "FI"),
+        );
+        let grid = Station {
+            kind: SiteKind::Grid,
+            ..smhi.clone()
+        };
+        // SMHI's 4.0° (index 5) is MET Norway's 4.2° (index 5); 2.5° is
+        // nearest 2.4° (index 3).
+        assert_eq!(
+            carry(&choice("REF", 5), Some(4.0), &norway),
+            choice("REF", 5)
+        );
+        assert_eq!(
+            carry(&choice("REF", 4), Some(2.5), &norway),
+            choice("REF", 3)
+        );
+        assert_eq!(
+            carry(&choice("CAPPI2", 0), None, &norway),
+            choice("CAPPI2", 0)
+        );
+        // FMI makes neither: the lowest scan.
+        assert_eq!(
+            carry(&choice("CAPPI2", 0), None, &finland),
+            Choice::default()
+        );
+        assert_eq!(
+            carry(&choice("REF", 4), Some(2.5), &finland),
+            Choice::default()
+        );
+        // A composite keeps the choice for the next radar.
+        assert_eq!(carry(&choice("REF", 4), Some(2.5), &grid), choice("REF", 4));
+        assert_eq!(carry(&Choice::default(), None, &smhi), Choice::default());
+    }
+
+    /// The multi-angle fixtures against their answer keys
+    /// (`golden/produce-products.py`: h5py, every tilt): each product of each
+    /// provider format, decoded by `decode_volume`, which reads only the
+    /// tilts `needed` names, byte for byte.
+    #[test]
+    fn products_match_their_answer_keys() {
+        use std::io::Read;
+        const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../");
+        for (fixture, golden, lowest) in [
+            (
+                "radar_vara_qcvol_202609131055_tilts.h5",
+                "vara-20260913",
+                crate::odim::Tilt::First,
+            ),
+            (
+                "ord_nohur_202609140930_tilts.h5",
+                "nohur-20260914",
+                crate::odim::Tilt::Lowest,
+            ),
+            (
+                "ord_dksin_202609140940_tilts.h5",
+                "dksin-20260914",
+                crate::odim::Tilt::Lowest,
+            ),
+        ] {
+            let key: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(format!("{ROOT}golden/{golden}/products.json")).unwrap(),
+            )
+            .unwrap();
+            let tenths: Vec<u8> = key["blockageTenths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as u8)
+                .collect();
+            let table: &'static Blockage = Box::leak(Box::new(Blockage {
+                tenths: tenths.try_into().unwrap(),
+            }));
+            let products = key["products"].as_object().unwrap();
+            assert_eq!(products.len(), 6, "{golden}");
+            for (variant, product) in products {
+                let want = match variant.as_str() {
+                    "cappi1" => Want::Cappi(1000.0),
+                    "cappi2" => Want::Cappi(2000.0),
+                    "cmax" => Want::ColMax,
+                    "clear" => Want::Hybrid(table),
+                    angle => Want::Angle(angle[1..].parse::<f64>().unwrap() / 10.0),
+                };
+                assert_eq!(want.variant(), *variant);
+                let file = std::fs::File::open(format!("{ROOT}data/raw/{fixture}")).unwrap();
+                let crate::smhi_live::Scan::Product(sweep, _) =
+                    decode_volume(file, want, lowest).unwrap()
+                else {
+                    panic!("{golden} {variant}: not a product")
+                };
+                let mut expected = Vec::new();
+                let gz = format!(
+                    "{ROOT}golden/{golden}/{}",
+                    product["file"].as_str().unwrap()
+                );
+                flate2::read::GzDecoder::new(std::fs::File::open(gz).unwrap())
+                    .read_to_end(&mut expected)
+                    .unwrap();
+                assert_eq!(
+                    (
+                        sweep.rays.len() as u64,
+                        u64::from(sweep.gates),
+                        u64::from(sweep.first_gate_m),
+                        u64::from(sweep.gate_spacing_m)
+                    ),
+                    (
+                        product["rays"].as_u64().unwrap(),
+                        product["gates"].as_u64().unwrap(),
+                        product["firstGateM"].as_u64().unwrap(),
+                        product["gateSpacingM"].as_u64().unwrap()
+                    ),
+                    "{golden} {variant}: geometry"
+                );
+                if !variant.starts_with('a') {
+                    let placement = key["placementDeg"].as_f64().unwrap() as f32;
+                    assert!(sweep.rays.iter().all(|r| r.elevation_deg == placement));
+                }
+                let codes: Vec<u8> = sweep
+                    .rays
+                    .iter()
+                    .flat_map(|r| r.codes.iter().copied())
+                    .collect();
+                assert_eq!(codes.len(), expected.len(), "{golden} {variant}");
+                let differ = codes.iter().zip(&expected).filter(|(a, b)| a != b).count();
+                assert_eq!(
+                    differ,
+                    0,
+                    "{golden} {variant}: {differ} of {} codes differ",
+                    codes.len()
+                );
+            }
+        }
+    }
 }

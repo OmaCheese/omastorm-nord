@@ -640,8 +640,11 @@ Each `hello.sites[]` entry names what the station can show and its angles:
 ```
 
 - `products`: a subset of `hello.products`' ids, in that order; `[]` for a
-  grid station. Every radar can make `REF`, `CAPPI1`, `CAPPI2` and `CMAX`;
-  `HYBRID` only where the engine has a blockage table for it.
+  grid station. Every radar can make `REF`. `CAPPI1`, `CAPPI2` and `CMAX`
+  are offered where one file holds the radar's every angle and the engine
+  knows them (SMHI, MET Norway, DMI); FMI's radars, whose files hold one
+  angle each in ORD's cache, offer `REF` alone, with `elevations` `[]`.
+  `HYBRID` is offered only where the engine also has a blockage table.
 - `elevations`: the radar's scan angles, ascending; the position is the
   `elevationIndex`. `beamKm50` and `beamKm100` are the beam centre's height
   above the antenna at 50 and 100 km ground distance, in km with one
@@ -718,11 +721,13 @@ with the beam centre `h = R cos(e) / cos(e + s/R) − R` above the antenna.
   nearest 1,000 (2,000) m, the lower angle on a tie; its value.
 - `CMAX`: of the scans covering the gate, the highest measured code (2 and
   up); none measured: 0 if any is below threshold, else 1.
-- `HYBRID`: each radar's blockage table (`engine/data/blockage.json`, one
-  byte per degree of azimuth: the lowest clear angle in tenths of a degree,
-  computed offline) picks, per output ray, the lowest scan at or above that
-  angle, and the gate takes its value where it covers it (code 1 where it
-  does not).
+- `HYBRID`: each radar's blockage table (`engine/data/blockage.json`,
+  `radars.<id>`: 360 numbers, one per degree of azimuth, the lowest clear
+  angle in tenths of a degree, computed offline) picks, per output ray (the
+  entry at the floor of its azimuth), the lowest scan whose angle, rounded
+  to tenths, is at or above it (above every scan: the highest), and the
+  gate takes that scan's value where it covers it (code 1 where it does
+  not).
 
 The engine reads only the angles a product needs: one for `REF`, the scans
 a pseudo-CAPPI chooses somewhere, every scan for `CMAX`, DBZH only, with

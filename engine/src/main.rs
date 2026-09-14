@@ -877,6 +877,12 @@ impl Shared {
                     )),
                 );
             }
+            Some(_) if self.state.source == Source::Archived => {
+                return (
+                    false,
+                    Some("An archived volume shows its lowest scan only.".into()),
+                );
+            }
             _ => {
                 return (
                     false,

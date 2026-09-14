@@ -20,7 +20,8 @@
 //!   The newest time waits until its best file is as good as the previous
 //!   time's (`complete`), so a Finnish 0.7° scan or a Norwegian TH file that
 //!   lands first is not taken for the frame.
-//! - A file is read through `RangeReader` (`PLAN`) and decoded by
+//! - A file is read through `RangeReader` (`plan_for` its listed size:
+//!   whole up to `WHOLE_UP_TO`, else `PLAN`'s 8 KiB blocks) and decoded by
 //!   `odim::decode_lowest` at the lowest tilt, like SMHI's (DEC-2).
 //! - Failures back off like SMHI's poller; the second in a row reports
 //!   `offline`. A station whose newest file is older than the `unavailable`
@@ -81,14 +82,36 @@ const ELEVATION_SLACK: f64 = 0.1;
 /// old is silent.
 const SILENT_AFTER_MS: i64 = SPEC.staleness.unavailable.as_millis() as i64;
 
-/// A range plan for files of 0.1–1.3 MB whose metadata is spread through
-/// the file: every tilt's `where` is read to find the lowest.
+/// The range plan for a file larger than `WHOLE_UP_TO` (DMI's volumes,
+/// 0.9–1.3 MB of 10 tilts × 8 quantities): every tilt's `where` is read to
+/// find the lowest, and those reads are spread through the file, so small
+/// blocks. S18 measured dksin 09:40 (1,293,200 B): 16 KiB blocks read 25
+/// requests and 459 KB, 8 KiB blocks 27 requests and 279 KB, 64 KiB blocks
+/// 95% of the file; the sweep is identical under every plan.
 pub const PLAN: RangePlan = RangePlan {
     prefetch: 64 * 1024,
-    block: 16 * 1024,
+    block: 8 * 1024,
     max_requests: 96,
     max_bytes: 4 * 1024 * 1024,
 };
+
+/// Files up to this size are read whole, in one request: MET Norway's
+/// (0.40–0.58 MB measured) and FMI's (~0.15 MB), where the lowest tilt and
+/// its metadata are most of the file anyway (S18: nohur 18 requests for 77%
+/// of the file under 16 KiB blocks, fikor 3 for 67%). DMI's are 0.88 MB up.
+pub const WHOLE_UP_TO: u64 = 768 * 1024;
+
+/// The plan for a file of `size` bytes (from the listing): all of it in the
+/// first request up to `WHOLE_UP_TO`, else `PLAN`.
+pub fn plan_for(size: Option<u64>) -> RangePlan {
+    match size {
+        Some(size) if size > 0 && size <= WHOLE_UP_TO => RangePlan {
+            prefetch: size.next_multiple_of(PLAN.block),
+            ..PLAN
+        },
+        _ => PLAN,
+    }
+}
 
 pub const SPEC: Spec = Spec {
     id: ProviderId::Ord,
@@ -143,6 +166,8 @@ pub struct Listed {
     pub rank: usize,
     /// The lowest elevation its name lists, degrees.
     pub lowest_deg: f64,
+    /// The object's size, when the listing gave it (`<Size>`).
+    pub size: Option<u64>,
 }
 
 impl Listed {
@@ -173,6 +198,7 @@ impl Listed {
             valid_ms,
             rank,
             lowest_deg,
+            size: None,
         })
     }
 
@@ -304,6 +330,25 @@ pub fn parse_listing(xml: &str) -> Result<(Vec<String>, Option<String>), String>
     Ok((elements(xml, "Key"), token.filter(|_| truncated)))
 }
 
+/// The listing's keys that name reflectivity files, each with the size the
+/// listing gives it (one `<Size>` per `<Contents>`, in order; none if the
+/// counts differ).
+fn with_sizes(keys: Vec<String>, xml: &str) -> Vec<Listed> {
+    let sizes: Vec<Option<u64>> = elements(xml, "Size")
+        .iter()
+        .map(|s| s.trim().parse().ok())
+        .collect();
+    let sizes = if sizes.len() == keys.len() {
+        sizes
+    } else {
+        vec![None; keys.len()]
+    };
+    keys.iter()
+        .zip(sizes)
+        .filter_map(|(key, size)| Listed::parse(key).map(|file| Listed { size, ..file }))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------
@@ -353,12 +398,11 @@ impl Http {
     }
 
     async fn text(&self, url: &str) -> Result<String, Fail> {
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| Fail::Transport(e.to_string()))?;
+        let response = self.client.get(url).send().await.map_err(|e| {
+            crate::netstats::failed(url);
+            Fail::Transport(e.to_string())
+        })?;
+        crate::netstats::answered(url, &response);
         if response.status().as_u16() != 200 {
             return Err(Fail::Status(
                 response.status().as_u16(),
@@ -383,7 +427,11 @@ impl Http {
             .header(RANGE, format!("bytes={offset}-{}", offset + len - 1))
             .send()
             .await
-            .map_err(|e| Fail::Transport(e.to_string()))?;
+            .map_err(|e| {
+                crate::netstats::failed(url);
+                Fail::Transport(e.to_string())
+            })?;
+        crate::netstats::answered(url, &response);
         let code = response.status().as_u16();
         if code != 206 {
             return Err(Fail::Status(code, retry_after(response.headers())));
@@ -434,8 +482,9 @@ impl Http {
             let mut token: Option<String> = None;
             loop {
                 let url = list_url(base, &prefix, after.as_deref(), token.as_deref());
-                let (keys, next) = parse_listing(&self.text(&url).await?).map_err(Fail::Answer)?;
-                listed.extend(keys.iter().filter_map(|k| Listed::parse(k)));
+                let xml = self.text(&url).await?;
+                let (keys, next) = parse_listing(&xml).map_err(Fail::Answer)?;
+                listed.extend(with_sizes(keys, &xml));
                 match next {
                     Some(next) => token = Some(next),
                     None => break,
@@ -503,9 +552,10 @@ async fn fetch_file(
         runtime: Handle::current(),
         failure: failure.clone(),
     };
+    let plan = plan_for(file.size);
     let joined = spawn_blocking(move || {
         let _permit = permit;
-        let reader = RangeReader::open_planned(Box::new(source), PLAN, Duration::from_secs(1))
+        let reader = RangeReader::open_planned(Box::new(source), plan, Duration::from_secs(1))
             .map_err(|e| e.to_string())?;
         let traffic = reader.traffic();
         decode(reader).map(|scan| (scan, traffic))
@@ -1397,5 +1447,125 @@ mod tests {
             Duration::ZERO,
         );
         assert_eq!(describe(&events[0]), "offline ORD cache: HTTP 503");
+    }
+
+    /// A file on disk answering ranged requests, as the cache does.
+    struct Local(Vec<u8>);
+    impl RangeSource for Local {
+        fn get(&mut self, offset: u64, len: u64) -> io::Result<(Vec<u8>, Option<u64>)> {
+            let total = self.0.len() as u64;
+            let end = (offset + len).min(total);
+            Ok((self.0[offset as usize..end as usize].to_vec(), Some(total)))
+        }
+    }
+
+    /// Requests, bytes and file length for decoding `bytes` under `plan`,
+    /// and a digest of the sweep, so plans can be compared on real files.
+    fn cost(bytes: &[u8], plan: RangePlan) -> (u32, u64, u64, u64) {
+        let reader =
+            RangeReader::open_planned(Box::new(Local(bytes.to_vec())), plan, Duration::ZERO)
+                .unwrap();
+        let traffic = reader.traffic();
+        let Scan::Polar(sweep) = decode(reader).unwrap() else {
+            panic!("a radar decodes to a polar sweep")
+        };
+        let mut digest = 0xcbf2_9ce4_8422_2325u64;
+        for ray in &sweep.rays {
+            for &code in &ray.codes {
+                digest = (digest ^ u64::from(code)).wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        (traffic.requests(), traffic.bytes(), traffic.total(), digest)
+    }
+
+    /// A file the listing sizes at most `WHOLE_UP_TO` comes in one request
+    /// and decodes to the same sweep as under the block plan.
+    #[test]
+    fn small_files_are_read_whole_and_decode_the_same() {
+        assert_eq!(plan_for(None), PLAN);
+        assert_eq!(plan_for(Some(0)), PLAN);
+        assert_eq!(plan_for(Some(875_975)), PLAN, "DMI's smallest seen");
+        assert_eq!(
+            plan_for(Some(575_334)).prefetch,
+            581_632,
+            "MET Norway's largest seen"
+        );
+        for name in [
+            "ord_nohur_202609140930.h5",
+            "ord_fikor_202609140940.h5",
+            "ord_dksin_202609140940.h5",
+        ] {
+            let path = format!("{}/../data/raw/{name}", env!("CARGO_MANIFEST_DIR"));
+            let bytes = std::fs::read(path).unwrap();
+            let len = bytes.len() as u64;
+            let blocks = cost(&bytes, PLAN);
+            let whole = cost(&bytes, plan_for(Some(len)));
+            assert_eq!(whole.3, blocks.3, "{name}: the same sweep");
+            assert_eq!(
+                (whole.0, whole.1),
+                (1, len),
+                "{name}: one request, all of it"
+            );
+        }
+        let xml = "<ListBucketResult>\
+            <Contents><Key>2026/09/14/NO/nohur/PVOL/nohur@20260914T0930@0.5_1.0@DBZH.h5</Key><Size>427967</Size></Contents>\
+            <Contents><Key>2026/09/14/NO/nohur/PVOL/readme.txt</Key><Size>5</Size></Contents>\
+            <IsTruncated>false</IsTruncated></ListBucketResult>";
+        let (keys, _) = parse_listing(xml).unwrap();
+        let listed = with_sizes(keys, xml);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].size, Some(427_967));
+        let (keys, _) = parse_listing("<ListBucketResult><Contents><Key>a/nohur@20260914T0930@0.5@DBZH.h5</Key></Contents></ListBucketResult>").unwrap();
+        assert_eq!(
+            with_sizes(keys, "")[0].size,
+            None,
+            "no <Size>: the block plan"
+        );
+    }
+
+    /// S18's tuning table over whole cache files in `OMASTORM_ORD_SAMPLES`:
+    /// `cargo test ord_plan_table -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn ord_plan_table() {
+        let dir = std::env::var("OMASTORM_ORD_SAMPLES").expect("OMASTORM_ORD_SAMPLES");
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "h5"))
+            .collect();
+        files.sort();
+        const K: u64 = 1024;
+        for path in files {
+            let bytes = std::fs::read(&path).unwrap();
+            let (_, _, _, want) = cost(&bytes, PLAN);
+            println!("{} ({} B)", path.display(), bytes.len());
+            let (requests, fetched, _, digest) = cost(&bytes, plan_for(Some(bytes.len() as u64)));
+            assert_eq!(digest, want);
+            println!("  chosen (plan_for): {requests} requests, {fetched} B");
+            for prefetch in [16 * K, 64 * K, 256 * K, 512 * K, 1024 * K, 2048 * K] {
+                // The reader keeps whole blocks, so a prefetch is a whole
+                // number of them.
+                for block in [4 * K, 8 * K, 16 * K, 32 * K, 64 * K] {
+                    if prefetch % block != 0 {
+                        continue;
+                    }
+                    let plan = RangePlan {
+                        prefetch,
+                        block,
+                        max_requests: 96,
+                        max_bytes: 4 * 1024 * K,
+                    };
+                    let (requests, fetched, total, digest) = cost(&bytes, plan);
+                    assert_eq!(digest, want, "the same sweep under every plan");
+                    println!(
+                        "  prefetch {:>4} KiB block {:>3} KiB: {requests:>2} requests, {fetched:>8} B ({:.0}%)",
+                        prefetch / K,
+                        block / K,
+                        100.0 * fetched as f64 / total as f64
+                    );
+                }
+            }
+        }
     }
 }

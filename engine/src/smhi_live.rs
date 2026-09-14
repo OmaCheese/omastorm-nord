@@ -453,10 +453,11 @@ impl Http {
         if let Some(since) = since {
             request = request.header(IF_MODIFIED_SINCE, since);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| Fail::Transport(e.to_string()))?;
+        let response = request.send().await.map_err(|e| {
+            crate::netstats::failed(url);
+            Fail::Transport(e.to_string())
+        })?;
+        crate::netstats::answered(url, &response);
         match response.status().as_u16() {
             304 => return Ok(Fetched::NotModified),
             200 => {}
@@ -489,7 +490,11 @@ impl Http {
             .header(RANGE, format!("bytes={offset}-{}", offset + len - 1))
             .send()
             .await
-            .map_err(|e| Fail::Transport(e.to_string()))?;
+            .map_err(|e| {
+                crate::netstats::failed(url);
+                Fail::Transport(e.to_string())
+            })?;
+        crate::netstats::answered(url, &response);
         let code = response.status().as_u16();
         if code != 206 {
             // A 200 would be the whole 15 MB: drop it unread.

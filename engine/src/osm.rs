@@ -219,12 +219,11 @@ impl Osm {
     /// 204 or 404 (an empty tile), otherwise the failure in words.
     async fn get(&self, url: &str) -> Result<Vec<u8>, String> {
         let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
-        let mut response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut response = self.client.get(url).send().await.map_err(|e| {
+            crate::netstats::failed(url);
+            e.to_string()
+        })?;
+        crate::netstats::answered(url, &response);
         let status = response.status();
         if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::NOT_FOUND {
             return Ok(Vec::new());

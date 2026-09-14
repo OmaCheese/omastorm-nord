@@ -829,6 +829,15 @@ mod tests {
                 .iter()
                 .any(|p| p.name == "Oklahoma City" && p.class == "city" && p.rank == 3)
         );
+        // Natural Earth's Nordic misspellings are corrected (build.rs).
+        let names: Vec<&str> = geography.places.iter().map(|p| p.name.as_str()).collect();
+        for (wrong, right) in [
+            ("Vannersborg", "Vänersborg"),
+            ("Liepaga", "Liepāja"),
+            ("Panevežys", "Panevėžys"),
+        ] {
+            assert!(names.contains(&right) && !names.contains(&wrong), "{right}");
+        }
     }
 
     #[test]

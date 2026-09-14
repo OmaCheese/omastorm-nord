@@ -6,7 +6,8 @@
   "license": "Data © OpenStreetMap contributors, Open Database License; OpenMapTiles schema, BSD/CC-BY",
   "tiles": {
     "7-29-50.pbf": "z7 tile holding KTLX: central Oklahoma at about 500 m/px, 131,709 bytes as served",
-    "11-470-808.pbf": "z11 tile holding KTLX and Midwest City: the road network the roads channels are checked against, 21,446 bytes as served"
+    "11-470-808.pbf": "z11 tile holding KTLX and Midwest City: the road network the roads channels are checked against, 21,446 bytes as served",
+    "7-68-38.pbf": "z7 tile over Västra Götaland (Göteborg, Borås, Vänersborg), the place labels' name choice is checked against: Göteborg's name:en is Gothenburg. Version 20260906_080001_pt, 256,865 bytes as served; copied 2026-09-14 from the engine's tile cache rather than fetched again (same bytes, sha256 d2cb8577…a0691a23)"
   },
   "notes": "Recorded once for the engine's offline tile tests (engine/src/osm.rs, engine/tests/protocol.rs); the daemon never reads them. Fetched with curl and the engine's User-Agent from the URL template TileJSON named that day."
 }

@@ -38,6 +38,14 @@ const COUNTRIES: [&str; 8] = ["SE", "NO", "FI", "AX", "DK", "EE", "LV", "LT"];
 /// spelling in the location picker. Alternatenames also hold archaic forms
 /// (Hälsingborg, Döderhultsvik), so this stays an explicit list.
 const SE_LOCAL_NAMES: &[(&str, &str)] = &[("Gothenburg", "Göteborg")];
+/// Natural Earth names in the gazetteer's countries that are misspelled
+/// against GeoNames (checked 2026-09-14 by nearest GeoNames place); the map's
+/// low-zoom labels use the corrected spelling, as the tile labels do.
+const NE_LOCAL_NAMES: &[(&str, &str)] = &[
+    ("Vannersborg", "Vänersborg"),
+    ("Liepaga", "Liepāja"),
+    ("Panevežys", "Panevėžys"),
+];
 const SCALE: f64 = 1e5;
 
 fn main() {
@@ -118,6 +126,10 @@ fn main() {
         ) else {
             continue;
         };
+        let name = NE_LOCAL_NAMES
+            .iter()
+            .find(|(ne, _)| *ne == name)
+            .map_or(name, |(_, local)| *local);
         let feature_class = p["featurecla"].as_str().unwrap_or_default();
         let population = p["pop_max"].as_f64().unwrap_or_default();
         let class = if feature_class.starts_with("Admin-0 capital") {

@@ -2033,7 +2033,10 @@ mod tests {
             handler,
             Vec::new(),
             |events| events.len() >= 2,
-            Duration::from_millis(300),
+            // Long enough for a second probe round even under `mise check`'s
+            // load (S16: 300 ms saw only 3 polls there, the last one's probe
+            // not yet served).
+            Duration::from_secs(2),
         );
         let seen: Vec<String> = events.iter().map(describe).collect();
         assert_eq!(

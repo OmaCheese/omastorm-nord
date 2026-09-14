@@ -9,6 +9,18 @@ Published releases are immutable. Prepare assets in a draft; a mistake after
 publication requires a new version. Never pin an unpublished or unverified
 binary.
 
+**Omastorm SE (this fork).** The engine is versioned CalVer `YY.M.patch`
+(`26.9.0`, then `26.9.1`, next month `26.10.0`; coord DEC-15) so an
+`engine-*` or `v*` tag never collides with upstream's `0.1.x` tags, which a
+GitHub fork copies. Before the first tag, `engine/release.pin` `repo=` must
+name the fork (`<owner>/omastorm-se`): the builders copy it into the
+candidate pin. The release scripts expect the published default branch to be
+`main` (the local trunk `se-main` is pushed as `main`), and
+`tag-engine-release.sh` still asks `gh release view -R wesleygrimes/omastorm`
+for an existing release, not the fork. Publish only the CI (Ubuntu 24.04)
+binaries: a laptop build on Arch needs the host's newer glibc (2.44 here). The
+first publication is the ordered runbook `coord/P2-RUNBOOK.md`.
+
 The pin contains a shared `tag` and `repo`, and an `asset_<architecture>` /
 `sha256_<architecture>` pair for each published Linux architecture
 (`x86_64`, `aarch64`). Missing architectures fail before download. Native

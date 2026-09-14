@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# One-off fixture script (development only): rewrites engine/data/sites.json
-# from SMHI's open radar API. For each qcvol area it opens the newest volume
+# One-off fixture script (development only): rewrites the SMHI rows of
+# engine/data/sites.json from SMHI's open radar API (other providers' rows
+# are kept). For each qcvol area it opens the newest volume
 # over HTTP range reads (a few 64 KB blocks, not the 15 MB file) and takes
 # the radar's position from the root /where group (lat, lon, height) and its
 # identifiers from /what source (RAD, NOD, WMO). Display names and counties
@@ -141,8 +142,17 @@ table = {
     ),
     "sites": sites,
 }
+# Rows of other providers (scripts/fetch-ord-sites.sh) stay as they are.
+try:
+    previous = json.load(open("engine/data/sites.json", encoding="utf-8"))
+except FileNotFoundError:
+    previous = {"sites": [], "notes": ""}
+others = [s for s in previous["sites"] if s.get("provider", "smhi") != "smhi"]
+table["sites"] += others
+if others and " The ord rows" in previous["notes"]:
+    table["notes"] += previous["notes"][previous["notes"].index(" The ord rows"):]
 with open("engine/data/sites.json", "w", encoding="utf-8") as out:
     json.dump(table, out, ensure_ascii=False, indent=2)
     out.write("\n")
-print(f"Wrote engine/data/sites.json: {len(sites)} sites.")
+print(f"Wrote engine/data/sites.json: {len(sites)} SMHI sites, {len(others)} others kept.")
 PY

@@ -272,6 +272,7 @@ impl Timeline {
                 status,
                 texture,
                 azimuth_lut,
+                codes: record.map(codes_path).unwrap_or_default(),
                 placement: record
                     .map(|r| r.frame.placement())
                     .filter(|p| *p != reference),
@@ -1081,13 +1082,24 @@ fn stable_paths(record: &catalog::Record) -> (String, String) {
     };
     (texture, lut)
 }
+/// A catalogued grid frame's code texture's stable path (`docs/protocol.md`,
+/// code texture); empty when it has none.
+fn codes_path(record: &catalog::Record) -> String {
+    record.codes.as_ref().map_or_else(String::new, |_| {
+        format!("tex/codes-{}-{}.png", record.frame.id, record.tag)
+    })
+}
 /// Publish a catalogued frame under its stable names: symbolic links into
 /// the catalog, whose files never change under a tag, made once and left
 /// alone while they point where they should.
 fn link_record(dir: &Path, record: &catalog::Record) -> io::Result<()> {
     let (texture, lut) = stable_paths(record);
     fs::create_dir_all(dir.join("tex"))?;
-    for (name, target) in [(texture, &record.texture), (lut, &record.azimuth_lut)] {
+    let mut links = vec![(texture, &record.texture), (lut, &record.azimuth_lut)];
+    if let Some(codes) = &record.codes {
+        links.push((codes_path(record), codes));
+    }
+    for (name, target) in links {
         if name.is_empty() {
             continue;
         }
@@ -1126,12 +1138,33 @@ fn scan_frame(template: &Frame, station: &Station, scan: &Scan, complete: bool) 
         Scan::Grid(grid) => composite::frame(template, station, grid),
     }
 }
-/// A scan's texture and azimuth lookup as PNGs; a grid's lookup is empty.
-fn encode_scan(scan: &Scan, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)> {
+/// A scan's texture, azimuth lookup, and code texture as PNGs: a grid's
+/// lookup is empty, a polar sweep has no code texture.
+fn encode_scan(scan: &Scan, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     match scan {
-        Scan::Polar(sweep) => encode(sweep, frame),
-        Scan::Grid(grid) => composite::encode(grid, frame),
+        Scan::Polar(sweep) => encode(sweep, frame).map(|(t, l)| (t, l, Vec::new())),
+        Scan::Grid(grid) => {
+            let (texture, lut) = composite::encode(grid, frame)?;
+            Ok((
+                texture,
+                lut,
+                gray_png(grid.width, grid.height, &grid.codes)?,
+            ))
+        }
     }
+}
+/// A grid's raw codes as an 8-bit grayscale PNG: its one-channel code
+/// texture (`docs/protocol.md`, code texture), a quarter of the GPU memory.
+fn gray_png(width: u32, height: u32, codes: &[u8]) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Grayscale);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    let mut writer = encoder.write_header().map_err(io::Error::other)?;
+    writer.write_image_data(codes).map_err(io::Error::other)?;
+    writer.finish().map_err(io::Error::other)?;
+    Ok(out)
 }
 /// The station an archived ODIM volume came from: the nearest table site
 /// within 5 km of the volume's position, else one named by its `PLC`.
@@ -1218,14 +1251,18 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                 };
                 let encoded = spawn_blocking(move || -> io::Result<Arrival> {
                     let started = Instant::now();
-                    let (texture, lut) = encode_scan(&sweep, &frame)?;
+                    let (texture, lut, codes) = encode_scan(&sweep, &frame)?;
                     let stored = if complete {
-                        Some(catalog.store(
+                        let pngs = catalog::Pngs {
+                            texture: &texture,
+                            azimuth_lut: &lut,
+                            codes: &codes,
+                        };
+                        Some(catalog.store_with_codes(
                             &site,
                             &frame,
                             sweep.start_ms(),
-                            &texture,
-                            &lut,
+                            pngs,
                             &provenance,
                         )?)
                     } else {
@@ -1286,13 +1323,17 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                     )
                 };
                 let stored = spawn_blocking(move || -> io::Result<Entry> {
-                    let (texture, lut) = encode_scan(&sweep, &frame)?;
-                    let entry = catalog.store(
+                    let (texture, lut, codes) = encode_scan(&sweep, &frame)?;
+                    let pngs = catalog::Pngs {
+                        texture: &texture,
+                        azimuth_lut: &lut,
+                        codes: &codes,
+                    };
+                    let entry = catalog.store_with_codes(
                         &site,
                         &frame,
                         sweep.start_ms(),
-                        &texture,
-                        &lut,
+                        pngs,
                         &provenance,
                     )?;
                     eprintln!(
@@ -2145,15 +2186,35 @@ mod tests {
             Timeline::new(catalog.list("vara").unwrap()).entries(&frame),
             entries
         );
-        // A grid frame names its texture and no lookup.
+        // A grid frame names its texture and no lookup, and its code texture.
         let mut grid = frame.clone();
         grid.id = "sweden-20260914T100000Z-e0".into();
         grid.kind = FrameKind::Grid;
+        grid.grid = None;
+        let pngs = catalog::Pngs {
+            texture: b"grid",
+            azimuth_lut: b"",
+            codes: b"codes",
+        };
         let stored = catalog
-            .store("sweden", &grid, 1, b"grid", b"", "p")
+            .store_with_codes("sweden", &grid, 1, pngs, "p")
             .unwrap();
-        let (texture, lut) = stable_paths(stored.record.as_ref().unwrap());
+        let record = stored.record.as_ref().unwrap();
+        let (texture, lut) = stable_paths(record);
         assert!(texture.starts_with("tex/sweep-sweden-20260914T100000Z-e0-") && lut.is_empty());
+        let codes = codes_path(record);
+        assert_eq!(
+            codes,
+            format!("tex/codes-sweden-20260914T100000Z-e0-{}.png", record.tag)
+        );
+        link_record(&dir, record).unwrap();
+        assert_eq!(fs::read(dir.join(&codes)).unwrap(), b"codes");
+        let listed = Timeline::new(catalog.list("sweden").unwrap()).entries(&grid);
+        assert_eq!(listed[0].codes, codes);
+        assert!(
+            entries.iter().all(|e| e.codes.is_empty()),
+            "polar entries name none"
+        );
         let _ = fs::remove_dir_all(&root);
     }
     fn ids(timeline: &Timeline) -> Vec<(String, FrameStatus)> {

@@ -268,7 +268,7 @@ impl State {
             .chain(
                 self.timeline
                     .iter()
-                    .flat_map(|e| [e.texture.as_str(), e.azimuth_lut.as_str()]),
+                    .flat_map(|e| [e.texture.as_str(), e.azimuth_lut.as_str(), e.codes.as_str()]),
             )
             .filter(|path| !path.is_empty())
     }
@@ -325,6 +325,9 @@ pub struct TimelineEntry {
     /// `""` for the sweep in progress and an archived frame.
     pub texture: String,
     pub azimuth_lut: String,
+    /// A grid entry's one-channel code texture (S19), absent when none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub codes: String,
     /// Only where the entry would draw differently from `state.frame`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placement: Option<Placement>,

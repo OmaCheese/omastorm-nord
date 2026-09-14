@@ -368,6 +368,12 @@ own texture paths, and a `placement` when it would draw differently from
   `state` broadcast (once a second while live) small. A client that
   buffers frames resolves each entry's placement against the `state` it
   came in and keeps it with the frame.
+- `codes` (grid entries only, absent when empty): the entry's
+  [code texture](#texture-files), one byte per texel instead of four, a
+  quarter of the GPU memory and about a quarter to a half of the PNG. A
+  client that can apply the class rule itself loads `codes` instead of
+  `texture`; `texture` stays for every other client. Frames catalogued
+  before S19 have none.
 - Product, units, palette, bounds, `scale`, `offset`, and `attribution`
   are the station's and the same for every entry; they come from `frame`.
 - A client may therefore fetch, decode, and upload the whole loop once,
@@ -406,6 +412,18 @@ within 0.75°; R and G hold the row index as a little-endian 16-bit value.
 Each texel holds the source pixel that contains its centre (nearest
 neighbour). Texels outside the source grid are marked like `nodata`: code 1,
 G bit 4 (outside coverage). No lookup table goes with a grid texture.
+
+**Code texture (a grid timeline entry's `codes`, S19):** PNG, 8-bit
+grayscale, the grid texture's size and texel order, holding only the raw
+code (the grid texture's B channel): 0 below threshold, 1 no data or off
+the source grid, 2 to 255 measured. A client rebuilds the grid texel from
+it: code 0 or 1 draws nothing; otherwise, with value = (code − `offset`) /
+`scale` in `units`, the class is the number of `bounds` at or below value,
+minus one, kept within 0 to `palette.length` − 1, and the texel is class + 1
+with no status bits, exactly what the engine writes to the grid texture
+(composites have no folded gates). Its stable name is
+`tex/codes-<frame id>-<tag>.png`, published and retired with the entry's
+other files.
 
 **Lookup rule (UI shader, `ui/shaders/radar.frag`):** each 3 px screen cell
 becomes a site-relative ground distance and an azimuth clockwise from north:
@@ -587,6 +605,8 @@ Additive since (S19, still version 2):
 - `state.timeline[]` entries gain `texture` and `azimuthLut` (always sent,
   `""` without stable textures) and `placement` (only where it differs
   from `frame`'s). [Timeline textures](#timeline-textures).
+- A grid entry catalogued since S19 also names `codes`, its one-channel
+  code texture; `frame.texture` and the grid texture format are unchanged.
 - A catalogued frame keeps one texture name per file while it is in the
   catalog, instead of a new revision on every show; its files stay
   published while it is in the selected station's timeline.

@@ -8,7 +8,7 @@
 //! from their content (`docs/protocol.md`, texture files), so a client sees
 //! one name per frame for as long as the ring holds it.
 
-use crate::protocol::Frame;
+use crate::protocol::{Frame, FrameKind};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     fs, io,
@@ -51,6 +51,36 @@ pub struct Record {
     /// files under a tag never change (`store` writes a new version under a
     /// new name), so neither does anything published under it.
     pub tag: String,
+    /// A grid frame's one-channel code texture (`docs/protocol.md`, code
+    /// texture), beside its texture; `None` for polar frames and grids
+    /// catalogued before S19.
+    pub codes: Option<PathBuf>,
+}
+
+/// A frame's encoded textures for `store_with_codes`: the sweep or grid
+/// texture, the azimuth lookup (empty for a grid), and a grid's code
+/// texture (empty for none).
+pub struct Pngs<'a> {
+    pub texture: &'a [u8],
+    pub azimuth_lut: &'a [u8],
+    pub codes: &'a [u8],
+}
+
+/// The code texture's file beside a texture file: `<stem>-codes.png` for
+/// `<stem>-sweep.png`.
+fn codes_of(texture: &str) -> Option<String> {
+    texture
+        .strip_suffix("-sweep.png")
+        .map(|stem| format!("{stem}-codes.png"))
+}
+
+/// A frame's files to remove: its texture, lookup, and any code texture.
+fn with_codes(texture: String, lut: String) -> Vec<String> {
+    let codes = codes_of(&texture);
+    [Some(texture), Some(lut), codes]
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// A stored frame with its texture bytes.
@@ -151,6 +181,7 @@ impl Catalog {
     /// nothing, and other bytes for the same frame go under a new name while
     /// the old version's files are removed: a published name never sees its
     /// bytes change. Returns the frame as the timeline lists it.
+    #[cfg(test)]
     pub fn store(
         &self,
         site: &str,
@@ -160,13 +191,42 @@ impl Catalog {
         azimuth_lut: &[u8],
         provenance: &str,
     ) -> io::Result<Entry> {
+        let pngs = Pngs {
+            texture,
+            azimuth_lut,
+            codes: &[],
+        };
+        self.store_with_codes(site, frame, start_ms, pngs, provenance)
+    }
+
+    /// `store`, with a grid frame's one-channel code texture beside its grid
+    /// texture (`docs/protocol.md`, code texture); empty `codes` for none.
+    /// The code file shares the texture's version and goes with it.
+    pub fn store_with_codes(
+        &self,
+        site: &str,
+        frame: &Frame,
+        start_ms: i64,
+        pngs: Pngs,
+        provenance: &str,
+    ) -> io::Result<Entry> {
+        let Pngs {
+            texture,
+            azimuth_lut,
+            codes,
+        } = pngs;
         let mut record = frame.clone();
         record.texture.clear();
         record.azimuth_lut.clear();
         let hash = format!("{:016x}", fnv1a(&[texture, azimuth_lut]));
         let texture_path = format!("{site}/{}-{hash}-sweep.png", frame.id);
         let lut_path = format!("{site}/{}-{hash}-azlut.png", frame.id);
-        for (path, bytes) in [(&texture_path, texture), (&lut_path, azimuth_lut)] {
+        let codes_path = codes_of(&texture_path).unwrap_or_default();
+        let mut files = vec![(&texture_path, texture), (&lut_path, azimuth_lut)];
+        if !codes.is_empty() {
+            files.push((&codes_path, codes));
+        }
+        for (path, bytes) in files {
             if !self.dir.join(path).is_file() {
                 write(&self.dir.join(path), bytes)?;
             }
@@ -205,10 +265,10 @@ impl Catalog {
         )
         .map_err(sql)?;
         let mut stale: Vec<String> = previous
-            .map(|(t, l)| vec![t, l])
+            .map(|(t, l)| with_codes(t, l))
             .unwrap_or_default()
             .into_iter()
-            .filter(|p| *p != texture_path && *p != lut_path)
+            .filter(|p| *p != texture_path && *p != lut_path && *p != codes_path)
             .collect();
         // The ring: everything past the newest RING for this station goes.
         let expired: Vec<(String, String, String)> = conn
@@ -226,7 +286,7 @@ impl Catalog {
         for (id, texture, lut) in expired {
             conn.execute("DELETE FROM frames WHERE id = ?1", params![id])
                 .map_err(sql)?;
-            stale.extend([texture, lut]);
+            stale.extend(with_codes(texture, lut));
         }
         for path in stale {
             match fs::remove_file(self.dir.join(path)) {
@@ -240,6 +300,7 @@ impl Catalog {
             scan_time: frame.scan_time.clone(),
             start_ms,
             record: Some(Record {
+                codes: (!codes.is_empty()).then(|| self.dir.join(&codes_path)),
                 frame: record,
                 tag: tag_of(&self.dir, &texture_path),
                 texture: self.dir.join(texture_path),
@@ -279,6 +340,10 @@ impl Catalog {
             .map(|(id, scan_time, start_ms, frame, texture, lut)| {
                 let record = match serde_json::from_str::<Frame>(&frame) {
                     Ok(frame) => Some(Record {
+                        codes: codes_of(&texture)
+                            .filter(|_| frame.kind == FrameKind::Grid)
+                            .map(|c| self.dir.join(c))
+                            .filter(|p| p.is_file()),
                         frame,
                         tag: tag_of(&self.dir, &texture),
                         texture: self.dir.join(texture),
@@ -510,6 +575,53 @@ mod tests {
         assert_eq!(fs::read(&new.texture).unwrap(), [8; 32]);
         assert_eq!(files(&dir.join("vara")).len(), 2);
         assert_eq!(catalog.list("vara").unwrap()[0].record.as_ref(), Some(&new));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn grid_pngs(codes: &[u8]) -> Pngs<'_> {
+        Pngs {
+            texture: &[5; 8],
+            azimuth_lut: &[],
+            codes,
+        }
+    }
+
+    #[test]
+    fn a_grid_keeps_its_code_texture_beside_its_texture() {
+        let dir = scratch("codes");
+        let catalog = Catalog::open(dir.clone()).unwrap();
+        let mut grid = frame("sweden", 5);
+        grid.kind = FrameKind::Grid;
+        let stored = catalog
+            .store_with_codes("sweden", &grid, 5, grid_pngs(&[2, 3]), "a")
+            .unwrap();
+        let codes = stored.record.as_ref().unwrap().codes.clone().unwrap();
+        assert_eq!(fs::read(&codes).unwrap(), [2, 3]);
+        assert!(codes.to_str().unwrap().ends_with("-codes.png"));
+        assert_eq!(catalog.list("sweden").unwrap()[0].record, stored.record);
+        // A polar frame lists none.
+        let polar = catalog
+            .store("vara", &frame("vara", 5), 5, &[1], &[2], "a")
+            .unwrap();
+        assert_eq!(polar.record.unwrap().codes, None);
+        assert_eq!(
+            catalog.list("vara").unwrap()[0]
+                .record
+                .as_ref()
+                .unwrap()
+                .codes,
+            None
+        );
+        // The ring takes the code texture with its frame.
+        for minute in 6..(6 + RING as u32) {
+            let mut g = frame("sweden", minute);
+            g.kind = FrameKind::Grid;
+            catalog
+                .store_with_codes("sweden", &g, i64::from(minute), grid_pngs(&[7]), "b")
+                .unwrap();
+        }
+        assert!(!codes.exists());
+        assert_eq!(files(&dir.join("sweden")).len(), RING * 3);
         let _ = fs::remove_dir_all(&dir);
     }
 

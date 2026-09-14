@@ -192,6 +192,10 @@ struct Place {
     region: String,
     #[serde(default)]
     country: String,
+    /// Other spellings for search only (GeoNames names and alternate names);
+    /// labels always show `name`.
+    #[serde(default)]
+    aliases: Vec<String>,
 }
 impl Place {
     fn label(&self) -> Label {
@@ -457,21 +461,32 @@ pub fn render(geography: &Geography, key: TileKey) -> io::Result<Vec<u8>> {
 }
 
 /// Ranked gazetteer places matching `query` for the location picker
-/// (GeoNames ≥ 5000 people in the network envelope). Word-start matches
-/// beat substrings; nearer the optional origin, then lower rank, win
-/// within a tier. Empty or blank queries return nothing.
+/// (GeoNames ≥ 5000 people in the network envelope). Tiers, best first: a
+/// word start of the name as typed, the same with diacritics folded
+/// ("orebro" for Örebro), a word start of an alias ("gothenburg" for
+/// Göteborg), then substrings of the name as typed and folded. Nearer the
+/// optional origin, then lower rank, win within a tier. Empty or blank
+/// queries return nothing.
 pub fn search_places(query: &str, origin: Option<(f64, f64)>, limit: usize) -> Vec<Label> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() || limit == 0 {
         return Vec::new();
     }
+    let folded = fold(&needle);
     let mut scored: Vec<(u32, f64, u32, &Place)> = Vec::new();
     for place in gazetteer() {
         let name = place.name.to_lowercase();
+        let folded_name = fold(&name);
         let tier = if word_start(&name, &needle) {
             0
-        } else if name.contains(&needle) {
+        } else if word_start(&folded_name, &folded) {
             1
+        } else if place.aliases.iter().any(|a| word_start(&fold(a), &folded)) {
+            2
+        } else if name.contains(&needle) {
+            3
+        } else if folded_name.contains(&folded) {
+            4
         } else {
             continue;
         };
@@ -491,6 +506,36 @@ pub fn search_places(query: &str, origin: Option<(f64, f64)>, limit: usize) -> V
         .take(limit)
         .map(|(_, _, _, place)| place.label())
         .collect()
+}
+
+/// Lower case with diacritics dropped, so "orebro" finds Örebro and
+/// "kobenhavn" København: Nordic, Baltic and common Latin letters to their
+/// base letters.
+fn fold(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars().flat_map(char::to_lowercase) {
+        match c {
+            'å' | 'ä' | 'á' | 'à' | 'â' | 'ã' | 'ā' | 'ą' => out.push('a'),
+            'ö' | 'ø' | 'ó' | 'ò' | 'ô' | 'õ' | 'ō' | 'ő' => out.push('o'),
+            'é' | 'è' | 'ê' | 'ë' | 'ē' | 'ė' | 'ę' => out.push('e'),
+            'ü' | 'ú' | 'ù' | 'û' | 'ū' | 'ų' | 'ű' => out.push('u'),
+            'í' | 'ì' | 'î' | 'ï' | 'ī' | 'į' => out.push('i'),
+            'ý' | 'ÿ' => out.push('y'),
+            'č' | 'ç' | 'ć' => out.push('c'),
+            'š' | 'ś' => out.push('s'),
+            'ž' | 'ź' | 'ż' => out.push('z'),
+            'ģ' => out.push('g'),
+            'ķ' => out.push('k'),
+            'ļ' | 'ł' => out.push('l'),
+            'ņ' | 'ñ' | 'ń' => out.push('n'),
+            'ð' => out.push('d'),
+            'þ' => out.push_str("th"),
+            'æ' => out.push_str("ae"),
+            'ß' => out.push_str("ss"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn word_start(text: &str, needle: &str) -> bool {
@@ -812,6 +857,14 @@ mod tests {
         let jonkoping = search_places("jönköping", None, 4);
         assert_eq!(jonkoping[0].name, "Jönköping");
         assert_eq!(jonkoping[0].region, "Jönköping");
+        // Typed without diacritics, or by another name; the label keeps the
+        // local spelling.
+        assert_eq!(search_places("orebro", None, 4)[0].name, "Örebro");
+        assert_eq!(search_places("goteborg", None, 4)[0].name, "Göteborg");
+        assert_eq!(search_places("gothenburg", None, 4)[0].name, "Göteborg");
+        assert_eq!(search_places("jonkoping", None, 4)[0].name, "Jönköping");
+        assert_eq!(search_places("helsingfors", None, 4)[0].name, "Helsinki");
+        assert_eq!(search_places("kobenhavn", None, 4)[0].name, "Copenhagen");
         assert!((1_000..5_000).contains(&gazetteer().len()));
     }
 

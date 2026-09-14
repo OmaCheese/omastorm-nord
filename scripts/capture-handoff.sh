@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Site navigation (DESIGN.md, site navigation as built): one pan across the
-# network from Oklahoma City to Jacksonville as a capture series, following
-# and then locked, as review/handoff-*.png and review/handoff-sheet.png.
+# Site navigation (DESIGN.md, site navigation as built): one pan up the SMHI
+# network from Vara to Luleå as a capture series, following and then
+# locked, as review/handoff-*.png and review/handoff-sheet.png.
 #
 # Each capture is a fresh window on one scratch daemon with its camera
 # started at a point along the pan (OMASTORM_VIEW, 500 km across). The
@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review
-export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/KTLX20130520_201643_V06.gz} # the archived scan the checks assume
+export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/radar_vara_qcvol_202609131055.h5} # the vendored Vara scan; the checks keep KTLX (DEC-10)
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
 review="$PWD/review"
 rm -f "$review"/handoff-*.png
@@ -30,7 +30,7 @@ target/debug/omastorm-engine ensure
 sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.3 - "UNIX-CONNECT:$sock" > /dev/null; }
 # The pan: latitude, longitude, and the station the engine should hand off to.
-positions=('35.468 -97.333 KTLX' '35.30 -95.00 KSRX' '34.90 -92.30 KLZK' '33.20 -87.00 KBMX' '31.00 -84.30 KTLH' '30.50 -81.90 KJAX')
+positions=('58.256 12.826 vara' '58.106 15.936 atvidaberg' '59.611 17.583 balsta' '61.577 16.714 hudiksvall' '63.639 18.402 ornskoldsvik' '65.431 21.865 lulea')
 
 capture() { # name, delay ms, lat, lon
   local name=$1 delay=$2 lat=$3 lon=$4
@@ -40,14 +40,14 @@ capture() { # name, delay ms, lat, lon
   echo "captured $name · engine on $(timeout 2 socat -t0.2 - "UNIX-CONNECT:$sock" < /dev/null | sed -n 2p | grep -o '"site":{"id"[^}]*}')"
 }
 
-tell '{"type":"select_site","id":"KTLX"}' '{"type":"lock","enabled":false}' '{"type":"follow","enabled":true}'
+tell '{"type":"select_site","id":"vara"}' '{"type":"lock","enabled":false}' '{"type":"follow","enabled":true}'
 i=0
 for position in "${positions[@]}"; do
   read -r lat lon expected <<< "$position"
   i=$((i + 1))
   capture "following-$i-$expected" 9000 "$lat" "$lon"
 done
-tell '{"type":"select_site","id":"KTLX"}' '{"type":"lock","enabled":true}'
+tell '{"type":"select_site","id":"vara"}' '{"type":"lock","enabled":true}'
 i=0
 for position in "${positions[@]}"; do
   read -r lat lon expected <<< "$position"

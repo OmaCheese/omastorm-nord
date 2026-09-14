@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # A station waiting for its first sweep (DESIGN.md, lean startup as built):
 # review/loading-before.png is a scratch daemon with an empty cache the moment
-# it goes live on SITE (default KJAX), the map without radar under LOADING;
+# it goes live on SITE (default vara), the map without radar under LOADING;
 # review/loading-after.png is the same daemon once the current volume's
-# lowest cut has been replayed from the bucket. review/loading-none.png is a
+# lowest tilt has arrived from SMHI. review/loading-none.png is a
 # lean daemon with no configured centre: the first-run location picker.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
-site="${SITE:-KJAX}"
+site="${SITE:-vara}"
 review="$PWD/review"
 rm -f "$review"/loading-*.png
 config=$(mktemp /tmp/omastorm-loading-config.XXXXXX)

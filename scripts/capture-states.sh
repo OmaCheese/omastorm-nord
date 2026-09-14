@@ -3,22 +3,22 @@
 # review/states-*.png and one sheet, review/states-sheet.png.
 #
 # ARCHIVED and LIVE are the shared daemon as it is (LIVE needs a station
-# with data on the feed; SITE, default KJAX). OFFLINE and SILENT
+# with data on the feed; SITE, default vara). OFFLINE and SILENT
 # are real engine runs against scratch daemons over a copy of the cache:
 # OFFLINE in a network namespace with no interfaces, so the poller reports
-# the bucket unreachable and the cached frames show with their age; SILENT
-# on a table station the bucket holds nothing for (SILENT_SITE,
-# default KCRI), which is UNAVAILABLE with nothing cached. STALE, an
+# SMHI unreachable and the cached frames show with their age; SILENT
+# on a table station SMHI publishes nothing for (SILENT_SITE, default
+# leksand, silent since January 2026), UNAVAILABLE with nothing cached. STALE, an
 # UNAVAILABLE station with cached frames, and LOADING cannot be scheduled
 # on the real feed, so a harness copy of the shell receives the live state
 # with `connection` replaced, over the real textures.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review
-export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/KTLX20130520_201643_V06.gz} # the archived scan the checks assume
+export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/radar_vara_qcvol_202609131055.h5} # the vendored Vara scan; the checks keep KTLX (DEC-10)
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
-site="${SITE:-KJAX}"
-silent_site="${SILENT_SITE:-KCRI}"
+site="${SITE:-vara}"
+silent_site="${SILENT_SITE:-leksand}"
 review="$PWD/review"
 rm -f "$review"/states-*.png
 # Scratch daemons never touch the shared daemon's runtime directory or the

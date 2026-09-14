@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live KTLX in the production card, under a representative bar strip.
+# Live Vara in the production card, under a representative bar strip.
 # Its own daemon/cache keeps the user's selected station and frame untouched.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -8,7 +8,7 @@ export XDG_RUNTIME_DIR="$scratch/runtime" XDG_CACHE_HOME="$scratch/cache"
 export OMASTORM_ROOT="$PWD" OMASTORM_CONFIG="$scratch/config.toml"
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
 mkdir -p "$XDG_RUNTIME_DIR" review
-jq -r '.sites[] | select(.id=="KTLX") | "center_lat = \(.lat)\ncenter_lon = \(.lon)\nlocked_radar = \"KTLX\""' engine/data/sites.json > "$OMASTORM_CONFIG"
+jq -r '.sites[] | select(.id=="vara") | "center_lat = \(.lat)\ncenter_lon = \(.lon)\nlocked_radar = \"vara\""' engine/data/sites.json > "$OMASTORM_CONFIG"
 pid=
 cleanup() {
   [[ -z $pid ]] || kill "$pid" 2>/dev/null || true
@@ -20,10 +20,10 @@ pid=$!
 call() { quickshell ipc --pid "$pid" call popover "$@"; }
 ready=0
 for _ in {1..120}; do
-  if call status 2>/dev/null | jq -e '.site == "KTLX" and .condition == "ok" and (.frame | contains("loading") | not)' >/dev/null 2>&1; then ready=1; break; fi
+  if call status 2>/dev/null | jq -e '.site == "vara" and .condition == "ok" and (.frame | contains("loading") | not)' >/dev/null 2>&1; then ready=1; break; fi
   sleep .5
 done
-[[ $ready == 1 ]] || { cat "$scratch/ui.log"; echo "No live KTLX frame within 60 s" >&2; exit 1; }
+[[ $ready == 1 ]] || { cat "$scratch/ui.log"; echo "No live Vara frame within 60 s" >&2; exit 1; }
 sleep 3
 for treatment in GLYPHS PIXELS STIPPLE; do
   call treatment "$treatment"

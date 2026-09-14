@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review
-export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/KTLX20130520_201643_V06.gz} # the archived scan the checks assume
+export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/radar_vara_qcvol_202609131055.h5} # the vendored Vara scan; the checks keep KTLX (DEC-10)
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic
 export QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
 scratch=$(mktemp -d /tmp/omastorm-review.XXXXXX)
@@ -26,7 +26,16 @@ wait "$review_capture_pid"
 corner=$(magick review/theme-change.png -format '%[pixel:p{0,0}]' info:)
 [[ "$corner" == *'(245,241,232'* ]] || { echo "Theme change not applied: corner is $corner" >&2; exit 1; }
 # Crop to the map so legend swatches cannot stand in for the radar: the shader
-# must paint the socket palette (band 2, 0-10 dBZ, the most common return).
+# must paint the same colours the legend draws. Both are tinted by the theme,
+# so the swatches are read back from the capture rather than hard-coded; any
+# band will do, since which bands a scan fills depends on the weather in it.
 histogram=$(magick review/theme-change.png -crop 900x430+20+120 +repage -define histogram:unique-colors=true -format %c histogram:info:-)
-grep -q '(66,107,136' <<< "$histogram" || { echo 'Radar palette color missing from the map after theme change' >&2; exit 1; }
+found=
+for band in $(seq 1 11); do
+  x=$(( 20 + 920 * (2 * band + 1) / 24 )) # the band's centre in the 12-band legend strip
+  swatch=$(magick review/theme-change.png -format "%[fx:round(255*p{$x,597}.r)],%[fx:round(255*p{$x,597}.g)],%[fx:round(255*p{$x,597}.b)]" info:)
+  # Histogram entries read (r,g,b) or, for a capture with alpha, (r,g,b,a).
+  if grep -Eq "\($swatch(,[0-9]+)?\)" <<< "$histogram"; then found=$band; break; fi
+done
+[[ -n $found ]] || { echo 'No legend swatch colour on the map after theme change' >&2; exit 1; }
 echo 'Live theme change and fixed radar palette: PASS'

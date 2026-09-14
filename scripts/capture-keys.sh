@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # The keyboard session (DESIGN.md, keyboard map as built) as three captures
-# over the quarter window on a scratch daemon: the `?` sheet open over live
-# KTLX, the treatment menu open from the chip, and the header naming the
-# current-location home from a weather.json for Stokesdale, NC (KFCX)
+# over the quarter window on a scratch daemon: the `?` sheet open over
+# Vara, the treatment menu open from the chip, and the header naming the
+# current-location home from a weather.json for Göteborg (nearest radar Vara)
 # (review/keys-help.png, review/keys-chip.png, review/keys-home.png, and
 # review/keys-sheet.png side by side). The scratch daemon is stopped on exit.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review
-export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/KTLX20130520_201643_V06.gz} # the archived scan the checks assume
+export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/radar_vara_qcvol_202609131055.h5} # the vendored Vara scan; the checks keep KTLX (DEC-10)
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
 review="$PWD/review"
 rm -f "$review"/keys-*.png
 scratch=$(mktemp -d /tmp/omastorm-keys.XXXXXX)
-jq -r '.sites[] | select(.id=="KTLX") | "center_lat = \(.lat)\ncenter_lon = \(.lon)\nlocked_radar = \"KTLX\""' engine/data/sites.json > "$scratch/home.toml"
+jq -r '.sites[] | select(.id=="vara") | "center_lat = \(.lat)\ncenter_lon = \(.lon)\nlocked_radar = \"vara\""' engine/data/sites.json > "$scratch/home.toml"
 : > "$scratch/none.toml"
-printf '{\n  "name": "Stokesdale",\n  "latitude": 36.23708,\n  "longitude": -79.97948\n}\n' > "$scratch/weather.json"
+printf '{\n  "name": "Göteborg",\n  "latitude": 57.70716,\n  "longitude": 11.96679\n}\n' > "$scratch/weather.json"
 bash scripts/cargo.sh build --offline --locked --quiet
 # A scratch runtime dir, never the user's: ensure ends an engine of another
 # build, so the installed plugin's engine would be replaced by this debug one.
@@ -26,7 +26,7 @@ trap '"$engine" stop > /dev/null 2>&1 || true' EXIT
 target/debug/omastorm-engine ensure
 sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.3 - "UNIX-CONNECT:$sock" > /dev/null; }
-tell '{"type":"select_site","id":"KTLX"}' '{"type":"lock","enabled":false}'
+tell '{"type":"select_site","id":"vara"}' '{"type":"lock","enabled":false}'
 
 capture() { # name, delay ms, config, location, ipc steps...
   local name=$1 delay=$2 config=$3 location=$4 pid
@@ -48,7 +48,7 @@ capture() { # name, delay ms, config, location, ipc steps...
 capture help 7000 "$scratch/home.toml" "$scratch/missing.json" 'run help'
 capture chip 7000 "$scratch/home.toml" "$scratch/missing.json" 'menu true'
 capture home 12000 "$scratch/none.toml" "$scratch/weather.json"
-tell '{"type":"select_site","id":"KTLX"}' '{"type":"lock","enabled":false}'
+tell '{"type":"select_site","id":"vara"}' '{"type":"lock","enabled":false}'
 
 cd "$review"
 magick montage -label '%t' keys-help.png keys-chip.png keys-home.png \

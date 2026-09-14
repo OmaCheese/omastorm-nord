@@ -412,7 +412,8 @@ fn startup_frame(template: &Frame) -> Frame {
 }
 /// Development only: the daemon's own station table when it starts on an
 /// archived volume whose station the table lacks (the NEXRAD KTLX scan the
-/// checks use until an ODIM fixture replaces it). The archive's station joins
+/// checks use on purpose, DEC-10: an archived Vara volume is a table
+/// station, and selecting it would go live on SMHI). The archive's station joins
 /// it from the frame's geometry, so following keeps the archive's home view
 /// instead of handing off to the nearest SMHI radar, and `select_site` still
 /// reaches it. `hello` never lists it: the picker shows the SMHI sites alone.

@@ -265,6 +265,7 @@ FocusScope {
             readonly property string radarCredit: card.scan && card.scan.attribution ? card.scan.attribution
                 : connection.site && connection.site.attribution ? connection.site.attribution : ""
             text: (radarCredit ? radarCredit + " · " : "") + (map.osmOnScreen ? "© OpenStreetMap" : "Natural Earth")
+                + (connection.referenceSites.length ? " · other radars: EUMETNET" : "")
         }
     }
 }

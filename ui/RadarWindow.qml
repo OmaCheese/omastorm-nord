@@ -838,7 +838,8 @@ Item {
                 // catalogue (NOAA, Natural Earth, GeoNames, …) stays in README.
                 LabelText {
                     anchors.bottom: parent.bottom; anchors.right: parent.right; anchors.margins: 12
-                    text: "© OpenStreetMap"
+                    // The grey marks' positions credit their source (S23).
+                    text: "© OpenStreetMap" + (engine.referenceSites.length ? " · other radars: EUMETNET" : "")
                     visible: !!app.scan
                     font.pixelSize: 10; opacity: .55
                 }

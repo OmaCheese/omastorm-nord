@@ -92,9 +92,10 @@ fn fingerprint() -> io::Result<String> {
 fn build_id() -> &'static str {
     BUILD.get().expect("fingerprint is computed before use")
 }
-/// The embedded station snapshot (`engine/data/sites.json`, the 12 radars
-/// `scripts/fetch-smhi-sites.sh` writes) plus the national composite, which
-/// that script does not know about (`composite.rs`).
+/// The embedded station snapshot (`engine/data/sites.json`: the 12 radars
+/// `scripts/fetch-smhi-sites.sh` writes and the 29 of
+/// `scripts/fetch-ord-sites.sh`) plus the national composite, which neither
+/// script knows about (`composite.rs`).
 fn site_table() -> providers::Table {
     providers::table()
 }

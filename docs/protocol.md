@@ -27,16 +27,44 @@ lists every difference.
 ```json
 {"type":"hello","v":2,"engine":"0.1.1",
  "sites":[{"id":"vara","name":"Vara","state":"Västra Götaland",
-           "lat":58.25565,"lon":12.82602,"altM":164.0,"kind":"polar"},
+           "lat":58.25565,"lon":12.82602,"altM":164.0,"kind":"polar",
+           "country":"SE","provider":"smhi","rangeKm":240.0,
+           "attribution":"SMHI, CC BY 4.0","aliases":["sevax"]},
           {"id":"sweden","name":"Sweden","state":"",
-           "lat":62.0,"lon":16.0,"altM":0.0,"kind":"grid"}]}
+           "lat":62.0,"lon":16.0,"altM":0.0,"kind":"grid",
+           "country":"SE","provider":"smhi","rangeKm":0.0,
+           "attribution":"SMHI, CC BY 4.0","aliases":[]}]}
 ```
 
-Each station has a `kind`. `polar` is a single radar. `grid` is the national
-composite (`sweden`), which covers every radar at once. A grid station's
+Each station has a `kind`. `polar` is a single radar. `grid` is a
+composite (`sweden`), which covers many radars at once. A grid station's
 `lat` and `lon` mark the middle of its coverage, for the picker and for
 centring the map. It has no antenna, so a client draws no station marker,
 range ring, or coverage circle for it.
+
+Every station also carries the following fields, always sent (S14). They
+are additive, so the version stays 2 and an older client ignores them:
+
+- `id`: the station id every command and `state.site.id` use (DEC-12). A
+  Swedish radar's id is its SMHI area key (`vara`, `balsta`); every other
+  radar's is its ODIM node code in lowercase (`nohur`, `fikor`, `dksin`); a
+  composite's is a region word (`sweden`, `nordic`). Ids are unique across
+  the table, aliases included. Clients treat them as opaque.
+- `aliases`: other ids the engine accepts for this station in `select_site`,
+  so a stored or typed id keeps working. A Swedish radar lists its ODIM node
+  code (`vara` has `["sevax"]`). Empty when there are none.
+- `country`: the ISO 3166-1 alpha-2 code of the network the station belongs
+  to (`SE`, `NO`, `FI`, `DK`); empty for a composite that spans countries.
+- `provider`: where the engine gets the station's data: `smhi` (SMHI's open
+  API), and from S15/S16 `ord` (EUMETNET Open Radar Data), `fmi-s3` (FMI's
+  bucket), `opera` (the OPERA composite). It is for display and grouping; a
+  client never needs it to draw.
+- `rangeKm`: the far edge of the lowest tilt's last gate, in kilometres of
+  slant range, for markers and range circles (240 for SMHI's radars); 0
+  for a grid station.
+- `attribution`: the credit the data's licence asks for, shown verbatim
+  (`SMHI, CC BY 4.0`). While drawing, a client credits the frame on
+  screen's own `frame.attribution`.
 
 `state` is the complete current state, re-sent whenever anything in it changes.
 It is small (a few KB) so clients replace rather than merge.
@@ -72,14 +100,18 @@ It is small (a few KB) so clients replace rather than merge.
   none). `connection` is the only place a lasting error condition lives; it
   describes the engine's data path and no client command can clear it. In live
   mode, the status is `loading` from a `select_site` until the station's first
-  frame arrives or the poller reports; then, with SMHI reachable, the status
-  follows the age of the newest scan the station has published: `ok` under
-  15 minutes, `stale` from 15 minutes, `unavailable` from 30 minutes (SMHI is
+  frame arrives or the poller reports; then, with the provider reachable, the
+  status follows the age of the newest scan the station has published,
+  judged against the station's provider's cadence (DEC-9 generalized):
+  `stale` from the cadence plus 10 minutes, `unavailable` from the larger of
+  30 minutes and the stale threshold plus one cadence, unless a provider
+  documents its own. For SMHI (5-minute cadence) that is `ok` under 15
+  minutes, `stale` from 15 minutes, `unavailable` from 30 minutes (SMHI is
   up and the station is silent: maintenance or an outage; Leksand has
   published nothing since January 2026). A healthy SMHI frame is already 5 to
   10 minutes old, which is why the thresholds are not upstream's 10 and 30
-  (DEC-9). `offline` is SMHI unreachable, or answering errors twice in a
-  row, cleared by the next frame. Cached frames
+  (DEC-9). `offline` is the provider unreachable, or answering errors twice
+  in a row, cleared by the next frame. Cached frames
   stay in `timeline` under every status. While live the engine re-judges
   once a second and broadcasts when anything changed, so `ageSeconds` and
   the status move on a quiet feed. A `message` is added if a status ever
@@ -123,6 +155,11 @@ It is small (a few KB) so clients replace rather than merge.
   weak-return floor, a view setting in `units`, in code units for the shader
   (lookup rule, below). Both are 0 on the loading placeholder, which
   therefore has no floor.
+- `frame.attribution` is the credit for this frame's data, shown verbatim
+  (`SMHI, CC BY 4.0`), always sent (S14, additive). It is the station's
+  `attribution` when the frame was made; a frame catalogued before S14 gets
+  its station's. Before any `select_site` it is empty, and an archived
+  Level II frame (the checks' KTLX) credits `NOAA NEXRAD Level II`.
 - `frame.kind` is `polar` or `grid`, and is always present. A client that
   gets any other value rejects the `state`, as it would a bad texture path.
   - `polar`: a sweep texture and its azimuth lookup, placed by `rays`,
@@ -216,7 +253,12 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
   live on it: the newest frame in its catalog (the per-station ring buffer) or
   the loading placeholder shows at once with `connection.status` `loading`,
   and a poller replaces the previous station's; the same station again changes
-  nothing. An id outside the table is answered with an `error`.
+  nothing. `id` may be a station's `id` or one of its `aliases`, matched
+  exactly first and then ignoring ASCII case; either way `state.site.id`
+  becomes the station's `id` (so `select_site` `sevax` shows `vara`). This
+  is how a `locked_radar`, a `state.json` lock, or a typed id keeps working
+  when a station gains a new id. An id outside the table is answered with an
+  `error`.
 - `view_center` is sent when a pan or zoom settles and the centre moved, not
   per frame. With `follow` on and `lock` off, the engine hands off to the
   station nearest the centre by great-circle distance when that station beats
@@ -413,6 +455,17 @@ convention (`scale` 2, `offset` 66), and reprojects it to the grid texture.
 `complete`. `connection` judges the composite's age against the same
 thresholds as a radar's.
 
+**Providers.** Each station names its `provider` (`engine/src/providers/`).
+A provider supplies the station's listing and polling, its cadence (and so
+its staleness thresholds), its backfill depth, its range-read budget, and
+the default `attribution`, `country`, and `rangeKm` of its rows in
+`engine/data/sites.json`. SMHI is the only provider so far: the poller
+above, a 5-minute cadence, 60-frame backfill, and DEC-2's range reads. The
+frames of every provider share this section's rules: `id` is
+`<station id>-<scanTime compact>-e0`, values are requantized to `scale` 2
+and `offset` 66, and complete frames enter the catalog under the station
+id.
+
 ## Configuration
 
 `~/.config/omastorm-se/config.toml` and
@@ -458,3 +511,12 @@ hides radar and latches the error until relaunch.
   frames are otherwise unchanged. A `grid` frame carries `frame.grid`, an
   empty `azimuthLut`, and zero polar geometry.
 - `view_center` never hands off to or from a `grid` station.
+
+Additive since (S14, still version 2):
+
+- `hello.sites[]` gains `country`, `provider`, `rangeKm`, `attribution`,
+  and `aliases`, always sent.
+- `state.frame.attribution` is new and always sent.
+- `select_site` accepts a station's aliases, and ids in any ASCII case.
+- Staleness thresholds follow each station's provider cadence; SMHI's stay
+  15 and 30 minutes.

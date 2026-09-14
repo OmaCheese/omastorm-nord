@@ -34,9 +34,10 @@ QtObject {
             if (e && bufferable(e)) return entryFrame(e);
         }
         // The engine's frame, through its timeline entry when that names the
-        // same files: a grid entry's code texture is the smaller one to read.
+        // same files: a grid entry's code texture is the smaller one to read,
+        // under the loop's rule (loopCodes) so pausing never switches kind.
         var own = state.timeline.find(t => t.id === state.frame.id && t.texture === state.frame.texture);
-        if (own && own.codes && state.frame.kind === "grid") return Object.assign({}, state.frame, {codes: own.codes});
+        if (own && own.codes && loopCodes && state.frame.kind === "grid") return Object.assign({}, state.frame, {codes: own.codes});
         return state.frame;
     }
     readonly property bool playing: looping || (!!state && state.playing)
@@ -94,6 +95,21 @@ QtObject {
         if (k === "polar") return !!e.azimuthLut;
         return k === "grid" && !!(e.placement ? e.placement.grid : state.frame.grid);
     }
+    /// Whether the newest `bufferLimit` complete entries all name a code
+    /// texture. A loop that mixes the two (a composite's rows catalogued
+    /// before S19 beside newer ones) draws every frame from RGBA instead:
+    /// each switch of the sampler from an RGBA to a code texture stalled the
+    /// loop about 50 ms in the harness. Such rows leave the ring within hours.
+    readonly property bool loopCodes: {
+        if (!state) return false;
+        var n = 0, tl = state.timeline;
+        for (var i = tl.length - 1; i >= 0 && n < bufferLimit; i--) {
+            if (tl[i].status !== "complete" || !tl[i].texture) continue;
+            if (!tl[i].codes) return false;
+            n++;
+        }
+        return n > 0;
+    }
     /// An entry as a frame: the station's product, palette and bounds from
     /// `frame`, its placement from its own `placement` when it has one.
     function entryFrame(e) {
@@ -105,7 +121,7 @@ QtObject {
         f.status = e.status;
         f.texture = e.texture;
         f.azimuthLut = e.azimuthLut;
-        f.codes = f.kind === "grid" && e.codes ? e.codes : "";
+        f.codes = f.kind === "grid" && loopCodes && e.codes ? e.codes : "";
         return f;
     }
     function frameBytes(f) {

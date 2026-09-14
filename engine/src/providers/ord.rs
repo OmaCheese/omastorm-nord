@@ -20,9 +20,11 @@
 //!   The newest time waits until its best file is as good as the previous
 //!   time's (`complete`), so a Finnish 0.7° scan or a Norwegian TH file that
 //!   lands first is not taken for the frame.
-//! - A file is read through `RangeReader` (`plan_for` its listed size:
-//!   whole up to `WHOLE_UP_TO`, else `PLAN`'s 8 KiB blocks) and decoded by
-//!   `odim::decode_lowest` at the lowest tilt, like SMHI's (DEC-2).
+//! - A file is read through `RangeReader` (`plan_for` its listed size and
+//!   the product: whole up to `WHOLE_UP_TO` for the lowest scan, up to
+//!   `PRODUCT_WHOLE_UP_TO` for any other, else `PLAN`'s 8 KiB blocks) and
+//!   decoded by `odim::decode_lowest` at the lowest tilt, like SMHI's
+//!   (DEC-2), or by `products::decode_volume` for another product.
 //! - Failures back off like SMHI's poller; the second in a row reports
 //!   `offline`. A station whose newest file is older than the `unavailable`
 //!   threshold is `Silent`.
@@ -106,11 +108,25 @@ pub const PLAN: RangePlan = RangePlan {
 /// of the file under 16 KiB blocks, fikor 3 for 67%). DMI's are 0.88 MB up.
 pub const WHOLE_UP_TO: u64 = 768 * 1024;
 
-/// The plan for a file of `size` bytes (from the listing): all of it in the
-/// first request up to `WHOLE_UP_TO`, else `PLAN`.
-pub fn plan_for(size: Option<u64>) -> RangePlan {
+/// For any product but the lowest scan, files up to this size are read
+/// whole (S26): a product needs several tilts spread through the file, so
+/// the block plan fetched most of it anyway, in many requests (norsa's
+/// 12-angle files under CMAX: 32 requests for 752,261 of 801,413 bytes; DMI's
+/// 1.3 MB volumes 44 requests for 565 KB). The cache has no request limit;
+/// one request is what costs, not the bytes.
+pub const PRODUCT_WHOLE_UP_TO: u64 = 2 * 1024 * 1024;
+
+/// The plan for a file of `size` bytes (from the listing) read for `want`:
+/// all of it in the first request up to `WHOLE_UP_TO` for the lowest scan,
+/// `PRODUCT_WHOLE_UP_TO` for any other product, else `PLAN`.
+pub fn plan_for(size: Option<u64>, want: Want) -> RangePlan {
+    let whole_up_to = if want.is_lowest() {
+        WHOLE_UP_TO
+    } else {
+        PRODUCT_WHOLE_UP_TO
+    };
     match size {
-        Some(size) if size > 0 && size <= WHOLE_UP_TO => RangePlan {
+        Some(size) if size > 0 && size <= whole_up_to => RangePlan {
             prefetch: size.next_multiple_of(PLAN.block),
             ..PLAN
         },
@@ -558,7 +574,7 @@ async fn fetch_file(
         runtime: Handle::current(),
         failure: failure.clone(),
     };
-    let plan = plan_for(file.size);
+    let plan = plan_for(file.size, want);
     let joined = spawn_blocking(move || {
         let _permit = permit;
         let reader = RangeReader::open_planned(Box::new(source), plan, Duration::from_secs(1))
@@ -1498,12 +1514,18 @@ mod tests {
     /// Requests, bytes and file length for decoding `bytes` under `plan`,
     /// and a digest of the sweep, so plans can be compared on real files.
     fn cost(bytes: &[u8], plan: RangePlan) -> (u32, u64, u64, u64) {
+        cost_of(bytes, plan, Want::Lowest)
+    }
+
+    /// `cost` for `want`.
+    fn cost_of(bytes: &[u8], plan: RangePlan, want: Want) -> (u32, u64, u64, u64) {
         let reader =
             RangeReader::open_planned(Box::new(Local(bytes.to_vec())), plan, Duration::ZERO)
                 .unwrap();
         let traffic = reader.traffic();
-        let Scan::Polar(sweep) = decode(reader, Want::Lowest).unwrap() else {
-            panic!("a radar decodes to a polar sweep")
+        let sweep = match decode(reader, want).unwrap() {
+            Scan::Polar(sweep) | Scan::Product(sweep, ..) => sweep,
+            Scan::Grid(_) => panic!("a radar decodes to a polar sweep"),
         };
         let mut digest = 0xcbf2_9ce4_8422_2325u64;
         for ray in &sweep.rays {
@@ -1518,11 +1540,12 @@ mod tests {
     /// and decodes to the same sweep as under the block plan.
     #[test]
     fn small_files_are_read_whole_and_decode_the_same() {
-        assert_eq!(plan_for(None), PLAN);
-        assert_eq!(plan_for(Some(0)), PLAN);
-        assert_eq!(plan_for(Some(875_975)), PLAN, "DMI's smallest seen");
+        let lowest = Want::Lowest;
+        assert_eq!(plan_for(None, lowest), PLAN);
+        assert_eq!(plan_for(Some(0), lowest), PLAN);
+        assert_eq!(plan_for(Some(875_975), lowest), PLAN, "DMI's smallest seen");
         assert_eq!(
-            plan_for(Some(575_334)).prefetch,
+            plan_for(Some(575_334), lowest).prefetch,
             581_632,
             "MET Norway's largest seen"
         );
@@ -1535,7 +1558,7 @@ mod tests {
             let bytes = std::fs::read(path).unwrap();
             let len = bytes.len() as u64;
             let blocks = cost(&bytes, PLAN);
-            let whole = cost(&bytes, plan_for(Some(len)));
+            let whole = cost(&bytes, plan_for(Some(len), lowest));
             assert_eq!(whole.3, blocks.3, "{name}: the same sweep");
             assert_eq!(
                 (whole.0, whole.1),
@@ -1559,6 +1582,36 @@ mod tests {
         );
     }
 
+    /// Any product but the lowest scan reads a file up to
+    /// `PRODUCT_WHOLE_UP_TO` whole, in one request (S26), and makes the same
+    /// product as under the block plan; the lowest scan keeps its plan.
+    #[test]
+    fn a_product_reads_the_file_whole_up_to_two_mib() {
+        for want in [Want::ColMax, Want::Cappi(1000.0), Want::Angle(4.8)] {
+            let plan = |size| plan_for(Some(size), want);
+            assert_eq!(plan(801_413).prefetch, 802_816, "norsa's 12-angle file");
+            assert_eq!(plan(1_293_200).prefetch, 1_294_336, "DMI's largest seen");
+            assert_eq!(plan(PRODUCT_WHOLE_UP_TO + 1), PLAN);
+            assert_eq!(plan_for(None, want), PLAN);
+        }
+        assert_eq!(plan_for(Some(801_413), Want::Lowest), PLAN);
+        for name in [
+            "ord_nohur_202609140930_tilts.h5",
+            "ord_dksin_202609140940_tilts.h5",
+        ] {
+            let path = format!("{}/../data/raw/{name}", env!("CARGO_MANIFEST_DIR"));
+            let bytes = std::fs::read(path).unwrap();
+            let len = bytes.len() as u64;
+            for want in [Want::ColMax, Want::Cappi(2000.0)] {
+                let blocks = cost_of(&bytes, PLAN, want);
+                let whole = cost_of(&bytes, plan_for(Some(len), want), want);
+                assert_eq!(whole.3, blocks.3, "{name}: the same product");
+                assert_eq!((whole.0, whole.1), (1, len), "{name}: one request");
+                assert!(blocks.0 > 1, "{name}: {} requests in blocks", blocks.0);
+            }
+        }
+    }
+
     /// S18's tuning table over whole cache files in `OMASTORM_ORD_SAMPLES`:
     /// `cargo test ord_plan_table -- --ignored --nocapture`.
     #[test]
@@ -1576,7 +1629,8 @@ mod tests {
             let bytes = std::fs::read(&path).unwrap();
             let (_, _, _, want) = cost(&bytes, PLAN);
             println!("{} ({} B)", path.display(), bytes.len());
-            let (requests, fetched, _, digest) = cost(&bytes, plan_for(Some(bytes.len() as u64)));
+            let (requests, fetched, _, digest) =
+                cost(&bytes, plan_for(Some(bytes.len() as u64), Want::Lowest));
             assert_eq!(digest, want);
             println!("  chosen (plan_for): {requests} requests, {fetched} B");
             for prefetch in [16 * K, 64 * K, 256 * K, 512 * K, 1024 * K, 2048 * K] {

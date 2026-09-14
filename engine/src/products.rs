@@ -1321,13 +1321,21 @@ mod tests {
     }
 
     /// The vendored blockage tables (`scripts/blockage-tables.py`): 360
-    /// entries per radar, every radar a table station, and those radars
-    /// offer "Clear view" with their own table.
+    /// entries per radar, every radar a table station, and every radar
+    /// whose angles the engine knows (SMHI's, MET Norway's and DMI's, S26)
+    /// offers "Clear view" with its own table. FMI's offer the lowest scan
+    /// only.
     #[test]
     fn blockage_tables_load_and_offer_clear_view() {
         let table = crate::providers::table();
-        for id in ["vara", "ostersund", "nohur", "nosta"] {
-            let station = table.sites.iter().find(|s| s.id == id).unwrap();
+        let radars: Vec<&Station> = table
+            .sites
+            .iter()
+            .filter(|s| s.kind == SiteKind::Polar && !nominal_angles(s).is_empty())
+            .collect();
+        assert_eq!(radars.len(), 29, "12 SE, 12 NO and 5 DK radars");
+        for station in radars {
+            let id = station.id.as_str();
             assert!(blockage(id).is_some(), "{id}");
             assert_eq!(
                 for_station(station).0,

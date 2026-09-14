@@ -33,6 +33,10 @@ layout(std140, binding = 0) uniform buf {
     vec2 gridOrigin;
     vec2 gridSize;
     vec2 gridTexels;
+    // 1 when a grid frame's texture is its one-channel code texture (the
+    // raw code in R): the texel is rebuilt as class + 1 from `classes`, no
+    // status bits, and the code in B, exactly the RGBA grid texel.
+    int useCodes;
 };
 // The sweep: one row per radial in ascending azimuth, one texel per gate.
 // For a grid frame, the Web Mercator texture instead, row 0 north.
@@ -45,6 +49,9 @@ layout(binding = 2) uniform sampler2D swatches;
 // 3600 x 1: entry i covers azimuth i / 10 degrees and names the row nearest
 // its center as a little-endian 16-bit value in R and G.
 layout(binding = 3) uniform sampler2D azimuthLut;
+// With useCodes: 256 x 1, entry c holds code c's class + 1 in R (0 draws
+// nothing), built by RadarMap from the frame's bounds, scale and offset.
+layout(binding = 4) uniform sampler2D classes;
 // Gates sit at slant range along the beam; the map is ground distance. The
 // two are related on the 4/3 effective-radius earth exactly as pyart's
 // antenna_to_cartesian places gates, which is how the golden reference is built.
@@ -109,7 +116,14 @@ void main() {
         vec2 g = (centerOffset + (samplePixel - viewport * .5) * unitsPerPixel - gridOrigin) / gridSize;
         if (gridTexels.x < 1.0 || gridTexels.y < 1.0
             || g.x < 0.0 || g.y < 0.0 || g.x >= 1.0 || g.y >= 1.0) { fragColor=vec4(0); return; }
-        fragColor = shade(texture(sweep, (floor(g * gridTexels) + .5) / gridTexels), pixel);
+        vec4 texel = texture(sweep, (floor(g * gridTexels) + .5) / gridTexels);
+        if (useCodes == 1) {
+            // Code texture: the raw code in R (a grayscale PNG reads it in
+            // R, G and B alike); class + 1 from the lookup strip.
+            float raw = floor(texel.r * 255.0 + .5);
+            texel = vec4(texture(classes, vec2((raw + .5) / 256.0, .5)).r, 0.0, raw / 255.0, 1.0);
+        }
+        fragColor = shade(texel, pixel);
         return;
     }
     if (gates <= 0 || rays <= 0) { fragColor=vec4(0); return; }

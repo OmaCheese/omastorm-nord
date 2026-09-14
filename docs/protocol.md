@@ -26,8 +26,8 @@ lists every difference.
 
 ```json
 {"type":"hello","v":2,"engine":"0.1.1",
- "sites":[{"id":"KTLX","name":"Oklahoma City","state":"OK",
-           "lat":35.33306,"lon":-97.27748,"altM":388.0,"kind":"polar"},
+ "sites":[{"id":"vara","name":"Vara","state":"Västra Götaland",
+           "lat":58.25565,"lon":12.82602,"altM":164.0,"kind":"polar"},
           {"id":"sweden","name":"Sweden","state":"",
            "lat":62.0,"lon":16.0,"altM":0.0,"kind":"grid"}]}
 ```
@@ -45,15 +45,15 @@ It is small (a few KB) so clients replace rather than merge.
 {"type":"state","v":2,
  "source":"archived",
  "connection":{"status":"ok","ageSeconds":0},
- "site":{"id":"KTLX","follow":true,"locked":false},
- "frame":{"id":"KTLX-20130520T201643Z-e0","kind":"polar",
-          "product":"REF","productName":"Reflectivity","units":"dBZ","elevationDeg":0.48,
-          "scanTime":"2013-05-20T20:16:43Z","sweepEnd":"2013-05-20T20:17:00Z",
+ "site":{"id":"vara","follow":true,"locked":false},
+ "frame":{"id":"vara-20260913T105503Z-e0","kind":"polar",
+          "product":"REF","productName":"Reflectivity","units":"dBZ","elevationDeg":0.5,
+          "scanTime":"2026-09-13T10:55:03Z","sweepEnd":"2026-09-13T10:55:33Z",
           "status":"complete",
-          "texture":"tex/sweep-KTLX-20130520T201643Z-e0-r3.png",
-          "azimuthLut":"tex/azlut-KTLX-20130520T201643Z-e0-r3.png",
-          "rays":720,"gates":1832,"firstGateM":2125,"gateSpacingM":250,
-          "site":{"lat":35.33306,"lon":-97.27748,"altM":388.0},
+          "texture":"tex/sweep-vara-20260913T105503Z-e0-r3.png",
+          "azimuthLut":"tex/azlut-vara-20260913T105503Z-e0-r3.png",
+          "rays":360,"gates":480,"firstGateM":250,"gateSpacingM":500,
+          "site":{"lat":58.25565,"lon":12.82602,"altM":164.0},
           "palette":["#34465f","..."],"bounds":[-32,0,10,20,30,40,45,50,55,60,65,70,96]},
  "timeline":[{"id":"...","scanTime":"...","status":"complete"}],
  "basemap":{"ne":{"version":"5.2.0-pre"},"osm":{"status":"ok","source":"OpenFreeMap",
@@ -64,20 +64,22 @@ It is small (a few KB) so clients replace rather than merge.
 - `source`: `archived` | `live`. The daemon starts `live` with no station:
   `site.id` is empty, `connection.status` is `loading`, the frame is the
   placeholder below, and the first `select_site` goes live on a station.
-  Started with `OMASTORM_ARCHIVE` naming a Level II volume (development and
-  the checks) it starts `archived` on that scan instead.
+  Started with `OMASTORM_ARCHIVE` naming an ODIM `.h5` volume or a NEXRAD
+  Level II volume (development, captures, and the checks) it starts
+  `archived` on that scan instead.
 - `connection.status`: `ok` | `stale` | `unavailable` | `offline` | `loading`.
   `ageSeconds` is the age of the newest complete frame (0 while there is
   none). `connection` is the only place a lasting error condition lives; it
   describes the engine's data path and no client command can clear it. In live
-  mode, the status is `loading` from a `select_site` until the station's first sweep
-  arrives or the poller reports; then, with the feed reachable, the status
-  follows the age of the newest radial the station has published (the sweep
-  in progress while one paints, else the newest complete frame): `ok` under
-  10 minutes, `stale` from 10 minutes, `unavailable` from 30 minutes (the
-  feed is up and the station is silent: maintenance or an outage), and at
-  once when the bucket holds no volume for the station. `offline` is the
-  bucket unreachable or unreadable, cleared by the next sweep. Cached frames
+  mode, the status is `loading` from a `select_site` until the station's first
+  frame arrives or the poller reports; then, with SMHI reachable, the status
+  follows the age of the newest scan the station has published: `ok` under
+  15 minutes, `stale` from 15 minutes, `unavailable` from 30 minutes (SMHI is
+  up and the station is silent: maintenance or an outage; Leksand has
+  published nothing since January 2026). A healthy SMHI frame is already 5 to
+  10 minutes old, which is why the thresholds are not upstream's 10 and 30
+  (DEC-9). `offline` is SMHI unreachable, or answering errors twice in a
+  row, cleared by the next frame. Cached frames
   stay in `timeline` under every status. While live the engine re-judges
   once a second and broadcasts when anything changed, so `ageSeconds` and
   the status move on a quiet feed. A `message` is added if a status ever
@@ -200,11 +202,11 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 ## Client commands
 
 ```json
-{"type":"select_site","id":"KTLX"}
+{"type":"select_site","id":"vara"}
 {"type":"follow","enabled":true}
 {"type":"lock","enabled":false}
-{"type":"view_center","lat":35.4,"lon":-97.5}
-{"type":"search_places","query":"norman","lat":35.4,"lon":-97.5}
+{"type":"view_center","lat":58.3,"lon":12.8}
+{"type":"search_places","query":"lidköping","lat":58.3,"lon":12.8}
 {"type":"play"}  {"type":"pause"}  {"type":"step","delta":-1}  {"type":"seek","id":"..."}
 {"type":"set_product","product":"REF","elevationIndex":0}
 {"type":"tiles_needed","z":11,"x0":469,"y0":807,"x1":472,"y1":810}
@@ -232,20 +234,24 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
   hands off to nothing: the composite already covers the view, so only a
   `select_site` leaves it.
 - `search_places` ranks the embedded gazetteer (GeoNames populated places
-  with population ≥ 5000, clipped to the NEXRAD network envelope) for the
+  with population ≥ 5000 in Sweden, Norway, Finland, Åland, Denmark and the
+  Baltics, clipped to the SMHI network's Nordic envelope) for the
   location picker and is answered with `places` to the sender only, like
   `tile_ready`. Map labels stay on Natural Earth. `query` is required;
   optional `lat` and `lon` order nearer matches first. Word-start matches
-  beat substrings. At most eight results. A blank query returns no results.
+  beat substrings; matching ignores diacritics ("orebro" finds Örebro) and
+  also tries each place's other names ("gothenburg" finds Göteborg), below
+  the name as typed. Results keep the local name. At most eight results. A
+  blank query returns no results.
   A latitude or longitude outside range is answered with an `error`. The
   reply is not shared state:
 
 ```json
-{"type":"places","v":2,"query":"jacksonville",
- "results":[{"name":"Jacksonville","lat":30.3322,"lon":-81.6749,"class":"city","rank":8,
-             "region":"Florida","country":"US"}]}
+{"type":"places","v":2,"query":"göteborg",
+ "results":[{"name":"Göteborg","lat":57.70716,"lon":11.96679,"class":"city","rank":3,
+             "region":"Västra Götaland","country":"SE"}]}
 ```
-  `region` is the admin-1 name (a US state, a Canadian province);
+  `region` is the admin-1 name (a Swedish county, a Norwegian county);
   `country` is the ISO 3166-1 alpha-2 code. Either may be omitted when empty.
 - `set_product` requests a product and elevation. An unsupported selection
   returns an `error` to its sender and retains the current frame.
@@ -285,7 +291,7 @@ the circle. A complete 0.5° or 1° cut needs no blank row.
 | --- | --- |
 | R | palette class + 1; 0 means nothing to draw |
 | G | status bits: 1 range folded, 2 below threshold, 4 outside coverage |
-| B | raw Level II moment byte, for cursor inspection and the weak-return floor |
+| B | moment byte in the Level II convention (ODIM DBZH requantized, `code = dBZ × 2 + 66`), for cursor inspection and the weak-return floor |
 | A | 255 |
 
 **Azimuth lookup (`frame.azimuthLut`):** PNG, RGBA, width 3600, height 1.
@@ -365,9 +371,11 @@ is reproducible.
   `firstGateM`, `gateSpacingM`, `azimuthDeg[]`, `elevationDeg[]`,
   `rayTimeBase`, `rayTimeMs[]`, site coordinates, source file hash, row order,
   and provenance.
-- `golden/<fixture>/sweep0.u8`: flat uint8, row-major `rays × gates`, raw
-  Level II moment codes in ascending-azimuth row order (0 below threshold,
-  1 range folded, 2..255 measured; dBZ = (code − offset) / scale).
+- `golden/<fixture>/sweep0.u8`: flat uint8, row-major `rays × gates`,
+  moment codes in the Level II convention, in ascending-azimuth row order
+  (0 below threshold, 1 range folded in Level II or no data in ODIM,
+  2..255 measured; dBZ = (code − offset) / scale). The KTLX fixture holds
+  raw Level II codes; the Vara fixture holds ODIM DBZH requantized.
 
 `rayTimeMs` counts from the first radial in decoded (file) order, before the
 azimuth sort; `rayTimeBase` names that instant to the second. Angles are
@@ -379,20 +387,21 @@ Current fixture `ktlx-20130520`: 720 × 1832, first gate 2125 m, 250 m spacing,
 
 ## Live frames
 
-A live frame is the lowest cut (elevation number 1) of the current volume of
-the selected station, reflectivity, assembled from the real-time chunk bucket
-as chunks arrive: `id` is `<SITE>-<scanTime compact>-e0`, `scanTime` and
-`sweepEnd` are the collection times of the cut's first and last radial so
-far, `elevationDeg` the rays' mean angle, `site` the station table's
+A live frame is the lowest tilt of the newest SMHI volume of the selected
+station, reflectivity (`DBZH`). The poller reads `area/<site>/product/qcvol.json`
+every minute and fetches each new volume from its dated URL with HTTP range
+requests (about 7 requests and 100 KB of a 15 MB file, DEC-2): `id` is
+`<site>-<scanTime compact>-e0`, `scanTime` and `sweepEnd` are the tilt's
+start and end times, `elevationDeg` its angle, `site` the station table's
 coordinates, and `product`, `palette`, and `bounds` the engine's reflectivity
-vocabulary shared with the fixture. Each chunk that grows the cut republishes
-the texture as `partial`; the cut's last radial (or the next cut's first)
-makes it `complete`, and complete frames enter the per-station catalog under
-`$XDG_CACHE_HOME/omastorm-se/frames/` (SQLite catalog plus the PNGs; 60 per
-station; the UI never reads it). Selecting a station shows its newest
-catalogued frame while the poller replays the current volume's lowest cut
-from the bucket, so a picture arrives within seconds and the next volume
-paints live.
+vocabulary shared with the fixture; the values are requantized with `scale`
+2 and `offset` 66. SMHI publishes whole volumes, so every frame is
+`complete`; `partial` is never sent. Complete frames enter the per-station
+catalog under `$XDG_CACHE_HOME/omastorm-se/frames/` (SQLite catalog plus the
+PNGs; 60 per station; the UI never reads it). Selecting a station shows its
+newest catalogued frame while the poller fetches the newest volume and
+backfills up to 60 from the day listing, newest first, so a picture arrives
+within seconds and a loop soon after.
 
 **The composite.** Selecting `sweden` polls `area/sweden/product/comp.json`
 in place of a radar's `qcvol.json`, with the same cadence, back-off,

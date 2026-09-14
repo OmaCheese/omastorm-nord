@@ -33,7 +33,7 @@ the ids and comments in `ui/RadarWindow.qml`.
 | **brand row** | Mark, OMASTORM, status light, LIVE / ARCHIVED |
 | **site row** | Station title, radar lock (yellow when the camera is outside that radar's rings) |
 | **product stack** | Right column: product line + meta line |
-| **product line** | Product name / tilt and NOAA NEXRAD |
+| **product line** | Product name / tilt and SMHI |
 | **meta line** | Age, right-aligned under the product line |
 | **map stage** | Radar map frame |
 | **follow chip** | Crosshair on the map (place follow); hidden until GPS is wired |
@@ -49,7 +49,7 @@ the ids and comments in `ui/RadarWindow.qml`.
 strip, with the strip stamp left-aligned and frame index right-aligned
 on one row above the ticks. Playback buttons align with the track at the bottom.
 
-**Product stack.** Compact product line (name, then NOAA NEXRAD). The meta
+**Product stack.** Compact product line (name, then SMHI). The meta
 line is the age only, right-aligned under that row.
 
 **Time.** Age on the meta line is how stale the frame on screen is. The
@@ -91,7 +91,7 @@ configuration knob; a click is the opt-in. IP never enables GPS or tracking.
 Offer place search and "Enter coordinates", which reveals
 labeled latitude and longitude fields with validation. Place search is an
 engine `search_places` reply over GeoNames cities with population ≥ 5000
-in the network envelope (state/region and country so two Jacksonvilles are
+in the network envelope (county and country so two Skåres are
 distinct); map labels stay Natural Earth. "Show radar" accepts the location.
 No separate setup wizard or settings window is required. Keep the picker
 reachable after onboarding (`Shift+H` and LOCATION). Coordinate entry
@@ -150,11 +150,13 @@ file ownership and precedence. Do not write Omarchy, Hyprland, or system
 configuration.
 
 A product is a texture, legend, units, timestamp, and source from the engine.
-Level II is what is drawn.
+SMHI's lowest-tilt reflectivity (DBZH), or its national composite, is what is
+drawn; NEXRAD Level II only in archive mode.
 
-The live poller follows the latest dated volume generation. Empty polls are
-normal between chunks, but 90 seconds without a recent chunk restarts
-discovery. Old keys left in a reused volume directory are ignored.
+The live poller reads SMHI's listing every minute and fetches each new
+volume whole, by HTTP range requests: there are no chunks and no partial
+sweeps. When the listing lags, it probes the next scan's dated file once a
+scan is overdue.
 Independently, if the poller task has exited, or the newest radial is thirty
 minutes old and discovery has not been tried since, spawn a new poller.
 Reselecting the current station is a no-op while the poller is running; if

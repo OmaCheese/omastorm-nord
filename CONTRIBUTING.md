@@ -38,11 +38,14 @@ mise start
 Setup checks desktop dependencies, extracts verified fixtures, and builds the
 engine. Rust comes from mise; use `mise exec -- cargo …` for Cargo commands.
 [mise.toml](mise.toml) is the task and toolchain reference (`mise tasks` lists
-jobs). For an offline archived scan:
+jobs). For an offline archived scan, the vendored SMHI volume from Vara:
 
 ```sh
-OMASTORM_ARCHIVE=data/raw/KTLX20130520_201643_V06.gz mise start
+OMASTORM_ARCHIVE=data/raw/radar_vara_qcvol_202609131055.h5 mise start
 ```
+
+`mise check` itself runs on the Level II KTLX scan on purpose: KTLX is not an
+SMHI station, so selecting it never polls SMHI (DEC-10 in `coord/DECISIONS.md`).
 
 The daemon is shared and outlives windows. Launch replaces a stale build and
 open clients reconnect. Use `mise stop` to end it, never `kill`. Close only

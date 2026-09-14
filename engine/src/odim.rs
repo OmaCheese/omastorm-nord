@@ -128,6 +128,19 @@ pub fn decode_lowest<R: Read + Seek + Send + 'static>(
     lowest_reflectivity(&open(reader)?, tilt)
 }
 
+/// `/dataset1` as `decode_lowest(reader, Tilt::First)` reads it, touching
+/// no other dataset (DEC-2), with its `where/elangle`: the tilt store
+/// (`tilts.rs`, S27) keeps it by angle.
+pub fn decode_first<R: Read + Seek + Send + 'static>(reader: R) -> Result<ProductTilt, OdimError> {
+    let file = open(reader)?;
+    let wpath = "/dataset1/where";
+    let elangle = need(&attrs(&file, wpath)?, wpath, "elangle")?;
+    Ok(ProductTilt {
+        elangle,
+        sweep: sweep_at(&file, "/dataset1")?,
+    })
+}
+
 /// The lowest tilt's reflectivity, plus the site the volume names. Archive
 /// mode reads a local file, so it looks at every tilt.
 pub fn decode_lowest_dbzh_with_site<R: Read + Seek + Send + 'static>(

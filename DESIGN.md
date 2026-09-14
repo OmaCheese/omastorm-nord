@@ -181,6 +181,14 @@ loaded and play them locally (`ui/Engine.qml`, the web's `app.js`): at most
   to 1.6 times the cap, so that a big frame still gets a loop (a Europe frame
   without a code texture, ~41 MB). The Loop note names what the cap left out.
 
+**Closing gives it back.** The loop's hidden `Image`s go the moment a
+surface closes (`active` false). Qt's pixmap cache keeps at most 2 MB of
+images nobody references, so the frames' decoded copies are freed at once.
+The frame on screen goes with them (`Engine.texture` empties). A collection
+then clears the JS garbage from the states that arrived while it was open.
+A closed window holds no radar texture, and reopening reads the files again
+(the loop refills in a second or two from local files).
+
 **Texture memory in Qt: 4 bytes a texel, and there is no R8 path from QML**
 (Qt 6.11, settled in S28). `QQuickDefaultTextureFactory` keeps ARGB32, RGB32
 and the float formats as they are and converts everything else, the code

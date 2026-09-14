@@ -484,7 +484,8 @@ mod tests {
     }
 
     /// DEC-2's budget holds for this decoder, not just the spike: the lowest
-    /// DBZH of a 14.7 MB volume needs well under 300 KB of it.
+    /// DBZH needs well under 300 KB. (Measured on the full 14.7 MB volume
+    /// before S13; the vendored fixture is now its 67 KB lowest-tilt extract.)
     #[test]
     fn decoding_reads_a_small_fraction_of_the_volume() {
         let (bytes, reads) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));

@@ -177,20 +177,23 @@ pub enum Scan {
     Grid(Grid),
     /// A radar's product other than its lowest scan (S20, `products.rs`):
     /// one other angle, or one drawn on the lowest scan's rays and gates.
-    Product(Sweep, Want),
+    /// The lowest scan rides along when the read decoded it anyway (S26:
+    /// CAPPI, CMAX, HYBRID), until the poller sends it on as a frame of its
+    /// own (`Event::free_lowest`).
+    Product(Sweep, Want, Option<Box<Sweep>>),
 }
 
 impl Scan {
     /// The frame's start: the first radial, or the composite's nominal time.
     pub fn start_ms(&self) -> i64 {
         match self {
-            Scan::Polar(sweep) | Scan::Product(sweep, _) => sweep.start_ms,
+            Scan::Polar(sweep) | Scan::Product(sweep, ..) => sweep.start_ms,
             Scan::Grid(grid) => grid.start_ms,
         }
     }
     pub fn end_ms(&self) -> i64 {
         match self {
-            Scan::Polar(sweep) | Scan::Product(sweep, _) => sweep.end_ms,
+            Scan::Polar(sweep) | Scan::Product(sweep, ..) => sweep.end_ms,
             Scan::Grid(grid) => grid.end_ms,
         }
     }
@@ -198,7 +201,7 @@ impl Scan {
     pub fn describe(&self) -> String {
         match self {
             Scan::Polar(sweep) => format!("{} rays", sweep.rays.len()),
-            Scan::Product(sweep, want) => {
+            Scan::Product(sweep, want, _) => {
                 format!("{} rays of {}", sweep.rays.len(), want.variant())
             }
             Scan::Grid(grid) => grid.describe(),
@@ -242,6 +245,49 @@ pub enum Event {
     Offline { site: String, reason: String },
     /// SMHI answered, and the station has published nothing recent.
     Silent { site: String, reason: String },
+}
+
+impl Event {
+    /// This event, and, for a product read that decoded the lowest scan on
+    /// the way (S26: CAPPI, CMAX and HYBRID are drawn on its rays and gates,
+    /// `products::decode_volume`), that lowest scan as a second event of the
+    /// same kind. `main.rs` catalogues it in the station's `e0` ring, so the
+    /// ring keeps filling while a product is selected, at no extra request.
+    /// Its provenance counts 0 requests and 0 bytes (`soak-report.sh` sums
+    /// them), and names the read it came from.
+    pub fn free_lowest(mut self) -> (Event, Option<Event>) {
+        let provenance_of = |provenance: &str| {
+            let (head, tail) = provenance.split_once(": ").unwrap_or((provenance, ""));
+            let total = tail
+                .rsplit_once(" of ")
+                .map_or("0 bytes", |(_, total)| total);
+            format!("{head}, its lowest scan: 0 range requests, 0 of {total}")
+        };
+        let free = match &mut self {
+            Event::Sweep {
+                site,
+                sweep: Scan::Product(_, _, lowest),
+                complete,
+                provenance,
+            } => lowest.take().map(|lowest| Event::Sweep {
+                site: site.clone(),
+                sweep: Scan::Polar(*lowest),
+                complete: *complete,
+                provenance: provenance_of(provenance),
+            }),
+            Event::Backfill {
+                site,
+                sweep: Scan::Product(_, _, lowest),
+                provenance,
+            } => lowest.take().map(|lowest| Event::Backfill {
+                site: site.clone(),
+                sweep: Scan::Polar(*lowest),
+                provenance: provenance_of(provenance),
+            }),
+            _ => None,
+        };
+        (self, free)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -982,8 +1028,14 @@ impl Drop for AbortOnDrop {
     }
 }
 
-async fn send(events: &Sender<Event>, event: Event) -> bool {
+/// Send `event`, then the lowest scan its read made for free, if any.
+pub(crate) async fn send(events: &Sender<Event>, event: Event) -> bool {
+    let (event, free) = event.free_lowest();
     events.send(event).await.is_ok()
+        && match free {
+            Some(free) => events.send(free).await.is_ok(),
+            None => true,
+        }
 }
 
 /// SMHI's cadence: one volume per site every 5 minutes.

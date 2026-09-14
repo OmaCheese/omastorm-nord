@@ -668,9 +668,8 @@ impl Drop for AbortOnDrop {
     }
 }
 
-async fn send(events: &Sender<Event>, event: Event) -> bool {
-    events.send(event).await.is_ok()
-}
+// SMHI's: the event, then the lowest scan its read made for free.
+use crate::smhi_live::send;
 
 /// See the module documentation. `cached` holds the start times of the
 /// frames already catalogued for the station.
@@ -1241,8 +1240,11 @@ mod tests {
             .map_err(|e| e.to_string())?;
         let mut buf = vec![0; 1000];
         reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
-        let start_ms = valid - 54_000;
-        Ok(Scan::Polar(Sweep {
+        Ok(Scan::Polar(stub_sweep(valid - 54_000)))
+    }
+
+    fn stub_sweep(start_ms: i64) -> Sweep {
+        Sweep {
             rays: vec![Ray {
                 azimuth_deg: 0.25,
                 elevation_deg: 0.5,
@@ -1257,7 +1259,17 @@ mod tests {
             scale: 2.0,
             offset: 66.0,
             code1_status: crate::sweep::OUTSIDE_COVERAGE,
-        }))
+        }
+    }
+
+    /// `stub_decode` for a product: the product, with the lowest scan it
+    /// read on the way (`products::decode_volume`).
+    fn stub_product(reader: RangeReader, want: Want) -> Result<Scan, String> {
+        let Scan::Polar(sweep) = stub_decode(reader, want)? else {
+            unreachable!()
+        };
+        let lowest = stub_sweep(sweep.start_ms);
+        Ok(Scan::Product(sweep, want, Some(Box::new(lowest))))
     }
 
     /// 09:46 on 2026-09-14, just after Hurum's 09:40 files landed.
@@ -1325,6 +1337,27 @@ mod tests {
         until: impl Fn(&[Event]) -> bool,
         linger: Duration,
     ) -> (Vec<Event>, Vec<String>) {
+        run_as(
+            (Want::Lowest, stub_decode),
+            keys,
+            fail,
+            now_ms,
+            cached,
+            until,
+            linger,
+        )
+    }
+
+    /// `run` for a poller following `want` through `decode`.
+    fn run_as(
+        (want, decode): (Want, Decode),
+        keys: Vec<String>,
+        fail: Option<u16>,
+        now_ms: fn() -> i64,
+        cached: Vec<i64>,
+        until: impl Fn(&[Event]) -> bool,
+        linger: Duration,
+    ) -> (Vec<Event>, Vec<String>) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1338,8 +1371,8 @@ mod tests {
                 backfill_delay: Duration::ZERO,
                 backfill_pace: Duration::ZERO,
                 now_ms,
-                decode: stub_decode,
-                want: Want::Lowest,
+                decode,
+                want,
             };
             let (tx, mut rx) = mpsc::channel(16);
             let poller = tokio::spawn(poll_with(cfg, station(), tx, cached));
@@ -1409,6 +1442,60 @@ mod tests {
             gets.iter().map(|g| g.split(' ').nth(1).unwrap()).collect();
         assert_eq!(files.len(), 60);
         assert!(gets.len() <= 60 * 3, "{} range requests", gets.len());
+    }
+
+    /// A product backfills its own depth, and every read that decoded the
+    /// lowest scan on the way sends it too, as a second event of the same
+    /// kind (S26), from the same file: no request more.
+    #[test]
+    fn a_product_read_sends_its_lowest_scan_too() {
+        let depth = Want::ColMax.backfill(BACKFILL);
+        let (events, served) = run_as(
+            (Want::ColMax, stub_product),
+            hurum(utc(14, 0, 0), utc(14, 9, 40)),
+            None,
+            recorded,
+            Vec::new(),
+            |events| events.len() >= 2 * depth,
+            Duration::from_millis(300),
+        );
+        assert_eq!(events.len(), 2 * depth, "caught up, nothing more");
+        for (i, pair) in events.chunks(2).enumerate() {
+            let (product, lowest) = match pair {
+                [
+                    Event::Sweep { sweep: p, .. },
+                    Event::Sweep {
+                        sweep: l,
+                        provenance,
+                        ..
+                    },
+                ] if i == 0 => (p, (l, provenance)),
+                [
+                    Event::Backfill { sweep: p, .. },
+                    Event::Backfill {
+                        sweep: l,
+                        provenance,
+                        ..
+                    },
+                ] if i > 0 => (p, (l, provenance)),
+                other => panic!(
+                    "pair {i}: {:?}",
+                    other.iter().map(describe).collect::<Vec<_>>()
+                ),
+            };
+            assert!(matches!(product, Scan::Product(_, Want::ColMax, None)));
+            assert!(matches!(lowest.0, Scan::Polar(_)));
+            assert_eq!(lowest.0.start_ms(), product.start_ms());
+            let free =
+                format!("[cmax], its lowest scan: 0 range requests, 0 of {FILE_BYTES} bytes");
+            assert!(lowest.1.ends_with(&free), "{}", lowest.1);
+        }
+        let files: std::collections::HashSet<&str> = served
+            .iter()
+            .filter(|s| s.starts_with("get"))
+            .map(|g| g.split(' ').nth(1).unwrap())
+            .collect();
+        assert_eq!(files.len(), depth, "one read per frame pair");
     }
 
     #[test]

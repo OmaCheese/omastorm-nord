@@ -683,9 +683,51 @@ pub fn decode_volume<R: std::io::Read + std::io::Seek + Send + 'static>(
             .map(Scan::Polar)
             .map_err(|e| e.to_string());
     }
-    let tilts = crate::odim::decode_tilts(reader, |infos| needed(want, infos))
-        .map_err(|e| e.to_string())?;
-    compose(want, tilts).map(|sweep| Scan::Product(sweep, want))
+    // SMHI's lowest scan is `/dataset1` (`odim::Tilt::First`); its free
+    // copy below is only that scan when `/dataset1` is the lowest angle.
+    let mut first_is_lowest = false;
+    let tilts = crate::odim::decode_tilts(reader, |infos| {
+        first_is_lowest = lowest_of(infos) == 0;
+        needed(want, infos)
+    })
+    .map_err(|e| e.to_string())?;
+    // CAPPI, CMAX and HYBRID read the lowest scan for their rays and gates
+    // (`needed`), so it comes free (S26): the sweep `decode_lowest` makes of
+    // the same volume (the lowest angle, ties the first dataset, as
+    // `odim::tilt_path` picks), for the station's `e0` ring.
+    let free = match want {
+        Want::Lowest | Want::Angle(_) => None,
+        _ if lowest == crate::odim::Tilt::First && !first_is_lowest => None,
+        _ => tilts
+            .iter()
+            .min_by(|a, b| a.elangle.total_cmp(&b.elangle))
+            .map(|t| Box::new(copy_sweep(&t.sweep))),
+    };
+    compose(want, tilts).map(|sweep| Scan::Product(sweep, want, free))
+}
+
+/// A field-by-field copy (`Sweep` is not `Clone`).
+fn copy_sweep(sweep: &Sweep) -> Sweep {
+    Sweep {
+        rays: sweep
+            .rays
+            .iter()
+            .map(|r| Ray {
+                azimuth_deg: r.azimuth_deg,
+                elevation_deg: r.elevation_deg,
+                time_ms: r.time_ms,
+                codes: r.codes.clone(),
+            })
+            .collect(),
+        start_ms: sweep.start_ms,
+        end_ms: sweep.end_ms,
+        gates: sweep.gates,
+        first_gate_m: sweep.first_gate_m,
+        gate_spacing_m: sweep.gate_spacing_m,
+        scale: sweep.scale,
+        offset: sweep.offset,
+        code1_status: sweep.code1_status,
+    }
 }
 
 /// ` cappi1` after a provenance's file name for a product other than the
@@ -1149,7 +1191,7 @@ mod tests {
                 };
                 assert_eq!(want.variant(), *variant);
                 let file = std::fs::File::open(format!("{ROOT}data/raw/{fixture}")).unwrap();
-                let crate::smhi_live::Scan::Product(sweep, _) =
+                let crate::smhi_live::Scan::Product(sweep, ..) =
                     decode_volume(file, want, lowest).unwrap()
                 else {
                     panic!("{golden} {variant}: not a product")
@@ -1193,6 +1235,77 @@ mod tests {
                     0,
                     "{golden} {variant}: {differ} of {} codes differ",
                     codes.len()
+                );
+            }
+        }
+    }
+
+    /// CAPPI, CMAX and HYBRID carry the lowest scan they read (S26): the
+    /// very sweep `decode_lowest` makes of the same volume, for the `e0`
+    /// ring. The lowest scan itself and one other angle carry none.
+    #[test]
+    fn a_product_read_carries_its_lowest_scan() {
+        use crate::smhi_live::Scan;
+        const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../data/raw/");
+        let table: &'static Blockage = Box::leak(Box::new(Blockage { tenths: [8; 360] }));
+        let codes = |s: &Sweep| -> Vec<u8> {
+            s.rays
+                .iter()
+                .flat_map(|r| r.codes.iter().copied())
+                .collect()
+        };
+        let rays = |s: &Sweep| -> Vec<(f32, f32, i64)> {
+            s.rays
+                .iter()
+                .map(|r| (r.azimuth_deg, r.elevation_deg, r.time_ms))
+                .collect()
+        };
+        for (fixture, lowest) in [
+            (
+                "radar_vara_qcvol_202609131055_tilts.h5",
+                crate::odim::Tilt::First,
+            ),
+            ("ord_nohur_202609140930_tilts.h5", crate::odim::Tilt::Lowest),
+            ("ord_dksin_202609140940_tilts.h5", crate::odim::Tilt::Lowest),
+        ] {
+            let open = || std::fs::File::open(format!("{ROOT}{fixture}")).unwrap();
+            let expected = crate::odim::decode_lowest(open(), lowest).unwrap();
+            for want in [Want::Cappi(1000.0), Want::ColMax, Want::Hybrid(table)] {
+                let Scan::Product(_, _, Some(free)) = decode_volume(open(), want, lowest).unwrap()
+                else {
+                    panic!("{fixture} {}: no lowest scan", want.variant())
+                };
+                assert_eq!(
+                    (
+                        free.start_ms,
+                        free.end_ms,
+                        free.gates,
+                        free.first_gate_m,
+                        free.gate_spacing_m,
+                        free.scale,
+                        free.offset
+                    ),
+                    (
+                        expected.start_ms,
+                        expected.end_ms,
+                        expected.gates,
+                        expected.first_gate_m,
+                        expected.gate_spacing_m,
+                        expected.scale,
+                        expected.offset
+                    ),
+                    "{fixture} {}",
+                    want.variant()
+                );
+                assert!(rays(&free) == rays(&expected), "{fixture}: rays");
+                assert!(codes(&free) == codes(&expected), "{fixture}: codes");
+            }
+            for want in [Want::Lowest, Want::Angle(4.0)] {
+                let scan = decode_volume(open(), want, lowest).unwrap();
+                assert!(
+                    matches!(scan, Scan::Polar(_) | Scan::Product(_, _, None)),
+                    "{fixture} {}",
+                    want.variant()
                 );
             }
         }

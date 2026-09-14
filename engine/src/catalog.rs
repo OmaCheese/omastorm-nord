@@ -174,23 +174,11 @@ impl Catalog {
              CREATE INDEX IF NOT EXISTS frames_site_time ON frames (site, start_ms);",
         )
         .map_err(sql)?;
-        // S20: the product's ring. Rows catalogued before it are the lowest
-        // scan, `e0`, which is also what an older engine's inserts get.
-        let columns: Vec<String> = conn
-            .prepare("PRAGMA table_info(frames)")
-            .map_err(sql)?
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(sql)?
-            .collect::<Result<_, _>>()
-            .map_err(sql)?;
-        if !columns.iter().any(|c| c == "variant") {
-            conn.execute_batch("ALTER TABLE frames ADD COLUMN variant TEXT NOT NULL DEFAULT 'e0';")
-                .map_err(sql)?;
-        }
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS frames_site_variant_time ON frames (site, variant, start_ms);",
-        )
-        .map_err(sql)?;
+        // S20: no new column. A frame's product is its id's last part
+        // (`products::variant_of`), so the table keeps its shape: rows from
+        // before S20 are the lowest scan (`-e0`), an older engine sharing the
+        // catalog still writes it, and tools that insert rows positionally
+        // (scripts/check-popover.sh) still can.
         Ok(Catalog {
             conn: Mutex::new(conn),
             dir,
@@ -266,11 +254,11 @@ impl Catalog {
             )
             .optional()
             .map_err(sql)?;
-        let variant = crate::products::variant_of(&frame.id);
+        let product = crate::products::variant_of(&frame.id);
         conn.execute(
             "INSERT OR REPLACE INTO frames (id, site, product, elevation_deg, start_ms, scan_time,
-                 sweep_end, provenance, stored_ms, frame, texture, azimuth_lut, variant)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 sweep_end, provenance, stored_ms, frame, texture, azimuth_lut)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 frame.id,
                 site,
@@ -284,7 +272,6 @@ impl Catalog {
                 serde_json::to_string(&record)?,
                 texture_path,
                 lut_path,
-                variant,
             ],
         )
         .map_err(sql)?;
@@ -296,18 +283,23 @@ impl Catalog {
             .collect();
         // The ring: everything past the newest RING of this station's
         // product goes.
-        let expired: Vec<(String, String, String)> = conn
+        let rows: Vec<(String, String, String)> = conn
             .prepare(
-                "SELECT id, texture, azimuth_lut FROM frames WHERE site = ?1 AND variant = ?2
-                 ORDER BY start_ms DESC, id DESC LIMIT -1 OFFSET ?3",
+                "SELECT id, texture, azimuth_lut FROM frames WHERE site = ?1
+                 ORDER BY start_ms DESC, id DESC",
             )
             .map_err(sql)?
-            .query_map(params![site, variant, RING as i64], |row| {
+            .query_map(params![site], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .map_err(sql)?
             .collect::<Result<_, _>>()
             .map_err(sql)?;
+        let expired: Vec<(String, String, String)> = rows
+            .into_iter()
+            .filter(|(id, _, _)| crate::products::variant_of(id) == product)
+            .skip(RING)
+            .collect();
         for (id, texture, lut) in expired {
             conn.execute("DELETE FROM frames WHERE id = ?1", params![id])
                 .map_err(sql)?;
@@ -334,7 +326,8 @@ impl Catalog {
         })
     }
 
-    /// The station's lowest-scan frames (`list_variant` of `e0`).
+    /// The station's lowest-scan frames (`list_variant` of `e0`); a frame
+    /// catalogued before S20 ends in `-e0` like every lowest scan since.
     pub fn list(&self, site: &str) -> io::Result<Vec<Entry>> {
         self.list_variant(site, "e0")
     }
@@ -346,13 +339,26 @@ impl Catalog {
     /// other product go. Returns the products removed.
     pub fn prune(&self, site: &str, current: &str) -> io::Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut others: Vec<(String, i64)> = conn
-            .prepare("SELECT variant, MAX(stored_ms) FROM frames WHERE site = ?1 GROUP BY variant")
+        type Row = (String, i64, String, String);
+        let rows: Vec<Row> = conn
+            .prepare("SELECT id, stored_ms, texture, azimuth_lut FROM frames WHERE site = ?1")
             .map_err(sql)?
-            .query_map(params![site], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map(params![site], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
             .map_err(sql)?
             .collect::<Result<_, _>>()
             .map_err(sql)?;
+        // Each product's most recent store.
+        let mut newest: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for (id, stored, _, _) in &rows {
+            let stored = *stored;
+            let held = newest
+                .entry(crate::products::variant_of(id).to_owned())
+                .or_insert(stored);
+            *held = (*held).max(stored);
+        }
+        let mut others: Vec<(String, i64)> = newest.into_iter().collect();
         others.retain(|(v, _)| v != "e0" && v != current);
         others.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         // `current` takes one of the places unless it is the lowest scan,
@@ -365,20 +371,15 @@ impl Catalog {
         };
         let removed: Vec<String> = others.into_iter().skip(keep).map(|(v, _)| v).collect();
         let mut stale = Vec::new();
-        for variant in &removed {
-            let files: Vec<(String, String)> = conn
-                .prepare("SELECT texture, azimuth_lut FROM frames WHERE site = ?1 AND variant = ?2")
-                .map_err(sql)?
-                .query_map(params![site, variant], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(sql)?
-                .collect::<Result<_, _>>()
-                .map_err(sql)?;
-            conn.execute(
-                "DELETE FROM frames WHERE site = ?1 AND variant = ?2",
-                params![site, variant],
-            )
-            .map_err(sql)?;
-            stale.extend(files.into_iter().flat_map(|(t, l)| with_codes(t, l)));
+        for (id, _, texture, lut) in rows {
+            if removed
+                .iter()
+                .any(|v| v == crate::products::variant_of(&id))
+            {
+                conn.execute("DELETE FROM frames WHERE id = ?1", params![id])
+                    .map_err(sql)?;
+                stale.extend(with_codes(texture, lut));
+            }
         }
         for path in stale {
             match fs::remove_file(self.dir.join(path)) {
@@ -401,10 +402,10 @@ impl Catalog {
             .unwrap()
             .prepare(
                 "SELECT id, scan_time, start_ms, frame, texture, azimuth_lut FROM frames
-                 WHERE site = ?1 AND variant = ?2 ORDER BY start_ms DESC, id DESC LIMIT ?3",
+                 WHERE site = ?1 ORDER BY start_ms DESC, id DESC",
             )
             .map_err(sql)?
-            .query_map(params![site, variant, RING as i64], |row| {
+            .query_map(params![site], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -419,6 +420,8 @@ impl Catalog {
             .map_err(sql)?;
         let mut entries: Vec<Entry> = rows
             .into_iter()
+            .filter(|(id, ..)| crate::products::variant_of(id) == variant)
+            .take(RING)
             .map(|(id, scan_time, start_ms, frame, texture, lut)| {
                 let record = match serde_json::from_str::<Frame>(&frame) {
                     Ok(frame) => Some(Record {

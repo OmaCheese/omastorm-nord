@@ -181,9 +181,17 @@ impl Want {
     }
 }
 
-/// The frame id variant of a frame id (its last `-` part).
+/// The product a frame id names (`Want::variant`): its last `-` part when
+/// that is a product other than the lowest scan (`cappi1`, `cmax`, `clear`,
+/// `a40`, …), else `e0`. So a frame catalogued before S20, or one whose id
+/// names no product at all, is the lowest scan, as it always was.
 pub fn variant_of(frame_id: &str) -> &str {
-    frame_id.rsplit('-').next().unwrap_or_default()
+    let last = frame_id.rsplit('-').next().unwrap_or_default();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let product = matches!(last, "cmax" | "clear")
+        || last.strip_prefix("cappi").is_some_and(digits)
+        || last.strip_prefix('a').is_some_and(digits);
+    if product { last } else { "e0" }
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +803,13 @@ mod tests {
         }
         assert_eq!(variant_of("vara-20260913T105503Z-cappi1"), "cappi1");
         assert_eq!(variant_of("vara-20260913T105503Z-e0"), "e0");
+        assert_eq!(variant_of("vara-20260913T105503Z-a240"), "a240");
+        assert_eq!(variant_of("vara-20260913T105503Z-clear"), "clear");
+        // An id that names no product is the lowest scan (a pre-S20 or
+        // synthetic frame, scripts/check-popover.sh's `popover-test-0`).
+        assert_eq!(variant_of("popover-test-0"), "e0");
+        assert_eq!(variant_of("vara-loading"), "e0");
+        assert_eq!(variant_of("x-abc"), "e0");
         assert_eq!(Want::Lowest.backfill(60), 60);
         assert_eq!(Want::ColMax.backfill(60), 24);
         assert_eq!(nearest_index(&[0.5, 1.0, 2.4, 3.2], 2.6), Some(2));

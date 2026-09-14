@@ -240,7 +240,7 @@ fn fixture_transport_and_shared_commands() {
     );
     assert_eq!(
         offer("vara")["products"],
-        json!(["REF", "CAPPI1", "CAPPI2", "CMAX"])
+        json!(["REF", "HYBRID", "CAPPI1", "CAPPI2", "CMAX"])
     );
     for grid in ["sweden", "nordic"] {
         assert_eq!(offer(grid)["products"], json!([]));

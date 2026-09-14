@@ -1182,4 +1182,142 @@ mod tests {
             }
         }
     }
+
+    /// The vendored blockage tables (`scripts/blockage-tables.py`): 360
+    /// entries per radar, every radar a table station, and those radars
+    /// offer "Clear view" with their own table.
+    #[test]
+    fn blockage_tables_load_and_offer_clear_view() {
+        let table = crate::providers::table();
+        for id in ["vara", "ostersund", "nohur", "nosta"] {
+            let station = table.sites.iter().find(|s| s.id == id).unwrap();
+            assert!(blockage(id).is_some(), "{id}");
+            assert_eq!(
+                for_station(station).0,
+                ["REF", "HYBRID", "CAPPI1", "CAPPI2", "CMAX"],
+                "{id}"
+            );
+            let choice = Choice {
+                id: HYBRID.into(),
+                elevation_index: 0,
+            };
+            assert_eq!(want_for(station, &choice), blockage(id).map(Want::Hybrid));
+        }
+        let file: serde_json::Value =
+            serde_json::from_str(include_str!("../data/blockage.json")).unwrap();
+        for (id, tenths) in file["radars"].as_object().unwrap() {
+            assert_eq!(tenths.as_array().unwrap().len(), 360, "{id}");
+            assert!(
+                table.sites.iter().any(|s| &s.id == id),
+                "{id} is not a table station"
+            );
+        }
+    }
+
+    /// SMHI's product plan reads every product from the multi-angle
+    /// fixture through the range reader within its budget; DEC-2's plan,
+    /// sized for one tilt, is not what a product is read with.
+    #[test]
+    fn smhi_products_fit_their_range_plan() {
+        use crate::smhi_live::{DEC2, PRODUCT_PLAN, RangeReader, RangeSource};
+        struct Local(Vec<u8>);
+        impl RangeSource for Local {
+            fn get(&mut self, offset: u64, len: u64) -> std::io::Result<(Vec<u8>, Option<u64>)> {
+                let total = self.0.len() as u64;
+                let end = (offset + len).min(total);
+                Ok((self.0[offset as usize..end as usize].to_vec(), Some(total)))
+            }
+        }
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../data/raw/radar_vara_qcvol_202609131055_tilts.h5"
+        ))
+        .unwrap();
+        const {
+            assert!(
+                PRODUCT_PLAN.max_requests > DEC2.max_requests && PRODUCT_PLAN.block > DEC2.block
+            )
+        };
+        for want in [
+            Want::Angle(8.0),
+            Want::Cappi(1000.0),
+            Want::Cappi(2000.0),
+            Want::ColMax,
+        ] {
+            let reader = RangeReader::open_planned(
+                Box::new(Local(bytes.clone())),
+                PRODUCT_PLAN,
+                std::time::Duration::ZERO,
+            )
+            .unwrap();
+            let traffic = reader.traffic();
+            let scan = decode_volume(reader, want, crate::odim::Tilt::First);
+            assert!(scan.is_ok(), "{}: {:?}", want.variant(), scan.err());
+            assert!(traffic.requests() <= PRODUCT_PLAN.max_requests);
+        }
+    }
+
+    /// What each product costs over the range reader, offline: requests and
+    /// bytes per block size, with no budget, on whole volumes kept outside
+    /// the repo (`S20_VOLUMES=vara:/path.h5,nohur:/path.h5`, then
+    /// `cargo test range_cost_per_product -- --ignored --nocapture`). The
+    /// providers' product budgets are sized from its output.
+    #[test]
+    #[ignore = "needs whole volumes outside the repo (S20_VOLUMES)"]
+    fn range_cost_per_product() {
+        use crate::smhi_live::{RangePlan, RangeReader, RangeSource};
+        use std::sync::Arc;
+        struct Local(Arc<Vec<u8>>);
+        impl RangeSource for Local {
+            fn get(&mut self, offset: u64, len: u64) -> std::io::Result<(Vec<u8>, Option<u64>)> {
+                let total = self.0.len() as u64;
+                let end = (offset + len).min(total);
+                Ok((self.0[offset as usize..end as usize].to_vec(), Some(total)))
+            }
+        }
+        let Ok(list) = std::env::var("S20_VOLUMES") else {
+            return;
+        };
+        for item in list.split(',') {
+            let (name, path) = item.split_once(':').unwrap();
+            let bytes = Arc::new(std::fs::read(path).unwrap());
+            let lowest = if name == "vara" {
+                crate::odim::Tilt::First
+            } else {
+                crate::odim::Tilt::Lowest
+            };
+            println!("{name}: {} bytes", bytes.len());
+            for block in [4096u64, 8192, 16384, 65536] {
+                let plan = RangePlan {
+                    prefetch: 64 * 1024,
+                    block,
+                    max_requests: 100_000,
+                    max_bytes: u64::MAX,
+                };
+                for want in [
+                    Want::Lowest,
+                    Want::Angle(4.0),
+                    Want::Cappi(1000.0),
+                    Want::Cappi(2000.0),
+                    Want::ColMax,
+                ] {
+                    let reader = RangeReader::open_planned(
+                        Box::new(Local(bytes.clone())),
+                        plan,
+                        std::time::Duration::ZERO,
+                    )
+                    .unwrap();
+                    let traffic = reader.traffic();
+                    let result = decode_volume(reader, want, lowest);
+                    println!(
+                        "  block {block:>5}: {:<7} {:>4} requests {:>9} bytes {}",
+                        want.variant(),
+                        traffic.requests(),
+                        traffic.bytes(),
+                        result.map_or_else(|e| e, |_| "ok".into())
+                    );
+                }
+            }
+        }
+    }
 }

@@ -118,8 +118,26 @@ pub const DEC2: RangePlan = RangePlan {
     max_requests: MAX_REQUESTS,
     max_bytes: MAX_BYTES,
 };
+/// The plan for a product other than the lowest scan (S20), which reads
+/// DBZH from several tilts spread through the 15 MB volume (all ten for a
+/// pseudo-CAPPI or the column maximum). Measured offline on the whole Vara
+/// volume of 2026-09-13 (`products::tests::range_cost_per_product`): 4 KiB
+/// blocks take 99 requests and 672 KB, 16 KiB blocks 40 requests and
+/// 786 KB, 64 KiB blocks 18 requests and 1.25 MB; one other angle takes 25
+/// requests and 475 KB at 16 KiB. DEC-2's budget of 64 requests stops the
+/// first at the second tilt.
+pub const PRODUCT_PLAN: RangePlan = RangePlan {
+    prefetch: PREFETCH,
+    block: 16 * 1024,
+    max_requests: 96,
+    max_bytes: MAX_BYTES,
+};
 /// Decode failures of one volume before the poller stops retrying it.
 const GIVE_UP_AFTER: u32 = 2;
+/// Volumes in a row that do not decode before a backfill stops (S20): a
+/// failure that repeats is the reader's or the product's, not the volume's,
+/// and every further try would cost a whole read.
+const BACKFILL_GIVE_UP: u32 = 2;
 /// A prefetch answered `bytes 0-65535/*` (SMHI's cache still fetching the
 /// volume) is asked again after this pause, then twice and four times it...
 const LENGTH_PAUSE: Duration = Duration::from_secs(1);
@@ -848,8 +866,14 @@ async fn fetch_volume(
     };
     let joined = spawn_blocking(move || {
         let _permit = permit;
-        let reader =
-            RangeReader::open_with(Box::new(source), length_pause).map_err(|e| e.to_string())?;
+        // The lowest scan keeps DEC-2's plan; any other product reads
+        // several tilts under `PRODUCT_PLAN` (S20).
+        let reader = if want.is_lowest() {
+            RangeReader::open_with(Box::new(source), length_pause)
+        } else {
+            RangeReader::open_planned(Box::new(source), PRODUCT_PLAN, length_pause)
+        }
+        .map_err(|e| e.to_string())?;
         let traffic = reader.traffic();
         decode(reader, want).map(|sweep| (sweep, traffic))
     })
@@ -1297,6 +1321,7 @@ async fn backfill(
     let targets = backfill_targets(listed, live_ms, &known, depth);
     let wanted = targets.len();
     let mut fetched = 0;
+    let mut undecoded = 0;
     for volume in targets {
         match fetch_volume(
             &http,
@@ -1328,6 +1353,16 @@ async fn backfill(
             }
             Err(VolumeError::Decode(e)) => {
                 live_log(&site, format_args!("backfill {}: {e}", volume.key));
+                undecoded += 1;
+                if undecoded >= BACKFILL_GIVE_UP {
+                    live_log(
+                        &site,
+                        format_args!(
+                            "backfill: {undecoded} volumes in a row did not decode; stopping"
+                        ),
+                    );
+                    break;
+                }
             }
         }
         sleep(cfg.backfill_pace).await;

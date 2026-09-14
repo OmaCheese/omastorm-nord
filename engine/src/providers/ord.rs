@@ -70,6 +70,10 @@ const BACKFILL_DELAY: Duration = Duration::from_secs(3);
 const BACKFILL_PACE: Duration = Duration::from_millis(250);
 /// Decode failures of one file before the poller stops retrying it.
 const GIVE_UP_AFTER: u32 = 2;
+/// Files in a row that do not decode before a backfill stops (S20): a
+/// failure that repeats is the reader's or the product's, not the file's,
+/// and every further try would cost a whole read.
+const BACKFILL_GIVE_UP: u32 = 2;
 /// A file older than this is not fetched: the cache's day.
 const HORIZON_MS: i64 = 24 * 60 * 60 * 1000;
 /// A catalogued sweep start belongs to the file whose nominal time is this
@@ -834,6 +838,7 @@ async fn backfill(
     sleep(cfg.backfill_delay).await;
     let wanted = targets.len();
     let mut fetched = 0;
+    let mut undecoded = 0;
     for file in targets {
         match fetch_file(&http, &cfg.base, &file, cfg.decode, cfg.want).await {
             Ok((sweep, provenance)) => {
@@ -846,6 +851,7 @@ async fn backfill(
                     return;
                 }
                 fetched += 1;
+                undecoded = 0;
             }
             Err(FileError::Net(fail)) => {
                 live_log(
@@ -854,7 +860,19 @@ async fn backfill(
                 );
                 break;
             }
-            Err(FileError::Decode(e)) => live_log(&site, format_args!("backfill: {e}")),
+            Err(FileError::Decode(e)) => {
+                live_log(&site, format_args!("backfill: {e}"));
+                undecoded += 1;
+                if undecoded >= BACKFILL_GIVE_UP {
+                    live_log(
+                        &site,
+                        format_args!(
+                            "backfill: {undecoded} files in a row did not decode; stopping"
+                        ),
+                    );
+                    break;
+                }
+            }
         }
         sleep(cfg.backfill_pace).await;
     }

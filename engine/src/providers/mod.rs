@@ -16,6 +16,7 @@
 //! `ProviderId`, a module with a `Spec` and a `poll`, one arm in `spec` and
 //! one in `poll`, and rows in `sites.json`. Nothing in `main.rs` changes.
 
+pub mod opera;
 pub mod smhi;
 
 use crate::protocol::{SiteKind, Station};
@@ -35,6 +36,9 @@ pub enum ProviderId {
     /// SMHI's open radar API: 12 radars and the Sweden composite.
     #[default]
     Smhi,
+    /// EUMETNET OPERA's European composite, cut to the Nordic box (S16,
+    /// DEC-14).
+    Opera,
 }
 
 /// When a reachable feed is `stale`, and when `unavailable`, by the age of
@@ -90,6 +94,7 @@ pub struct Spec {
 pub fn spec(id: ProviderId) -> &'static Spec {
     match id {
         ProviderId::Smhi => &smhi::SPEC,
+        ProviderId::Opera => &opera::SPEC,
     }
 }
 
@@ -99,6 +104,7 @@ pub fn spec(id: ProviderId) -> &'static Spec {
 pub async fn poll(station: Station, events: Sender<Event>, cached: Vec<i64>, skip_known: bool) {
     match station.provider {
         ProviderId::Smhi => smhi::poll(station, events, cached, skip_known).await,
+        ProviderId::Opera => opera::poll(station, events, cached, skip_known).await,
     }
 }
 
@@ -222,6 +228,7 @@ pub fn table() -> Table {
         .expect("engine/data/sites.json is valid");
     let mut sites: Vec<Station> = file.sites.into_iter().map(Row::station).collect();
     sites.push(crate::composite::station());
+    sites.push(opera::station());
     Table {
         source: file.source,
         retrieved: file.retrieved,
@@ -316,9 +323,19 @@ mod tests {
     #[test]
     fn the_table_is_smhis_twelve_radars_and_its_composite() {
         let sites = table().sites;
-        assert_eq!(sites.len(), 13);
+        // SMHI's 13, then OPERA's Nordic composite (S16).
+        assert_eq!(sites.len(), 14);
         assert!(problems(&sites).is_empty(), "{:?}", problems(&sites));
-        for s in &sites {
+        let nordic = sites.iter().find(|s| s.id == "nordic").unwrap();
+        assert_eq!(
+            (nordic.kind, nordic.provider, nordic.attribution.as_str()),
+            (SiteKind::Grid, ProviderId::Opera, "EUMETNET OPERA, CC BY 4.0")
+        );
+        assert_eq!(
+            serde_json::to_string(&ProviderId::Opera).unwrap(),
+            "\"opera\""
+        );
+        for s in sites.iter().filter(|s| s.provider == ProviderId::Smhi) {
             assert_eq!(s.provider, ProviderId::Smhi, "{}", s.id);
             assert_eq!(s.country, "SE", "{}", s.id);
             assert_eq!(s.attribution, "SMHI, CC BY 4.0", "{}", s.id);
@@ -347,6 +364,8 @@ mod tests {
         assert_eq!(id("vara"), Some("vara"));
         assert_eq!(id("balsta"), Some("balsta"));
         assert_eq!(id("sweden"), Some("sweden"));
+        assert_eq!(id("nordic"), Some("nordic"));
+        assert_eq!(id("Nordic"), Some("nordic"));
         // The ODIM node code, and either in another case.
         assert_eq!(id("sevax"), Some("vara"));
         assert_eq!(id("sebaa"), Some("balsta"));

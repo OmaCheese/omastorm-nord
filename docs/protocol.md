@@ -545,6 +545,32 @@ frames of every provider share this section's rules: `id` is
 and `offset` 66, and complete frames enter the catalog under the station
 id.
 
+**Keep-warm stations (S19).** The engine's environment variable
+`OMASTORM_WARM` names stations, by id or alias and separated by commas
+(`OMASTORM_WARM=vara,sweden`), that the engine keeps polling while they are
+not selected: each gets a poller of its own that backfills and follows its
+catalog exactly as the selected station's does, so a client that opens it
+finds its whole history and can buffer the loop at once. Their frames only
+enter the catalog; `state` does not change and nothing is broadcast. While
+a warm station is selected its ordinary poller covers it. Unknown ids are
+logged and ignored; archived starts keep nothing warm; unset or empty keeps
+nothing warm (the default, and what the desktop bar's engine runs). Meant
+for the web service's engine, whose clients arrive cold; the recommended
+value there is the home radar and `sweden`. Every warm station costs what
+a selected one costs, all day:
+
+| Station | Requests an hour | Data an hour |
+|---|---|---|
+| An SMHI radar (`vara`) | ~60 listings + ~7 range reads per volume, ~144 | ~1.2 MB |
+| `sweden` (SMHI composite) | ~60 listings + 12 files | a few MB |
+| `nordic` (OPERA, S3 cache) | ~12 listings + ~7 ranges per frame | ~11 MB |
+| An ORD radar (S3 cache) | ~12 listings + ranges per file | ~1–2 MB |
+
+ORD radars and `nordic` read the Open Radar Data S3 caches, not the ORD
+API, so they do not count against its 200 requests an hour (DEC-13,
+DEC-14); SMHI's API has no published limit, and the pollers stay as polite
+as for a selected station. `nordic` is not recommended warm for its volume.
+
 ## Configuration
 
 `~/.config/omastorm-se/config.toml` and

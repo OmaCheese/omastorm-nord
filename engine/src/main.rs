@@ -50,6 +50,24 @@ use tokio::{
 /// Unset, the daemon starts lean, with no frame, and waits for
 /// `select_site`; nothing archived travels inside the binary.
 const ARCHIVE_ENV: &str = "OMASTORM_ARCHIVE";
+/// Keep-warm stations (`docs/protocol.md`, keep-warm stations): ids polled
+/// while not selected, so their history is full when a client opens them.
+const WARM_ENV: &str = "OMASTORM_WARM";
+/// A warm poller that ended is started again at most this often.
+const WARM_RETRY: Duration = Duration::from_secs(10 * 60);
+/// `OMASTORM_WARM`: comma-separated station ids or aliases, each once, in
+/// canonical form; unknown ids are reported and skipped.
+fn parse_warm(value: &str, sites: &[Station]) -> Vec<String> {
+    let mut warm: Vec<String> = Vec::new();
+    for id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+        match providers::resolve(sites, id) {
+            Some(s) if !warm.contains(&s.id) => warm.push(s.id.clone()),
+            Some(_) => {}
+            None => eprintln!("{WARM_ENV}: no station {id:?}; ignored"),
+        }
+    }
+    warm
+}
 const MAX_LINE: u64 = 16 * 1024;
 /// A client that cannot take one message in this long has stalled; its
 /// connection is closed rather than letting it hold anything up.
@@ -583,6 +601,10 @@ struct Shared {
     /// The poller for the selected station in live mode (`smhi_live.rs`);
     /// aborted and replaced by a site switch or a quiet-feed restart.
     live: Option<JoinHandle<()>>,
+    /// Keep-warm stations (`OMASTORM_WARM`) and the pollers of those not
+    /// selected, with when each was spawned.
+    warm: Vec<String>,
+    warm_pollers: HashMap<String, (JoinHandle<()>, Instant)>,
     /// When the poller was last spawned, so an UNAVAILABLE feed is
     /// rediscovered at most once per its provider's `unavailable` age rather
     /// than every cleanup tick.
@@ -738,6 +760,40 @@ impl Shared {
         )));
         self.last_live_restart = Instant::now();
     }
+    /// Keep-warm stations (`OMASTORM_WARM`): each one not selected has a
+    /// poller of its own that fills its catalog, so opening it finds its
+    /// history; the selected station's own poller covers it while selected.
+    /// A warm poller that ended is started again after `WARM_RETRY`.
+    fn keep_warm(&mut self) {
+        if self.state.source != Source::Live || self.warm.is_empty() {
+            return;
+        }
+        let selected = self.state.site.id.clone();
+        if let Some((task, _)) = self.warm_pollers.remove(&selected) {
+            task.abort();
+        }
+        for id in self.warm.clone() {
+            if id == selected {
+                continue;
+            }
+            if let Some((task, since)) = self.warm_pollers.get(&id)
+                && (!task.is_finished() || since.elapsed() < WARM_RETRY)
+            {
+                continue;
+            }
+            let Some(station) = self.sites.iter().find(|s| s.id == id).cloned() else {
+                continue;
+            };
+            let cached: Vec<i64> = self
+                .catalog
+                .list(&id)
+                .map(|listed| listed.iter().map(|e| e.start_ms).collect())
+                .unwrap_or_default();
+            eprintln!("{} Warm {id}: polling", iso(now_ms()));
+            let task = tokio::spawn(providers::poll(station, self.events.clone(), cached, true));
+            self.warm_pollers.insert(id, (task, Instant::now()));
+        }
+    }
     /// Go live on a station: the newest cached frame (or an empty one)
     /// shows at once under `loading`, the timeline is the station's
     /// catalog, and a poller replaces the previous station's. Reselecting
@@ -797,6 +853,9 @@ impl Shared {
         self.state.source = Source::Live;
         self.state.connection.status = ConnectionStatus::Loading;
         self.restart_live("polling", false);
+        // A warm station just selected gives up its warm poller; the one
+        // left keeps warm with a poller of its own.
+        self.keep_warm();
         (true, None)
     }
     /// A pan settled with the map centred at `lat`, `lon`. While following and
@@ -1226,7 +1285,8 @@ fn decode_and_publish(dir: &Path, template: &Frame, archive: &[u8]) -> io::Resul
 /// Turn the pollers' events into frames: encode on the blocking pool and
 /// record complete frames in the catalog, then hand the frame to the
 /// timeline, which publishes it if it is to be shown, and broadcast. An
-/// event for a station that is no longer selected is dropped.
+/// event for a station that is no longer selected is dropped, except a
+/// keep-warm station's complete frames, which only go into the catalog.
 async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers::Event>) {
     while let Some(event) = events.recv().await {
         match event {
@@ -1238,7 +1298,9 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
             } => {
                 let (frame, catalog) = {
                     let shared = shared.lock().unwrap();
-                    if shared.state.site.id != site || shared.state.source != Source::Live {
+                    let selected = shared.state.site.id == site;
+                    let warm = complete && shared.warm.contains(&site);
+                    if shared.state.source != Source::Live || !(selected || warm) {
                         continue;
                     }
                     let Some(station) = shared.sites.iter().find(|s| s.id == site) else {
@@ -1311,7 +1373,8 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
             } => {
                 let (frame, catalog) = {
                     let shared = shared.lock().unwrap();
-                    if shared.state.site.id != site || shared.state.source != Source::Live {
+                    let wanted = shared.state.site.id == site || shared.warm.contains(&site);
+                    if shared.state.source != Source::Live || !wanted {
                         continue;
                     }
                     let Some(station) = shared.sites.iter().find(|s| s.id == site) else {
@@ -1875,6 +1938,13 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         Source::Archived => with_archived_station(hello().sites, &frame),
         Source::Live => hello().sites,
     };
+    let warm = match (source, env::var(WARM_ENV)) {
+        (Source::Live, Ok(value)) => parse_warm(&value, &sites),
+        _ => Vec::new(),
+    };
+    if !warm.is_empty() {
+        eprintln!("Keeping warm: {}", warm.join(", "));
+    }
     let (events, event_rx) = mpsc::channel(16);
     let wake = Arc::new(Notify::new());
     let shared = Arc::new(Mutex::new(Shared {
@@ -1887,6 +1957,8 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         dir: dir.clone(),
         catalog,
         live: None,
+        warm,
+        warm_pollers: HashMap::new(),
         last_live_restart: Instant::now(),
         events,
         frame_ms,
@@ -1905,6 +1977,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     runtime.spawn(live_events(shared.clone(), event_rx));
     runtime.spawn(player(shared.clone(), wake));
+    shared.lock().unwrap().keep_warm();
     let cleanup_shared = shared.clone();
     runtime.spawn(async move {
         let mut retirement = Retirement::default();
@@ -1920,6 +1993,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
             let mut shared = cleanup_shared.lock().unwrap();
             if shared.state.source == Source::Live {
                 shared.broadcast();
+                shared.keep_warm();
                 if !shared.state.site.id.is_empty()
                     && should_restart_live(
                         shared.live.as_ref().is_none_or(JoinHandle::is_finished),
@@ -2216,6 +2290,15 @@ mod tests {
             "polar entries name none"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn keep_warm_names_stations_by_id_or_alias_once() {
+        let sites = site_table().sites;
+        assert_eq!(
+            parse_warm("sevax, SWEDEN,,nowhere,vara", &sites),
+            ["vara", "sweden"]
+        );
+        assert!(parse_warm("", &sites).is_empty());
     }
     fn ids(timeline: &Timeline) -> Vec<(String, FrameStatus)> {
         timeline

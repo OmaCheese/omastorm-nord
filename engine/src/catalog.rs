@@ -258,6 +258,7 @@ mod tests {
             },
             palette: vec!["#000000".into()],
             bounds: vec![0, 10],
+            attribution: "SMHI, CC BY 4.0".into(),
             grid: None,
         }
     }

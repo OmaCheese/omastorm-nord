@@ -40,37 +40,33 @@ textures. Transport, commands, state, and texture encoding are defined in
 
 ## Radar
 
-`src/sweep.rs` decodes Level II with the pinned `nexrad-data`, `nexrad-decode`,
-and `nexrad-model` dependencies. It reads through the lowest cut, sorts rays
-stably by azimuth, and publishes a polar sweep texture and azimuth lookup.
-The UI samples these directly; radar arrays never enter JSON or QML JavaScript.
+`src/odim.rs` decodes SMHI's ODIM HDF5 volumes with the pure-Rust `hdf5-pure`
+(DEC-1): the lowest tilt's DBZH, found by `what/quantity`, rays sorted by
+azimuth, requantized to u8 as `round(dBZ × 2 + 66)` with undetect and nodata
+flagged. `src/composite.rs` decodes the national composite and reprojects it
+to a Web Mercator grid texture (DEC-11). `src/sweep.rs` holds the
+source-agnostic sweep texture and azimuth lookup, and still decodes NEXRAD
+Level II for archive mode only (`OMASTORM_ARCHIVE`, DEC-10). The UI samples
+these textures directly; radar arrays never enter JSON or QML JavaScript.
 
-`src/live_index.rs` lists occupied volume directories, then searches their
-rotating order by each one's newest scan timestamp. Expired directories are
-excluded from the search, as are older generations still present in the same
-directory. `src/live.rs` then polls dated chunks, replays the current
-volume's lowest cut, and assembles incoming radials.
-Each chunk that grows the cut publishes a partial frame; the cut's final
-radial or the next cut completes it. Gaps beyond 0.75° from any ray remain
-blank. Selecting another station cancels the poller and discards its late events.
-A background backfill fetches up to twelve earlier volumes, skipping cached ones.
-SAILS and MRLE extra low-level cuts are not separate frames.
+`src/smhi_live.rs` is the poller. SMHI publishes one whole volume per site
+every 5 minutes, about 4–5 minutes after its valid time, so every frame is
+complete: there is no sweep to assemble and nothing partial to paint. The
+listing `area/{site}/product/qcvol.json` (`comp.json` for the composite) is
+polled every 60 s with `If-Modified-Since`. A new volume is read from its
+dated URL with HTTP range requests, about 7 requests and 100 KB of a 15 MB
+file (DEC-2). Backfill reads the day listing, plus yesterday's just after
+midnight UTC, and fetches the newest 60 volumes the catalog lacks, newest
+first and paced. 429 and 5xx answers and transport errors back off,
+honouring `Retry-After`; the second failure in a row reports offline. Only one
+volume download runs at a time in the whole engine. Selecting another station
+cancels the poller and discards its late events.
 
-The poller bounds requests with timeouts and retries with backoff. Four
-failed chunk fetches restart discovery. An empty listing is normal between
-chunks, but 90 seconds without a recent chunk (higher cuts of a live volume
-still arrive every 4–12 s) restarts discovery. The poller ignores leftover
-chunks from an earlier volume cycle on both join and transition, and backfill
-uses only the matching dated generation. Independently, the engine
-respawns a poller whose task has exited, or whose newest radial is thirty
-minutes old and has not been rediscovered since. A rediscovery that finds
-only a sweep already in the catalog does not republish it or clear
-unavailable. Reselecting the live station is a no-op while the poller is
-running; if the task has ended, the reselect starts it again. A reachable
-feed becomes stale at ten minutes and unavailable at thirty minutes without
-new radials; an empty station is
-unavailable, and an unreachable bucket is offline. Cached frames remain
-usable under every condition.
+A feed becomes stale at 15 minutes and unavailable at 30 minutes without a new
+frame (DEC-9: a healthy SMHI frame is already 5–10 minutes old). A station
+whose newest volume is older than that is reported silent, which the UI shows
+as unavailable; Leksand has published nothing since January 2026. Cached
+frames remain usable under every condition.
 
 `src/catalog.rs` stores the newest 60 complete frames per station in
 `$XDG_CACHE_HOME/omastorm-se/frames/`: a SQLite WAL catalog and PNG files.
@@ -88,7 +84,7 @@ availability. An archived scan retains its measured coordinates.
 `build.rs` converts Natural Earth lines to a compact polyline blob and embeds
 populated places for map labels. GeoNames cities with population ≥ 5000,
 clipped to the same envelope, are the location-picker gazetteer. The 1:50m
-set is global; the 1:10m set is clipped to the NEXRAD network envelope. `src/tiles.rs` rasterizes these with `tiny-skia`,
+set is global; the 1:10m set is clipped to the Nordic envelope in `build.rs`. `src/tiles.rs` rasterizes these with `tiny-skia`,
 using 1:50m below z5 and 1:10m from z5. Segments outside a tile are skipped.
 
 `src/osm.rs` serves OpenMapTiles vector data from z7 through z14, with Natural

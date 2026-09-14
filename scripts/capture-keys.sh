@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The keyboard session (DESIGN.md, keyboard map as built) as three captures
-# over the quarter window on the shared daemon: the `?` sheet open over live
+# over the quarter window on a scratch daemon: the `?` sheet open over live
 # KTLX, the treatment menu open from the chip, and the header naming the
 # current-location home from a weather.json for Stokesdale, NC (KFCX)
 # (review/keys-help.png, review/keys-chip.png, review/keys-home.png, and
-# review/keys-sheet.png side by side). The daemon is left on KTLX, unlocked.
+# review/keys-sheet.png side by side). The scratch daemon is stopped on exit.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review
@@ -17,6 +17,12 @@ jq -r '.sites[] | select(.id=="KTLX") | "center_lat = \(.lat)\ncenter_lon = \(.l
 : > "$scratch/none.toml"
 printf '{\n  "name": "Stokesdale",\n  "latitude": 36.23708,\n  "longitude": -79.97948\n}\n' > "$scratch/weather.json"
 bash scripts/cargo.sh build --offline --locked --quiet
+# A scratch runtime dir, never the user's: ensure ends an engine of another
+# build, so the installed plugin's engine would be replaced by this debug one.
+export XDG_RUNTIME_DIR="$scratch/runtime"
+mkdir -p "$XDG_RUNTIME_DIR"
+engine="$PWD/target/debug/omastorm-engine" # absolute: the script ends in review/
+trap '"$engine" stop > /dev/null 2>&1 || true' EXIT
 target/debug/omastorm-engine ensure
 sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.3 - "UNIX-CONNECT:$sock" > /dev/null; }

@@ -2399,14 +2399,14 @@ mod handoff_tests {
     }
 
     #[test]
-    fn the_site_table_is_the_smhi_network() {
+    fn the_site_table_is_the_nordic_network() {
         let sites = site_table().sites;
-        // The 12 radars of sites.json, then the composites: SMHI's (S8) and
-        // OPERA's Nordic crop (S16).
-        assert_eq!(sites.len(), 14);
+        // SMHI's 12 radars and ORD's 29 (NO, FI, DK: S15) from sites.json,
+        // then the composites: SMHI's (S8) and OPERA's Nordic crop (S16).
+        assert_eq!(sites.len(), 43);
         assert_eq!(
             sites.iter().filter(|s| s.kind == SiteKind::Polar).count(),
-            12
+            41
         );
         assert_eq!(
             sites
@@ -2441,5 +2441,10 @@ mod handoff_tests {
             handoff(&sites, "vara", 59.33, 18.07).map(|s| &s.id[..]),
             Some("balsta")
         );
+        // Across the border, the nearest radar of any country: Oslo is
+        // Hurum's, Helsinki Vihti's, Copenhagen Stevns'.
+        assert_eq!(nearest(59.91, 10.75).as_deref(), Some("nohur"));
+        assert_eq!(nearest(60.17, 24.94).as_deref(), Some("fivih"));
+        assert_eq!(nearest(55.68, 12.57).as_deref(), Some("dkste"));
     }
 }

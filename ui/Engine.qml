@@ -67,8 +67,10 @@ QtObject {
     property bool active: false
     /// Decoded texture memory the buffer may hold, in bytes. Qt keeps each
     /// image as 4 bytes a texel (a one-channel code texture is widened on
-    /// load) and uploads it once per window. The web's desktop cap.
-    property real bufferCap: 384 * 1024 * 1024
+    /// load) on the CPU and again on the GPU, in the bar's own process, so
+    /// this is below the web's 512 MB: Sweden's two hours (24 frames, about
+    /// 250 MB) fit, Nordic's 15 MB frames give about an hour and a half.
+    property real bufferCap: 280 * 1024 * 1024
     readonly property int bufferLimit: 24     // two hours of 5-minute scans, as on the web
     readonly property int minStart: 6         // the loop starts with this many ready, or all there are
     readonly property int stepMs: 250         // a frame's time on screen

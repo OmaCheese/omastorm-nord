@@ -543,29 +543,41 @@ Item {
     // with the engine's rule (docs/protocol.md, code texture): codes 0 and 1
     // draw nothing; otherwise value = (code - offset) / scale in f32, the
     // class is the number of bounds at or below it, minus one, kept inside
-    // the palette. Built the way the palette strip is, and only for codes.
-    readonly property var codeClasses: {
-        var out = [];
-        if (!codes || !scan || !(scan.scale > 0)) return out;
-        var bounds = scan.bounds, classes = scan.palette.length;
-        var offset = Math.fround(scan.offset), scale = Math.fround(scan.scale);
-        for (var code = 0; code < 256; code++) {
-            if (code < 2) { out.push(0); continue; }
-            var value = Math.fround(Math.fround(code - offset) / scale), above = 0;
-            for (var b of bounds) if (Math.fround(b) <= value) above++;
-            out.push(Math.max(0, Math.min(classes - 1, above - 1)) + 1);
+    // the palette. Drawn as runs of equal class (a dozen rectangles) the way
+    // the palette strip is, and rebuilt only when the station's encoding
+    // changes: never per frame, and never when a loop moves between frames
+    // with and without a code texture (rebuilding it there stalled the loop).
+    readonly property string codeKey: scan && scan.scale > 0 && scan.bounds && scan.palette
+        ? [scan.offset, scan.scale, scan.palette.length].concat(scan.bounds).join(",") : ""
+    property var codeRuns: []
+    onCodeKeyChanged: {
+        var runs = [];
+        if (codeKey !== "") {
+            var bounds = scan.bounds, classes = scan.palette.length;
+            var offset = Math.fround(scan.offset), scale = Math.fround(scan.scale);
+            for (var code = 0; code < 256; code++) {
+                var cls = 0;
+                if (code >= 2) {
+                    var value = Math.fround(Math.fround(code - offset) / scale), above = 0;
+                    for (var b of bounds) if (Math.fround(b) <= value) above++;
+                    cls = Math.max(0, Math.min(classes - 1, above - 1)) + 1;
+                }
+                var last = runs[runs.length - 1];
+                if (last && last.value === cls) last.width++;
+                else runs.push({x: code, width: 1, value: cls});
+            }
         }
-        return out;
+        codeRuns = runs;
     }
     Item {
         id: classStrip
         width: 256; height: 1
         Repeater {
-            model: map.codeClasses
+            model: map.codeRuns
             Rectangle {
-                required property int modelData
-                required property int index
-                x: index; width: 1; height: 1; color: Qt.rgba(modelData / 255, 0, 0, 1)
+                required property var modelData
+                x: modelData.x; width: modelData.width; height: 1
+                color: Qt.rgba(modelData.value / 255, 0, 0, 1)
             }
         }
     }

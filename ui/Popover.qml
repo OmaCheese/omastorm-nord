@@ -9,7 +9,9 @@ FocusScope {
     property var theme: session.theme.snapshot
     property alias engine: connection
     readonly property var state: connection.state
-    readonly property var scan: state ? state.frame : null
+    // The frame on screen, from the card's own loop buffer while it plays
+    // or waits on its seek (Engine.qml), else the engine's.
+    readonly property var scan: connection.frame
     readonly property var frames: state ? state.timeline : []
     // Popover is too narrow for the window's fixed 60 empties. One tick per
     // frame, no gap stubs, pixel-snapped — same language, denser strip.
@@ -28,7 +30,7 @@ FocusScope {
         if (condition === "archived") return "ARCHIVED";
         var label = condition === "ok" ? "LIVE" : condition.toUpperCase();
         var complete = frames.filter(f => f.status === "complete");
-        if (!scan.scanTime || !complete.length) return label;
+        if (!scan || !scan.scanTime || !complete.length) return label;
         var age = Math.max(0, state.connection.ageSeconds +
             Math.round((Date.parse(complete[complete.length - 1].scanTime) - Date.parse(scan.scanTime)) / 1000));
         var minutes = Math.floor(age / 60);
@@ -42,9 +44,18 @@ FocusScope {
     // Do not track layout.implicitHeight — time labels and status text
     // settling after open made the panel shrink and grow.
     implicitHeight: 372
-    Engine { id: connection }
-    function step(delta) { if (state) connection.send({type: "step", delta: delta}); }
-    function play() { if (state) connection.send({type: state.playing ? "pause" : "play"}); }
+    // The card exists only while it is open, so its buffer does too; a
+    // smaller one than the window's (the phone's cap).
+    Engine {
+        id: connection
+        active: true
+        bufferCap: 160 * 1024 * 1024
+        loopShared: true
+        loopSite: card.session.loopSite
+        onLoopRequested: site => card.session.loopSite = site
+    }
+    function step(delta) { connection.stepBy(delta); }
+    function play() { connection.togglePlay(); }
     // Respect the same config keys as the window; Enter always expands.
     Shortcut { id: probe; enabled: false }
     function canon(sequence) { probe.sequence = sequence; return probe.portableText; }
@@ -122,6 +133,7 @@ FocusScope {
                 scan: card.scan
                 texture: connection.texture
                 azimuthLut: connection.azimuthLut
+                codes: connection.codes
                 siteId: card.state ? card.state.site.id : ""
                 sites: connection.sites
                 tileRoot: "file://" + connection.runtime
@@ -207,7 +219,7 @@ FocusScope {
             Layout.fillWidth: true
             spacing: 6
             Control { text: "‹"; Accessible.name: "Previous frame"; enabled: card.frames.length > 1; onClicked: card.step(-1) }
-            Control { text: card.state && card.state.playing ? "Ⅱ" : "▷"; Accessible.name: "Play or pause"; enabled: card.frames.filter(f => f.status === "complete").length > 1; onClicked: card.play() }
+            Control { text: connection.playing ? "Ⅱ" : "▷"; Accessible.name: "Play or pause"; enabled: card.frames.filter(f => f.status === "complete").length > 1; onClicked: card.play() }
             Control { text: "›"; Accessible.name: "Next frame"; enabled: card.frames.length > 1; onClicked: card.step(1) }
             ColumnLayout {
                 Layout.fillWidth: true

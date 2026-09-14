@@ -14,6 +14,10 @@ QtObject {
     property Remembered remembered: Remembered {}
     property Theme theme: Theme {}
     property bool windowOpen: false
+    // The station whose loop this process's surfaces play from their own
+    // buffers (Engine.qml, loop buffer), "" for none: play in the popover
+    // plays the window too, and expand keeps playing, without the engine.
+    property string loopSite: ""
     property bool initialized: false
     property string treatment: Quickshell.env("OMASTORM_STYLE") || "GLYPHS"
     // The weak-return floor in dBZ, or null for every measured return

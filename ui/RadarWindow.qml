@@ -34,7 +34,9 @@ Item {
         else close();
     }
     readonly property var state: engine.state
-    readonly property var scan: state ? state.frame : null
+    // The frame on screen: the engine's, or one from this window's own loop
+    // buffer while it plays or waits on its seek (Engine.qml).
+    readonly property var scan: engine.frame
     // Every station, product, and source string on screen comes from the engine.
     readonly property string siteId: state ? state.site.id : ""
     readonly property string siteName: engine.site ? engine.site.name.toUpperCase() : ""
@@ -46,11 +48,12 @@ Item {
     readonly property string attribution: scan && scan.attribution ? scan.attribution
         : engine.site && engine.site.attribution ? engine.site.attribution : ""
     readonly property string sourceBadge: state ? state.source.toUpperCase() : ""
-    // The timeline (DESIGN.md): the station's frames oldest
-    // first with the sweep in progress last; the engine owns the position.
+    // The timeline (DESIGN.md): the station's frames oldest first with the
+    // sweep in progress last. The engine owns the paused position; a loop
+    // plays from this window's buffer (Engine.qml).
     readonly property var frames: state ? state.timeline : []
     readonly property int frameIndex: scan ? frames.findIndex(f => f.id === scan.id) : -1
-    readonly property bool playing: state ? state.playing : false
+    readonly property bool playing: engine.playing
     readonly property var newestComplete: { var done = frames.filter(f => f.status === "complete"); return done.length ? done[done.length - 1] : null; }
     // The connection condition while live (DESIGN.md):
     // LIVE / ARCHIVED is the badge; a light beside it carries health.
@@ -119,9 +122,11 @@ Item {
         return result;
     }
     readonly property int currentSlot: scan ? slots.findIndex(s => !s.empty && s.id === scan.id) : -1
-    function togglePlay() { if (frames.length > 1) engine.send({type: playing ? "pause" : "play"}); }
-    function step(delta) { if (frames.length > 1) engine.send({type: "step", delta: delta}); }
-    function jump(toNewest) { if (frames.length > 1) engine.send({type: "seek", id: frames[toNewest ? frames.length - 1 : 0].id}); }
+    // Play loops the buffered frames here (Engine.qml, loop buffer); pause,
+    // step and jumps show the frame at once and seek, so others follow.
+    function togglePlay() { if (frames.length > 1) engine.togglePlay(); }
+    function step(delta) { if (frames.length > 1) engine.stepBy(delta); }
+    function jump(toNewest) { if (frames.length > 1) engine.seekTo(frames[toNewest ? frames.length - 1 : 0].id); }
     readonly property int bands: scan ? scan.palette.length : 0
     function legendLabel(index) {
         var bounds = scan.bounds;
@@ -154,7 +159,15 @@ Item {
         shown[n - 1] = true;
         return shown;
     }
-    Engine { id: engine }
+    // Buffers while the window is open; play and pause are shared with the
+    // popover through the session (Engine.qml, loop buffer).
+    Engine {
+        id: engine
+        active: app.opened
+        loopShared: true
+        loopSite: app.store.loopSite
+        onLoopRequested: site => app.store.loopSite = site
+    }
     // Deliberate preferences and remembered view (DESIGN.md, location).
     // PluginSession owns config.toml, state.json, and the camera; this
     // window applies the view to its map and sends map-local tile requests.
@@ -668,6 +681,7 @@ Item {
                     scan: app.scan
                     texture: engine.texture
                     azimuthLut: engine.azimuthLut
+                    codes: engine.codes
                     siteId: app.siteId
                     sites: engine.sites
                     tileRoot: "file://" + engine.runtime
@@ -945,8 +959,9 @@ Item {
                                 border.color: app.theme.accent
                             }
                         }
-                        // Dragging scrubs: the nearest frame under the pointer is sought
-                        // once per frame change; the engine pauses on a seek.
+                        // Dragging scrubs: the nearest frame under the pointer shows at
+                        // once (from the loop buffer when it holds it) and is sought once
+                        // per frame change; a seek ends any loop.
                         MouseArea {
                             anchors.fill: parent
                             anchors.topMargin: -6
@@ -959,7 +974,7 @@ Item {
                                 var i = Math.round(Math.max(0, Math.min(1, mx / strip.width)) * (n - 1));
                                 if (app.slots[i].empty) return;
                                 var id = app.slots[i].id;
-                                if (id && id !== target) { target = id; engine.send({type: "seek", id: id}); }
+                                if (id && id !== target) { target = id; engine.seekTo(id); }
                             }
                             onPressed: mouse => { target = ""; scrub(mouse.x); }
                             onPositionChanged: mouse => { if (pressed) scrub(mouse.x); }

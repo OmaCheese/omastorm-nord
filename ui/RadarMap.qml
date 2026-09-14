@@ -17,6 +17,11 @@ Item {
     property var scan: null          // socket state frame, or null
     property string texture: ""      // engine-written sweep texture (gates × rays)
     property string azimuthLut: ""   // engine-written azimuth lookup (3600 × 1)
+    // True when `texture` is a grid's one-channel code texture (docs/
+    // protocol.md, code texture) instead of its RGBA grid texture: the
+    // shader then rebuilds each texel's class from the frame's bounds, scale
+    // and offset through `classTexture`, with the engine's rule.
+    property bool codes: false
     property string siteId: ""
     property var sites: []           // hello.sites; locations, not live availability
     // How far the sweep reaches on the ground, from the frame's own geometry:
@@ -534,6 +539,56 @@ Item {
         smooth: false
         mipmap: false
     }
+    // For a code texture: each code's class + 1 as a 256 x 1 strip (R),
+    // with the engine's rule (docs/protocol.md, code texture): codes 0 and 1
+    // draw nothing; otherwise value = (code - offset) / scale in f32, the
+    // class is the number of bounds at or below it, minus one, kept inside
+    // the palette. Drawn as runs of equal class (a dozen rectangles) the way
+    // the palette strip is, and rebuilt only when the station's encoding
+    // changes: never per frame, and never when a loop moves between frames
+    // with and without a code texture (rebuilding it there stalled the loop).
+    readonly property string codeKey: scan && scan.scale > 0 && scan.bounds && scan.palette
+        ? [scan.offset, scan.scale, scan.palette.length].concat(scan.bounds).join(",") : ""
+    property var codeRuns: []
+    onCodeKeyChanged: {
+        var runs = [];
+        if (codeKey !== "") {
+            var bounds = scan.bounds, classes = scan.palette.length;
+            var offset = Math.fround(scan.offset), scale = Math.fround(scan.scale);
+            for (var code = 0; code < 256; code++) {
+                var cls = 0;
+                if (code >= 2) {
+                    var value = Math.fround(Math.fround(code - offset) / scale), above = 0;
+                    for (var b of bounds) if (Math.fround(b) <= value) above++;
+                    cls = Math.max(0, Math.min(classes - 1, above - 1)) + 1;
+                }
+                var last = runs[runs.length - 1];
+                if (last && last.value === cls) last.width++;
+                else runs.push({x: code, width: 1, value: cls});
+            }
+        }
+        codeRuns = runs;
+    }
+    Item {
+        id: classStrip
+        width: 256; height: 1
+        Repeater {
+            model: map.codeRuns
+            Rectangle {
+                required property var modelData
+                x: modelData.x; width: modelData.width; height: 1
+                color: Qt.rgba(modelData.value / 255, 0, 0, 1)
+            }
+        }
+    }
+    ShaderEffectSource {
+        id: classTexture
+        sourceItem: classStrip
+        hideSource: true
+        visible: false
+        smooth: false
+        mipmap: false
+    }
     ShaderEffect {
         id: radarEffect
         visible: map.drawable
@@ -545,6 +600,8 @@ Item {
         property var sweep: sweepTexture
         property var azimuthLut: azimuthTexture
         property var swatches: paletteTexture
+        property var classes: classTexture
+        property int useCodes: map.codes && map.placement ? 1 : 0
         property int bands: map.bands
         // Sweep geometry travels as uniforms; the frame's numbers are the
         // only radar values QML ever touches, and they are geometry, not data.

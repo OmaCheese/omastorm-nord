@@ -65,6 +65,12 @@ are additive, so the version stays 2 and an older client ignores them:
 - `attribution`: the credit the data's licence asks for, shown verbatim
   (`SMHI, CC BY 4.0`). While drawing, a client credits the frame on
   screen's own `frame.attribution`.
+- `products` and `elevations` (S20): what the station can show and the
+  radar's own scan angles; both `[]` for a grid station
+  ([Products](#products)).
+
+`hello` also carries `products` (S20), the engine's product vocabulary in
+the order a chooser lists them ([Products](#products)).
 
 `hello` also carries `referenceSites` (S23, additive, always sent): the
 other European weather radars, whose positions a client may show for
@@ -172,6 +178,13 @@ It is small (a few KB) so clients replace rather than merge.
 - `frame.product` is the code commands use; `frame.productName` is its display
   name. The engine owns product, unit, and site vocabulary; the UI only cases
   and lays out what it receives, and looks the site name up in `hello.sites`.
+  Since S20 a radar's frame is the chosen product ([Products](#products)):
+  `REF` (`Reflectivity`, one scan angle) or a product built from several
+  angles, whose `elevationDeg` places the texture but is not an angle to
+  show.
+- `product` (S20) is the engine's chosen product, `{"id":"REF",
+  "elevationIndex":0}`, shared by every client like the station
+  ([Products](#products)).
 - `frame.palette` has one color per class, in class order, and `frame.bounds`
   has one more entry than `palette`: class `i` covers `bounds[i]` up to
   `bounds[i+1]` in `units`. The UI uploads `palette` to the GPU as a
@@ -325,8 +338,11 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 ```
   `region` is the admin-1 name (a Swedish county, a Norwegian county);
   `country` is the ISO 3166-1 alpha-2 code. Either may be omitted when empty.
-- `set_product` requests a product and elevation. An unsupported selection
-  returns an `error` to its sender and retains the current frame.
+- `set_product` chooses the product radars show: `product` is an id from
+  `hello.products`, `elevationIndex` (optional, 0 when absent) an index
+  into the selected station's `elevations`, used with `REF` only. An
+  unsupported selection returns an `error` to its sender and retains the
+  current frame. The rules are in [Products](#products).
 - `step` moves `delta` entries along `timeline` from the frame shown, stopping
   at the ends; `seek` shows the entry with `id`. Both stop playback. A stepped
   catalogued frame shows under the textures its timeline entry names (the
@@ -599,6 +615,120 @@ API, so they do not count against its 200 requests an hour (DEC-13,
 DEC-14); SMHI's API has no published limit, and the pollers stay as polite
 as for a selected station. `nordic` is not recommended warm for its volume.
 
+## Products
+
+Additive since S20 (still version 2). A radar volume holds several scan
+angles (SMHI 10, from 0.5° to 40°; MET Norway two alternating sets of 12
+and 10; FMI's cache 5; DMI 10). A radar's frame shows one **product**
+made from them; the lowest angle (`REF`, elevation index 0) is what every
+frame was before S20, and stays the default. Composites have none: their
+frame is the composite, whatever product is chosen.
+
+`hello.products` is the vocabulary, in the order a chooser lists them:
+
+```json
+"products":[{"id":"REF","name":"Lowest scan"},{"id":"HYBRID","name":"Clear view"},
+            {"id":"CAPPI1","name":"Height 1 km"},{"id":"CAPPI2","name":"Height 2 km"},
+            {"id":"CMAX","name":"Column max"}]
+```
+
+Each `hello.sites[]` entry names what the station can show and its angles:
+
+```json
+"products":["REF","CAPPI1","CAPPI2","CMAX"],
+"elevations":[{"deg":0.5,"beamKm50":0.6,"beamKm100":1.5},{"deg":1.0,"beamKm50":1.0,"beamKm100":2.3}]
+```
+
+- `products`: a subset of `hello.products`' ids, in that order; `[]` for a
+  grid station. Every radar can make `REF`, `CAPPI1`, `CAPPI2` and `CMAX`;
+  `HYBRID` only where the engine has a blockage table for it.
+- `elevations`: the radar's scan angles, ascending; the position is the
+  `elevationIndex`. `beamKm50` and `beamKm100` are the beam centre's height
+  above the antenna at 50 and 100 km ground distance, in km with one
+  decimal, for labels (below). The angles are nominal: a volume's own can
+  differ a little (MET Norway's two sets give 2.4° or 2.6°, DMI's lowest
+  wanders 0.46–0.51°); the engine takes the volume's angle nearest the
+  chosen one, and `frame.elevationDeg` says which it was. Empty when the
+  engine does not know them.
+
+`state.product` is the chosen product, `{"id":"CAPPI1","elevationIndex":0}`,
+always sent. It is shared engine state, like the station: one client's
+`set_product` changes it for every client of that engine.
+
+`frame.product`, `productName`, and `elevationDeg` describe the frame on
+screen:
+
+| `product` | `productName` | What | `elevationDeg` |
+|---|---|---|---|
+| `REF` | `Reflectivity` | one scan angle: the lowest (index 0), or the one chosen | that angle |
+| `HYBRID` | `Clear view` | per azimuth, the lowest angle the terrain does not block | the lowest angle (placement only) |
+| `CAPPI1`, `CAPPI2` | `Height 1 km`, `Height 2 km` | pseudo-CAPPI: per gate, the angle whose beam centre is nearest 1 (2) km above the antenna | the lowest angle (placement only) |
+| `CMAX` | `Column max` | per gate, the strongest return of any angle above it | the lowest angle (placement only) |
+
+A client shows an angle beside the product only for `REF`. The texture
+format, `units` (dBZ), palette, bounds, `scale` and `offset` are the same
+for every product, so nothing else in a client changes.
+
+**`set_product`.** `{"type":"set_product","product":"CAPPI1"}`, or
+`{"type":"set_product","product":"REF","elevationIndex":3}` for one angle.
+It is answered with an `error`, and nothing changes, when the id is not in
+`hello.products`, no station or a grid station is selected, the selected
+station cannot make it, or `elevationIndex` is not an index of its
+`elevations` (any index but 0 with another product). Otherwise, when it
+differs from `state.product`, `state.product` changes and the selected
+radar's `timeline` becomes its history of that product: the newest frame
+it has shows at once, or the loading placeholder with `connection.status`
+`loading`; its poller fetches the newest volume for the product and then
+backfills newest first, like a `select_site`. The same selection again
+changes nothing.
+
+**Station switches.** The product carries over a `select_site` or a
+hand-off. A single angle maps to the new radar's angle nearest in degrees;
+a product the new radar cannot make falls back to `REF` index 0; either
+way `state.product` says what is in effect. While a grid station is
+selected `state.product` keeps the choice for the next radar.
+
+**History.** The catalog keeps each radar's frames per product. After a
+switch the lowest scan backfills its 60 frames as before; any other
+product backfills the newest 24 (two hours, what the clients buffer), and
+its ring fills to 60 as live frames arrive. The engine keeps a station's
+lowest scan and at most two other products (the current one and the one
+before); choosing a third deletes the oldest's frames. Keep-warm stations
+(`OMASTORM_WARM`) keep their lowest scan warm whatever product is chosen.
+A frame's `id` ends in the product (`-e0` for the lowest scan, as before);
+ids stay opaque.
+
+**How each product is made.** Heights use the 4/3 effective earth radius,
+R = 8,494,667 m, and the lookup rule's relation between ground distance
+`s` and slant range `r` at elevation `e`: `r = R sin(s/R) / cos(e + s/R)`,
+with the beam centre `h = R cos(e) / cos(e + s/R) − R` above the antenna.
+
+- `REF` index *n*: the volume's scan nearest the angle `elevations[n]`,
+  exactly as the lowest scan is decoded (index 0 is the lowest scan
+  itself).
+- The other products are drawn on the lowest scan's rays and gates:
+  `rays`, `gates`, `firstGateM`, `gateSpacingM` and `elevationDeg` are the
+  lowest scan's (`elevationDeg` its nominal angle rounded to 0.01°), so the
+  lookup rule places them unchanged. Each output gate is at the ground
+  distance `s` of its slant range at `elevationDeg`. A scan *covers* it when
+  its nearest gate, `round((r − firstGateM) / gateSpacingM)` at that scan's
+  `r`, is one of its gates; the scan's value there is that gate on its ray
+  nearest the output ray's azimuth (within 0.75°; none: code 1).
+- `CAPPI1`, `CAPPI2`: of the scans covering the gate, the one whose `h` is
+  nearest 1,000 (2,000) m, the lower angle on a tie; its value.
+- `CMAX`: of the scans covering the gate, the highest measured code (2 and
+  up); none measured: 0 if any is below threshold, else 1.
+- `HYBRID`: each radar's blockage table (`engine/data/blockage.json`, one
+  byte per degree of azimuth: the lowest clear angle in tenths of a degree,
+  computed offline) picks, per output ray, the lowest scan at or above that
+  angle, and the gate takes its value where it covers it (code 1 where it
+  does not).
+
+The engine reads only the angles a product needs: one for `REF`, the scans
+a pseudo-CAPPI chooses somewhere, every scan for `CMAX`, DBZH only, with
+range requests where the provider allows. What a frame costs is in the
+table below, measured per provider.
+
 ## Configuration
 
 `~/.config/omastorm-se/config.toml` and
@@ -671,3 +801,13 @@ Additive since (S23, still version 2):
   radars' positions, for faint map marks only ([`hello`](#engine-messages)).
 - A client shows no angle for a `grid` frame; its `elevationDeg` is not
   meaningful to display.
+
+Additive since (S20, still version 2):
+
+- `hello.products`, and `hello.sites[].products` and `elevations`, always
+  sent. `state.product`, always sent.
+- `set_product` is implemented; `elevationIndex` is optional.
+- A radar's `frame` may be a product other than the lowest scan
+  (`frame.product` other than `REF`, or `REF` at another angle); a client
+  that ignores `product` still draws it correctly, and shows its
+  `productName`.

@@ -23,8 +23,10 @@ Item {
     // the far edge of the last gate (radar.frag draws up to half a gate past
     // it), slant range turned into ground distance on the shader's 4/3
     // effective-radius earth. SMHI volumes reach 240 km, NEXRAD reflectivity
-    // 460 km. With no frame (or the gateless loading placeholder), SMHI's.
-    readonly property real nominalCoverageKm: 240
+    // 460 km. With no frame (or the gateless loading placeholder), the
+    // station's own rangeKm from hello, else SMHI's 240.
+    readonly property var activeSite: sites.find(s => s.id === siteId) || null
+    readonly property real nominalCoverageKm: activeSite && activeSite.rangeKm > 0 ? activeSite.rangeKm : 240
     readonly property real coverageKm: {
         var s = scan;
         // A composite reaches its farthest corner from the site it is placed by.
@@ -332,6 +334,8 @@ Item {
     property var places: []
     property var labels: []
     property var siteLabels: []
+    // Station names show from this scale up (see rebuildLabels).
+    readonly property real stationLabelMinPxPerKm: .2
     onSitesChanged: scheduleLayout()
     onSiteIdChanged: scheduleLayout()
     onWidthChanged: { scheduleLayout(); settle.restart(); }
@@ -381,14 +385,22 @@ Item {
                         {x:7, y:4, w:labelMetrics.advanceWidth+6, h:16}], result = [], stations = [];
         // Station IDs take priority over place names. Reserve every marker
         // first; co-located archived/test stations must not cover each other.
+        // Names nearest the view centre are placed first, so at network zoom
+        // the ones that collide drop from the edges, never at random.
+        var cx = overlayX, cy = overlayY;
         var candidates = sites.filter(s => s.id !== siteId && s.kind !== "grid"
             && Math.abs(mercatorX(s.lon)-overlayX) <= overlayHalfX
-            && Math.abs(mercatorY(s.lat)-overlayY) <= overlayHalfY).sort((a, b) => a.id.localeCompare(b.id));
+            && Math.abs(mercatorY(s.lat)-overlayY) <= overlayHalfY)
+            .sort((a, b) => Math.hypot(mercatorX(a.lon)-cx, mercatorY(a.lat)-cy) - Math.hypot(mercatorX(b.lon)-cx, mercatorY(b.lat)-cy)
+                            || a.id.localeCompare(b.id));
         for (var s of candidates) {
             var mx = (mercatorX(s.lon) - siteMx) * worldPixels;
             var my = (mercatorY(s.lat) - siteMy) * worldPixels;
             occupied.push({x:mx-4, y:my-4, w:8, h:8});
         }
+        // Wider than a few countries (the web client's zoom 3, about 5 km a
+        // pixel at 60° N) the markers stay and the names go, as on the phone.
+        if (pixelsPerKm < stationLabelMinPxPerKm) candidates = [];
         for (var s of candidates) {
             var tx = (mercatorX(s.lon) - siteMx) * worldPixels;
             var ty = (mercatorY(s.lat) - siteMy) * worldPixels;

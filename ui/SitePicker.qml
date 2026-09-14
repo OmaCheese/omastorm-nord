@@ -124,7 +124,7 @@ Item {
                             opacity: .9
                         }
                     }
-                    Word { text: "town · county"; font.pixelSize: 10; opacity: .45; visible: !picker.compact }
+                    Word { text: "town · county · country"; font.pixelSize: 10; opacity: .45; visible: !picker.compact }
                 }
             }
             ColumnLayout {
@@ -141,6 +141,14 @@ Item {
                         Layout.fillWidth: true
                         implicitHeight: 28
                         color: current ? Qt.alpha(picker.theme.foreground, .08) : "transparent"
+                        // A hairline where the next country's radars (or the
+                        // radars after the composites) begin.
+                        Rectangle {
+                            visible: row.modelData.groupStart
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: 12; anchors.rightMargin: 12
+                            height: 1; color: Qt.alpha(picker.theme.foreground, .17)
+                        }
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 12
@@ -148,7 +156,7 @@ Item {
                             spacing: 12
                             Word { text: Sites.mark(row.modelData.site.id, row.modelData.idHits, picker.theme.accent); textFormat: Text.StyledText; font.bold: true; color: row.ink; Layout.preferredWidth: 52 }
                             Word { text: Sites.mark(row.modelData.place, row.modelData.placeHits, picker.theme.accent); textFormat: Text.StyledText; color: row.ink; opacity: .9; Layout.fillWidth: true }
-                            Word { text: (row.modelData.site.id === picker.homeSite ? "home · " : "") + row.modelData.where; font.pixelSize: 10; color: row.ink; opacity: .6 }
+                            Word { text: [row.modelData.site.id === picker.homeSite ? "home" : "", row.modelData.tag, row.modelData.where].filter(t => t).join(" · "); font.pixelSize: 10; color: row.ink; opacity: .6 }
                         }
                         MouseArea {
                             anchors.fill: parent

@@ -38,8 +38,13 @@ Item {
     // Every station, product, and source string on screen comes from the engine.
     readonly property string siteId: state ? state.site.id : ""
     readonly property string siteName: engine.site ? engine.site.name.toUpperCase() : ""
-    // True when the id is only the town folded to ASCII (every SMHI site).
+    // True when the id is only the name folded to ASCII (every SMHI key and
+    // region word: vara, sweden); an ODIM node code (nohur) is not.
     readonly property bool idIsName: !!engine.site && !!siteId && Sites.fold(engine.site.name) === siteId
+    // The credit for the frame on screen, verbatim (docs/protocol.md,
+    // frame.attribution); the station's own before a frame names one.
+    readonly property string attribution: scan && scan.attribution ? scan.attribution
+        : engine.site && engine.site.attribution ? engine.site.attribution : ""
     readonly property string sourceBadge: state ? state.source.toUpperCase() : ""
     // The timeline (DESIGN.md): the station's frames oldest
     // first with the sweep in progress last; the engine owns the position.
@@ -568,10 +573,13 @@ Item {
                     Layout.alignment: Qt.AlignTop
                     contentItem: RowLayout {
                         spacing: 8
-                        // SMHI ids are the town folded to ASCII ("angelholm" for
-                        // Ängelholm): the name alone is the title, never "vara VARA".
-                        LabelText { text: app.idIsName ? app.siteName : app.siteId || "—"; font.pixelSize: app.theme.baseSize + 7; font.bold: true }
-                        LabelText { text: app.siteName; visible: !win.compact && !app.idIsName; opacity: .65 }
+                        // A table station's name is the title. SMHI ids are the
+                        // town folded to ASCII ("angelholm" for Ängelholm), so
+                        // never "VARA vara"; an ODIM node code shows dimmed
+                        // beside it ("HURUM nohur"). A station outside the
+                        // table (archived KTLX) is its id.
+                        LabelText { text: engine.site ? app.siteName : app.siteId || "—"; font.pixelSize: app.theme.baseSize + 7; font.bold: true }
+                        LabelText { text: app.siteId; visible: !win.compact && !!engine.site && !app.idIsName; opacity: .65 }
                         Glyph { glyph: "chevron"; implicitWidth: 12; fade: .5 }
                     }
                     background: Item {}
@@ -617,8 +625,10 @@ Item {
                         LabelText {
                             text: !app.scan ? "" : app.scan.productName.toUpperCase() + (app.scan.scanTime ? " / " + app.scan.elevationDeg.toFixed(1) + "°" : "")
                         }
+                        // The source's credit, verbatim (SMHI, MET Norway, FMI, DMI, OPERA).
                         LabelText {
-                            text: "SMHI"
+                            text: app.attribution
+                            visible: text !== ""
                             font.letterSpacing: 1; opacity: .55
                         }
                     }

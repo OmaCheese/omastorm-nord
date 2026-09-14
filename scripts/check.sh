@@ -90,6 +90,9 @@ step clippy bash scripts/cargo.sh clippy --offline --locked --all-targets -- -D 
 if step build bash scripts/cargo.sh test --offline --locked --no-run; then
   # The UI checks assume the archived KTLX scan; a fresh daemon shows it when
   # OMASTORM_ARCHIVE names the volume (a shipped daemon starts with no frame).
+  # KTLX on purpose, not the vendored Vara scan (DEC-10): it is outside the
+  # SMHI site table, so selecting it never starts a poller, and the checks
+  # stay offline and repeatable. Captures use Vara.
   export OMASTORM_ARCHIVE="$PWD/data/raw/KTLX20130520_201643_V06.gz"
   tests & lanes+=($!)
   # check-picker and check-keys select stations for real, so they run last.

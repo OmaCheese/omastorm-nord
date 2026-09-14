@@ -5,19 +5,21 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review
-export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/KTLX20130520_201643_V06.gz}
+export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/radar_vara_qcvol_202609131055.h5} # the vendored Vara scan; the checks keep KTLX (DEC-10)
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
 review="$PWD/review"
 rm -f "$review"/location-*.png
 scratch=$(mktemp -d /tmp/omastorm-location.XXXXXX)
 export XDG_RUNTIME_DIR="$scratch/runtime" XDG_CACHE_HOME="$scratch/cache"
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME"
-printf '{\n  "name": "Stokesdale",\n  "latitude": 36.23708,\n  "longitude": -79.97948\n}\n' > "$scratch/weather.json"
+printf '{\n  "name": "Göteborg",\n  "latitude": 57.70716,\n  "longitude": 11.96679\n}\n' > "$scratch/weather.json"
 : > "$scratch/none.toml"
-printf 'center_lat = 30.332\ncenter_lon = -81.656\nlocked_radar = "KTLX"\n' > "$scratch/locked.toml"
+# Camera over Stockholm, radar locked on Kiruna ~1,000 km north: outside coverage.
+printf 'center_lat = 59.329\ncenter_lon = 18.069\nlocked_radar = "kiruna"\n' > "$scratch/locked.toml"
 bash scripts/cargo.sh build --offline --locked --quiet
+engine="$PWD/target/debug/omastorm-engine" # absolute: the script ends in review/
+trap '"$engine" stop > /dev/null 2>&1 || true' EXIT
 target/debug/omastorm-engine ensure
-trap 'target/debug/omastorm-engine stop >/dev/null 2>&1 || true' EXIT
 
 capture() { # name, delay ms, env..., then ipc steps
   local name=$1 delay=$2 pid
@@ -43,8 +45,8 @@ capture() { # name, delay ms, env..., then ipc steps
 }
 
 capture weather 7000 OMASTORM_CONFIG="$scratch/none.toml" OMASTORM_LOCATION="$scratch/weather.json" OMASTORM_STATE="$scratch/state-weather.json"
-capture picker 8000 OMASTORM_CONFIG="$scratch/none.toml" OMASTORM_LOCATION="$scratch/missing.json" OMASTORM_STATE="$scratch/state-picker.json" -- 'location open oklahoma'
-capture coords 8000 OMASTORM_CONFIG="$scratch/none.toml" OMASTORM_LOCATION="$scratch/missing.json" OMASTORM_STATE="$scratch/state-coords.json" -- 'location open zzzq' 'location setLat 35.4' 'location setLon -97.5'
+capture picker 8000 OMASTORM_CONFIG="$scratch/none.toml" OMASTORM_LOCATION="$scratch/missing.json" OMASTORM_STATE="$scratch/state-picker.json" -- 'location open uppsala'
+capture coords 8000 OMASTORM_CONFIG="$scratch/none.toml" OMASTORM_LOCATION="$scratch/missing.json" OMASTORM_STATE="$scratch/state-coords.json" -- 'location open zzzq' 'location setLat 57.7' 'location setLon 11.97'
 capture locked 8000 OMASTORM_CONFIG="$scratch/locked.toml" OMASTORM_LOCATION="$scratch/missing.json" OMASTORM_STATE="$scratch/state-locked.json"
 
 cd "$review"

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # One continuous live take of the window, the README and announcement demo,
 # 1280×720 at
-# 30 fps, on a scratch daemon that goes live on SITE (default KJAX) and
+# 30 fps, on a scratch daemon that goes live on SITE (default vara) and
 # backfills its loop first. The take: the live home view, the loop playing,
-# a pan and zoom to the coast, the three treatments, weak returns shown and
+# a pan and zoom to Lake Vänern, the three treatments, weak returns shown and
 # hidden, the picker typing a city and choosing its station (the map
 # without radar until the first sweep lands, then live), and the keys sheet.
 # Frames are grabbed as the scene settles, so it is not a latency
@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p review docs/media
 export OMASTORM_ROOT="$PWD"
-site="${SITE:-KJAX}"
+site="${SITE:-vara}"
 demo_dir="$PWD/target/demo-capture"
 scratch=$(mktemp -d /tmp/omastorm-demo-live.XXXXXX)
 export XDG_RUNTIME_DIR="$scratch/runtime" XDG_CACHE_HOME="$scratch/cache"
@@ -49,16 +49,16 @@ harness = <<'QML'
             { dur: 20, enter: () => { engine.send({type: "pause"}); app.run("newest"); } },
             { dur: 200, each: t => { var tr = Math.pow(Math.sin(Math.PI * t), 2);
                                      map.span = demo.homeSpan * (1 - 0.6 * tr);
-                                     map.look(map.siteMx + (28 * tr) / map.kmPerUnit, map.siteMy - (6 * tr) / map.kmPerUnit); } },
+                                     map.look(map.siteMx + (6 * tr) / map.kmPerUnit, map.siteMy - (28 * tr) / map.kmPerUnit); } },
             { dur: 60, enter: () => app.treatment = "PIXELS" },
             { dur: 60, enter: () => app.treatment = "STIPPLE" },
             { dur: 45, enter: () => app.treatment = "GLYPHS" },
             { dur: 60, enter: () => app.run("weak") },
             { dur: 30, enter: () => app.run("weak") },
             { dur: 30, enter: () => picker.show("") },
-            { dur: 18, enter: () => picker.query = "t" },
-            { dur: 18, enter: () => picker.query = "ta" },
-            { dur: 50, enter: () => picker.query = "tal" },
+            { dur: 18, enter: () => picker.query = "k" },
+            { dur: 18, enter: () => picker.query = "ki" },
+            { dur: 50, enter: () => picker.query = "kir" },
             { dur: 360, enter: () => picker.accept(),
               until: () => app.siteId !== Quickshell.env("OMASTORM_DEMO_HOME") && app.scan && app.scan.scanTime !== "" && app.scan.status === "complete" },
             { dur: 75 },
@@ -104,7 +104,7 @@ rg DEMO_LIVE_PASSED "$demo_dir/capture.log"
 ffmpeg -hide_banner -loglevel error -y -framerate 30 -i "$demo_dir/frames/%04d.png" \
   -c:v libx264 -preset slow -crf 19 -pix_fmt yuv420p -movflags +faststart docs/media/omastorm-demo.mp4
 ffprobe -v error -show_entries stream=width,height,r_frame_rate,nb_frames:format=duration,size -of json docs/media/omastorm-demo.mp4 > review/demo-validation.json
-# Short animated README preview: the live home view and the zoom to the coast.
+# Short animated README preview: the live home view and the zoom to Lake Vänern.
 ffmpeg -hide_banner -loglevel error -y -i docs/media/omastorm-demo.mp4 \
   -filter_complex "[0:v]select='lt(t,4)+between(t,13.5,17.5)',setpts=N/30/TB,fps=8,scale=640:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff:max_colors=96[p];[b][p]paletteuse=dither=bayer:bayer_scale=5" \
   -loop 0 docs/media/omastorm-preview.gif

@@ -75,6 +75,53 @@ this store. The timeline serves cached frames through new runtime textures.
 Playback loops complete frames over about ten seconds, bounded to 250 ms–1 s
 per frame. New live sweeps take the screen only while the newest entry is selected.
 
+### Tilt store
+
+`src/tilts.rs` (S27) keeps the decoded reflectivity tilts of every radar
+volume a poller reads, so every product of that volume, and later a mosaic or
+a section, is composed from disk instead of fetching the volume again. The
+frame catalog above is unchanged; the store sits beside it:
+
+- **Layout.** `$XDG_CACHE_HOME/omastorm-se/tilts/index.sqlite` (its own WAL
+  database) and one file per tilt,
+  `tilts/<station>/<YYYYMMDDTHHMMSSZ>-<tenths>-<dataset>.u8z`: zlib of the
+  scan's `Sweep` exactly as `odim.rs` decodes it (u8 codes rays × gates, each
+  ray's azimuth, elevation and time, the gate geometry), byte-exact.
+- **Key.** Station id, the provider's nominal time in ms (SMHI's `valid`,
+  ORD's file time: known before any request) and the dataset index (0 is
+  `/dataset1`); the angle in tenths is a column and part of the file name.
+  Table `volumes` holds each volume's source file and its angle table (every
+  scan's `where`: angle, first gate, spacing, gates, in file order) once a
+  read has seen it; SMHI's lowest-scan read (`/dataset1` alone, DEC-2)
+  stores its tilt without one. Another source file for the same station and
+  time replaces what was kept.
+- **Reads.** For each volume a poller first asks the store
+  (`Slot::compose`): with the angle table and every tilt `products::needed`
+  names on disk, the frame is composed with no request, and its provenance
+  ends `from the tilt store, 0 range requests, 0 of 0 bytes`. Otherwise
+  `tilts::decode` reads the file, decodes only the needed tilts the store
+  lacks, stores them and the table, and composes; the answer is
+  `products::decode_volume`'s, byte for byte. A backfill first sends every
+  stored volume of the loop the catalog lacks, newest first and unpaced, then
+  fetches the rest of its depth; its log line counts both.
+- **Cap.** `OMASTORM_TILTS_MB` (default 256, in 10^6 bytes of `.u8z`; 0
+  turns the store off). After each save the least recently used tilts go
+  first (a compose counts as a use), oldest volume first on a tie, whatever
+  the station. Nothing is fetched to fill it. Each save logs
+  `Tilts <station>: N tilts, M MB, cap X MB`; an eviction logs
+  `Tilts store: evicted …; now N tilts, M MB, cap X MB`.
+- **Sizes** (deflated, the S20 fixtures): SMHI 360 × 480 about 7 KB a tilt
+  (14 KB at 592 gates), so about 90 KB for a volume's ten; MET Norway
+  720 × 960 74 KB, its 360-ray tilts 11–38 KB; DMI 360 × 475 6–11 KB.
+- **API** for S24a, S24b and S25: `tilts::shared()` is the engine's store
+  (`None` when off). `Store::volumes(station)` lists stored volumes newest
+  first (time, source); `Store::volume(station, time)` gives the angle table
+  and which tilts are stored (`Stored`: dataset, tenths, geometry, bytes);
+  `Store::tilt(station, time, dataset)` and `Store::tilts(station, time)`
+  load them as `products::Tilt`; `Store::save` adds tilts. The lowest scan
+  of a station at a time is the stored tilt with the smallest angle, present
+  for every product read since S26 made it free.
+
 The station table's source, retrieval date, and caveats are in `data/sites.json`
 and hello. It includes archived and test sites; membership does not imply live
 availability. An archived scan retains its measured coordinates.

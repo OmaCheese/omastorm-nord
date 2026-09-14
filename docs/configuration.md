@@ -74,12 +74,12 @@ view. Weather changes do not reset a remembered location.
 
 ```toml
 # Always open centered here. Set both; omit both to remember the last position.
-center_lat = 36.23708
-center_lon = -79.97948
+center_lat = 57.70716
+center_lon = 11.96679
 
 # Optional: use this radar on launch regardless of map center.
 # Omit to restore the UI lock, or select automatically when no lock is remembered.
-# locked_radar = "KFCX"
+# locked_radar = "vara"
 
 treatment = "GLYPHS" # PIXELS, GLYPHS, or STIPPLE at launch; Glyphs when omitted
 weak_floor = 5       # dBZ; false draws every measured return
@@ -103,7 +103,7 @@ zoom_in = "+ ="
   config applies again on launch. Remove this setting and unlock in the UI
   to keep automatic selection across launches.
 
-A Jacksonville map center with `locked_radar = "KFCX"` is valid. Honor both
+A Stockholm map center with `locked_radar = "kiruna"` is valid. Honor both
 settings even when the sweep is outside the view. Show the selected station
 and lock, with "Use nearest radar" and "Go to selected radar" available when
 coverage is outside the view. Never relocate the camera or discard the lock
@@ -154,7 +154,7 @@ renamed into place). It holds the last map centre, span in kilometres, and
 the UI radar lock when one is set:
 
 ```json
-{"lat":30.332,"lon":-81.656,"span":210,"lock":"KJAX","name":"Jacksonville"}
+{"lat":57.707,"lon":11.967,"span":210,"lock":"vara","name":"Göteborg"}
 ```
 
 Invalid fields are dropped. A missing file is no remembered view.

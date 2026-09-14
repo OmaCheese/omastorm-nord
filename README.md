@@ -2,35 +2,38 @@
 
 > **Omastorm SE** is a fork of [Omastorm](https://github.com/wesleygrimes/omastorm)
 > that shows Swedish weather radar from [SMHI](https://www.smhi.se/) instead of
-> NOAA NEXRAD. It installs beside upstream under its own plugin id
-> (`rb.omastorm-se`) and directories (`omastorm-se`). The SMHI engine is still
-> being built; until it lands, the engine described below reads NEXRAD.
+> NOAA NEXRAD: the 12 SMHI radars and SMHI's national composite. It installs
+> beside upstream under its own plugin id (`rb.omastorm-se`) and directories
+> (`omastorm-se`).
 
 Open-source, live weather radar for the Omarchy desktop. Beta.
 
 [![Omastorm window: live take with loop, search, keys, and treatments](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/omastorm-preview.gif)](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/omastorm-demo.mp4)
 
-Live KJAX: the refactored window chrome, timeline ticks, and playback loop.
+Upstream Omastorm's demo, live over Jacksonville (NEXRAD). The fork's own
+media, over Vara, is made by `scripts/capture-readme.sh` and
+`scripts/capture-demo.sh` and replaces these links with its first release.
 
 A radar that lives in your bar. The popover shows the station nearest you with
 the actual scan time. Click the map (or press Enter) for the full window: every
-NEXRAD site in the network, reflectivity at native resolution, a timeline you
-can scrub, all drawn in your Omarchy theme.
+SMHI radar and the national composite, reflectivity at native resolution, a
+timeline you can scrub, all drawn in your Omarchy theme.
 
 ![The Omastorm window, live](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/window-live.png)
 
 ![The Omastorm popover, live](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/popover.png)
 
-A headless Rust engine fetches and decodes NEXRAD Level II data and prepares
-GPU-ready radar textures. An Omarchy plugin built with Quickshell/QML is the
+A headless Rust engine fetches and decodes SMHI's ODIM HDF5 volumes and
+national composite and prepares GPU-ready radar textures. An Omarchy plugin built with Quickshell/QML is the
 client: it displays those textures in the bar popover and full window.
 
 ## Features
 
-- **Live.** A Rust engine polls NOAA's public Level II feed and sweeps paint as
-  the antenna turns. Stale data says it is stale.
-- **Every site.** Pan the map and it follows the nearest station, or search by
-  id, city, or state.
+- **Live.** A Rust engine polls SMHI's open data every minute. SMHI publishes
+  one scan per radar every 5 minutes, about 5 minutes after it is taken; the
+  scan appears whole. Stale data says it is stale.
+- **Every radar.** Pan the map and it follows the nearest station, or search by
+  station, town, or county. Pick Sweden for the national composite.
 - **Timeline.** Up to 60 scans per station, cached locally. Play, step, scrub.
 - **Three treatments.** Glyphs, Pixels, and Stipple sample the same gate and
   paint the cell differently.
@@ -38,15 +41,20 @@ client: it displays those textures in the bar popover and full window.
   change with it.
 - **Keyboard first.** Everything the pointer reaches is a keystroke, and every
   key is rebindable.
-- **Honest.** Actual scan times. Missing, range-folded, and below-threshold
-  returns are drawn distinctly from measured values. Displays individual radar sweeps.
+- **Honest.** Actual scan times. Missing and below-threshold returns are drawn
+  distinctly from measured values. Displays one radar's lowest sweep at a time,
+  or SMHI's composite.
 
 ## Install
 
 Omarchy 4 on x86_64 and aarch64.
 
+The fork is not on GitHub yet, and has published no engine release. Until it
+has, install from a checkout: `mise setup`, then `mise plugin-link` links the
+plugin to it and the bar runs the checkout's own engine build. Once published:
+
 ```sh
-omarchy plugin add https://github.com/wesleygrimes/omastorm.git --enable
+omarchy plugin add https://github.com/<owner>/omastorm-se.git --enable
 ```
 
 This clones the plugin into `~/.config/omarchy/plugins/rb.omastorm-se` and
@@ -92,11 +100,12 @@ In the window, drag to pan and scroll to zoom. The map follows the nearest
 station as you pan unless you lock it; a locked radar stays put even when
 the camera leaves its coverage, and the lock turns yellow outside the rings.
 A scale bar under the map shows ground distance in your locale (km or mi).
-A station you arrive at fetches its last dozen scans, so there is a loop to
-play within a few seconds; the cache then grows to 60 as new scans arrive.
+A station you arrive at fetches its last 60 scans (about five hours) in the
+background, newest first, so there is a loop to play within seconds.
 The stamp above the timeline is the absolute scan time; the meta line is how
-stale that frame is. LIVE, STALE after ten minutes, UNAVAILABLE or OFFLINE
-when the feed cannot be reached, with cached frames kept.
+stale that frame is. LIVE, STALE after 15 minutes, UNAVAILABLE after 30 or
+when SMHI publishes nothing for a radar, OFFLINE when SMHI cannot be reached,
+with cached frames kept. A healthy SMHI frame is already 5 to 10 minutes old.
 
 | Key | Action |
 | --- | --- |
@@ -132,9 +141,9 @@ remembered lock is restored, otherwise the nearest radar follows the map.
 
 ```toml
 # Optional: always open here. Omit both to remember the last map position.
-center_lat = 36.23708
-center_lon = -79.97948
-# locked_radar = "KFCX" # optional radar override; coordinates do not imply a lock
+center_lat = 57.70716
+center_lon = 11.96679
+# locked_radar = "vara" # optional radar override; coordinates do not imply a lock
 
 treatment = "GLYPHS" # PIXELS, GLYPHS, or STIPPLE at launch
 weak_floor = 5       # dBZ; false draws every measured return
@@ -159,9 +168,9 @@ omarchy restart shell
 
 The engine runs as one shared daemon per login. Its log is
 `$XDG_RUNTIME_DIR/omastorm-se/engine.log` (usually `/run/user/<uid>/omastorm-se/`).
-If live polling receives no new chunk for 90 seconds, the engine rediscovers
-the latest volume automatically, keeping cached frames available. Recovery
-attempts are recorded in `engine.log`.
+When SMHI's listing lags, the engine probes the next scan's dated file once a
+scan is overdue, and it backs off on errors, keeping cached frames available.
+Both are recorded in `engine.log`.
 
 If the popover says the engine could not be installed, the download or its
 sha256 check failed; the reason is in `bootstrap.log` in the same directory,
@@ -189,7 +198,9 @@ Then delete the `o.bind` line if you added one.
 ## Feedback
 
 This is a beta. Bugs, rough edges, and ideas go to
-[GitHub issues](https://github.com/wesleygrimes/omastorm/issues).
+[GitHub issues](https://github.com/wesleygrimes/omastorm/issues) when upstream
+Omastorm has them too; anything SMHI-specific belongs to this fork's own
+tracker once it is published.
 
 ## Data and licenses
 
@@ -213,13 +224,13 @@ and [`help wanted`](https://github.com/wesleygrimes/omastorm/issues?q=is%3Aissue
 A headless Rust engine serves GPU textures over a Unix socket. The
 Quickshell UI is the client. `manifest.json` is the Omarchy plugin.
 
-- `engine/` Rust daemon: NEXRAD decode, cache, and the socket protocol
+- `engine/` Rust daemon: SMHI polling and ODIM decode (NEXRAD Level II in archive mode), cache, and the socket protocol
 - `ui/` Quickshell QML for the bar popover and window
 - `scripts/` bootstrap, checks, captures, fetch, and release
 - `data/` fixture provenance, checksums, and vendored archives (`data/raw/` is extracted)
-- `golden/` decoder answer key for the archived KTLX scan
+- `golden/` decoder answer keys: SMHI's Vara volume and national composite, and the Level II KTLX scan the checks use
 - `docs/` protocol, configuration, and releasing
-- `site/` omastorm.com
+- `site/` upstream's omastorm.com page, unchanged; this fork publishes no site
 
 Read [DESIGN.md](DESIGN.md) before proposing a product change and
 [docs/protocol.md](docs/protocol.md) before touching the engine/client

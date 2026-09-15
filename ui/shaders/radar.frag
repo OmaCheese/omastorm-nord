@@ -58,6 +58,13 @@ layout(std140, binding = 0) uniform buf {
     // 8 is "at least" this high (the highest beam reaching it still holds
     // 18 dBZ), drawn in its colour under the same faint hatch. 0 otherwise.
     int hatchAtLeast;
+    // S24d: 1 when the frame is a storm height (`ETOP`) and Relief is on:
+    // each cell's colour is lit from the north-west by the slope its
+    // neighbouring texels give (the desktop does not tilt). The frame's
+    // scale and offset turn a texel's code into its height.
+    int relief;
+    float codeScale;
+    float codeOffset;
 };
 // The sweep: one row per radial in ascending azimuth, one texel per gate.
 // For a grid frame, the Web Mercator texture instead, row 0 north.
@@ -152,9 +159,92 @@ bool withinAny(vec2 d) {
     if (circleCount > 11 && within(circle11, lat, dLon)) return true;
     return false;
 }
+// ---------- S24d: relief (web radar.glsl, the same rule) ----------
+// How much a cell is lit, 1 on level ground (shade() leaves its colour
+// alone); main() sets it for an ETOP frame with relief on.
+float reliefLight = 1.0;
+// Heights are exaggerated this much against the ground distance, so a
+// storm's rise of a few km over tens of km reads as a slope.
+const float RELIEF_Z = 2.0;
+// Samples are at least this far apart on the ground (or a screen cell, the
+// larger): an echo top jumps between the beams' heights from gate to gate,
+// and a slope read over less is mostly that.
+const float RELIEF_STEP_M = 3000.0;
+// A storm height's texel in metres above sea level; -1 when there is none
+// to lean on (no data, the sweep's blank row, off the sweep or the grid,
+// past the reach), so no cliff is lit that is not there. Code 0 (readings,
+// none of 18 dBZ) is the ground, 0 m: a storm's edge is a real slope. An
+// "at least" top (odd code) stands at its lower bound. Codes are floats:
+// the legacy GLSL targets have no integer %.
+float heightOf(float raw, float status, bool polar) {
+    if (raw == 1.0) return -1.0;
+    if (raw == 0.0) return polar && status == 0.0 ? -1.0 : 0.0;
+    return (raw - mod(raw, 2.0) - codeOffset) / codeScale * 1000.0;
+}
+// The azimuth lookup's row for an azimuth in degrees.
+float lutRow(float azimuth) {
+    float entry = clamp(floor(mod(azimuth, 360.0) * 10.0), 0.0, 3599.0);
+    vec4 lut = texture(azimuthLut, vec2((entry + .5) / 3600.0, .5));
+    return floor(lut.r * 255.0 + .5) + 256.0 * floor(lut.g * 255.0 + .5);
+}
+// A sweep texel's height; -1 off the sweep, or when `skip` (past the reach).
+float sweepHeight(float gate, float row, bool skip) {
+    if (skip || gate < 0.0 || gate > float(gates) - 1.0) return -1.0;
+    vec4 t = texture(sweep, vec2((gate + .5) / float(gates), (row + .5) / float(rays)));
+    return heightOf(floor(t.b * 255.0 + .5), floor(t.g * 255.0 + .5), true);
+}
+float gridHeight(vec2 c) {
+    if (c.x < 0.0 || c.y < 0.0 || c.x >= gridTexels.x || c.y >= gridTexels.y) return -1.0;
+    vec4 t = texture(sweep, (c + .5) / gridTexels);
+    return heightOf(floor((useCodes == 1 ? t.r : t.b) * 255.0 + .5), 0.0, false);
+}
+// A neighbour with no height leans on the centre `c`: level, never a cliff.
+float lean(float h, float c) { return h < 0.0 ? c : h; }
+// Lambert light from the north-west, 45 degrees up, on the surface whose
+// east and north slopes these are; 1 on level ground.
+float lightFrom(float east, float north) {
+    vec3 n = normalize(vec3(-RELIEF_Z * east, -RELIEF_Z * north, 1.0));
+    return clamp(dot(n, vec3(-.5, .5, .70710678)) / .70710678, 0.0, 1.41421356);
+}
+// A polar cell: a Sobel slope over the 3 x 3 texels `s` gates in and out
+// along the ray and `da` degrees either side, spaced RELIEF_STEP_M or a
+// screen cell apart, whichever is larger (so a zoomed-out view is lit at the
+// scale it is drawn), then turned from along/across the ray to east/north.
+float polarLight(vec4 t, float gate, float azimuth, float groundM, float cellM) {
+    float c = heightOf(floor(t.b * 255.0 + .5), floor(t.g * 255.0 + .5), true);
+    if (c < 0.0) return 1.0;
+    float stepM = max(cellM, RELIEF_STEP_M);
+    float s = max(1.0, floor(stepM / gateSpacingM + .5));
+    float r = max(groundM, stepM);
+    float da = max(360.0 / float(rays), degrees(stepM / r));
+    // A whole number of rays, so the step is the one the rows read (review N1).
+    da = ceil(da * float(rays) / 360.0 - 1e-3) * 360.0 / float(rays);
+    bool past = reachM > 0.0 && groundM + s * gateSpacingM > reachM;
+    float lo = gate - s, hi = gate + s;
+    float rm = lutRow(azimuth - da), rc = lutRow(azimuth), rp = lutRow(azimuth + da);
+    float mI = lean(sweepHeight(lo, rm, false), c), mC = lean(sweepHeight(gate, rm, false), c), mO = lean(sweepHeight(hi, rm, past), c);
+    float cI = lean(sweepHeight(lo, rc, false), c), cO = lean(sweepHeight(hi, rc, past), c);
+    float pI = lean(sweepHeight(lo, rp, false), c), pC = lean(sweepHeight(gate, rp, false), c), pO = lean(sweepHeight(hi, rp, past), c);
+    float along = ((mO + 2.0 * cO + pO) - (mI + 2.0 * cI + pI)) / (8.0 * s * gateSpacingM);
+    float across = ((pI + 2.0 * pC + pO) - (mI + 2.0 * mC + mO)) / (8.0 * r * radians(da));
+    float a = radians(azimuth);
+    return lightFrom(along * sin(a) + across * cos(a), along * cos(a) - across * sin(a));
+}
+// A grid cell: the same Sobel over the texels `s` apart (row - s is north).
+float gridLight(vec2 tc, float c, float lat, float cellM) {
+    if (c < 0.0) return 1.0;
+    float texM = gridSize.x / gridTexels.x * 2.0 * PI * R_M * cos(lat);
+    float s = max(1.0, floor(max(cellM, RELIEF_STEP_M) / texM + .5));
+    float nw = lean(gridHeight(tc + vec2(-s, -s)), c), n = lean(gridHeight(tc + vec2(0.0, -s)), c), ne = lean(gridHeight(tc + vec2(s, -s)), c);
+    float w = lean(gridHeight(tc + vec2(-s, 0.0)), c), e = lean(gridHeight(tc + vec2(s, 0.0)), c);
+    float sw = lean(gridHeight(tc + vec2(-s, s)), c), so = lean(gridHeight(tc + vec2(0.0, s)), c), se = lean(gridHeight(tc + vec2(s, s)), c);
+    return lightFrom(((ne + 2.0 * e + se) - (nw + 2.0 * w + sw)) / (8.0 * s * texM),
+                     ((nw + 2.0 * n + ne) - (sw + 2.0 * so + se)) / (8.0 * s * texM));
+}
 void main() {
-    // Every treatment paints 3 px screen cells; each cell samples the gate
-    // under its center, so the lookup below runs once per cell, not per texel.
+    // Every treatment paints 3 px screen cells; each fragment looks up the
+    // gate under its cell's centre, so a cell's pixels agree (the lookup,
+    // and the relief below, run per fragment, not once per cell).
     vec2 pixel = qt_TexCoord0 * viewport;
     vec2 samplePixel = floor(pixel / 3.0) * 3.0 + 1.5;
     if (kind == 1) {
@@ -164,7 +254,9 @@ void main() {
         vec2 g = (centerOffset + (samplePixel - viewport * .5) * unitsPerPixel - gridOrigin) / gridSize;
         if (gridTexels.x < 1.0 || gridTexels.y < 1.0
             || g.x < 0.0 || g.y < 0.0 || g.x >= 1.0 || g.y >= 1.0) { fragColor=vec4(0); return; }
-        vec4 texel = texture(sweep, (floor(g * gridTexels) + .5) / gridTexels);
+        vec2 tc = floor(g * gridTexels);
+        vec4 texel = texture(sweep, (tc + .5) / gridTexels);
+        float rawCode = floor((useCodes == 1 ? texel.r : texel.b) * 255.0 + .5);
         if (useCodes == 1) {
             // Code texture: the raw code in R (a grayscale PNG reads it in
             // R, G and B alike); class + 1 from the lookup strip.
@@ -180,6 +272,13 @@ void main() {
         // "no radar at this height" but no radar chosen: nothing.
         if (hatchNodata == 1 && circleCount > 0 && texel.r == 0.0 && floor(texel.g * 255.0 + .5) == 4.0
             && !withinAny(centerOffset + (samplePixel - viewport * .5) * unitsPerPixel)) { fragColor = vec4(0); return; }
+        // S24d: a storm height lit as a surface.
+        if (relief == 1 && texel.r > 0.0) {
+            vec2 cell = centerOffset + (samplePixel - viewport * .5) * unitsPerPixel;
+            float lat0 = radians(siteLatDeg);
+            float lat = atan(sinh_(log(tan(lat0) + 1.0 / cos(lat0)) - cell.y * 2.0 * PI));
+            reliefLight = gridLight(tc, heightOf(rawCode, 0.0, false), lat, 3.0 * unitsPerPixel * 2.0 * PI * R_M * cos(lat));
+        }
         fragColor = shade(texel, pixel);
         return;
     }
@@ -222,7 +321,11 @@ void main() {
     vec4 lut = texture(azimuthLut, vec2((entry + .5) / 3600.0, .5));
     float row = floor(lut.r * 255.0 + .5) + 256.0 * floor(lut.g * 255.0 + .5);
     vec2 uv = vec2((floor(gate + .5) + .5) / float(gates), (row + .5) / float(rays));
-    fragColor = shade(texture(sweep, uv), pixel);
+    vec4 texel = texture(sweep, uv);
+    // S24d: a storm height lit as a surface.
+    if (relief == 1 && texel.r > 0.0)
+        reliefLight = polarLight(texel, floor(gate + .5), azimuth, groundM, 3.0 * unitsPerPixel * 2.0 * PI * R_M * cos(lat));
+    fragColor = shade(texel, pixel);
 }
 // The palette, treatments, folded marker, and weak-return floor, shared by
 // both kinds: `code` is the texel under the cell, `pixel` the fragment.
@@ -269,5 +372,9 @@ vec4 shade(vec4 code, vec2 pixel) {
         alpha=coverage.x*coverage.y;
     }
     vec3 color=texture(swatches, vec2((float(b)+.5)/float(bands), .5)).rgb;
+    // S24d: relief. The legend's colour, darkened on a slope facing away
+    // from the light, lifted toward white on one facing it.
+    if (reliefLight != 1.0)
+        color = reliefLight < 1.0 ? color * (.35 + .65 * reliefLight) : mix(color, vec3(1.0), (reliefLight - 1.0) * .9);
     return vec4(color*alpha,alpha)*qt_Opacity;
 }

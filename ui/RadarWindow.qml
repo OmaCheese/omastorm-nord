@@ -16,6 +16,10 @@ Item {
     property var manifest: null
     readonly property var store: PluginSession
     property bool opened: session === null
+    // A standalone window has no plugin session but reads the PluginSession
+    // singleton, whose settle timer puts a composite's product back on REF
+    // while no surface is open (S24b S3): this window is one (fixed by S24d).
+    Binding { when: app.session === null; target: app.store; property: "windowOpen"; value: app.opened }
     function open(payload) {
         opened = true;
         if (session) session.windowOpen = true;
@@ -375,6 +379,7 @@ Item {
         case "newest": jump(true); break;
         case "pixels": case "glyphs": case "stipple": treatment = action.toUpperCase(); treatmentMenu.close(); break;
         case "weak": weakFloor = weakFloor === null ? configuredFloor : null; break;
+        case "relief": relief = !relief; break;
         case "help": treatmentMenu.close(); if (sheet.open) sheet.close(); else sheet.show(); break;
         case "close": dismiss(); break;
         }
@@ -507,6 +512,11 @@ Item {
     // Glyphs is the default; config.toml's `treatment` and the keys change it.
     property string treatment: session ? session.treatment : Quickshell.env("OMASTORM_STYLE") || "GLYPHS"
     onTreatmentChanged: if (session) session.treatment = treatment
+    // S24d: Relief, a storm height lit as a surface (the product menu or the
+    // `relief` action); the popover follows through the session.
+    // OMASTORM_RELIEF=1 turns it on for checks and captures.
+    property bool relief: session ? session.relief : Quickshell.env("OMASTORM_RELIEF") === "1"
+    onReliefChanged: if (session) session.relief = relief
     // The weak-return floor (DESIGN.md, weak-return floor): measured returns
     // under this many dBZ draw nothing, null draws them all. `w` toggles
     // between off and the configured floor (the default when config.toml
@@ -864,6 +874,7 @@ Item {
                     locked: app.locked
                     product: app.state ? app.state.product : null
                     reachKm: app.reachKm
+                    relief: app.relief
                     interactive: !app.store.needsLocation && !locationPicker.open
                     onNavigated: (lat, lon, spanKm) => app.store.userNavigated(lat, lon, spanKm)
                     // A settled pan hands the centre to the engine, which switches
@@ -1538,6 +1549,28 @@ Item {
                             MenuStep { label: "−"; enabled: map.reachShownKm === 0 || map.reachShownKm > 25; onActivated: app.stepReach(-1) }
                             MenuStep { label: "+"; enabled: map.reachShownKm > 0; onActivated: app.stepReach(1) }
                             MenuStep { label: "FULL"; enabled: app.reachKm > 0; onActivated: reachStore.set(app.siteId, 0) }
+                        }
+                    }
+                    // S24d: Relief, while a storm height shows.
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        Layout.leftMargin: 10; Layout.rightMargin: 10
+                        visible: !!app.scan && app.scan.product === "ETOP"
+                        spacing: 2
+                        LabelText {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: "RELIEF · THE TOPS AS A SURFACE LIT FROM THE NORTH-WEST"
+                            font.pixelSize: 9; opacity: .55
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 24
+                            spacing: 4
+                            LabelText { text: app.relief ? "ON" : "OFF"; color: app.theme.accent; Layout.fillWidth: true }
+                            MenuStep { label: "ON"; enabled: !app.relief; onActivated: app.relief = true }
+                            MenuStep { label: "OFF"; enabled: app.relief; onActivated: app.relief = false }
                         }
                     }
                 }

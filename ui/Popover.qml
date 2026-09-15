@@ -151,6 +151,7 @@ FocusScope {
                 theme: card.theme
                 treatment: card.session.treatment
                 weakFloor: card.session.weakFloor
+                relief: card.session.relief
                 labelSize: 10
                 product: card.state ? card.state.product : null
                 // S30: a My mosaic height frame's holes are hatched only

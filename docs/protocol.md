@@ -899,6 +899,26 @@ centre's height `h` above the antenna.
   In the sweep texture an "at least" texel also has G bit 8
   ([Texture files](#texture-files)); a client may draw it hatched over its
   colour. An older client draws its colour alone.
+  **Relief (S24d, clients only, no protocol change):** a client may light a
+  storm height as a surface, as both clients do when the user turns Relief
+  on (web: options menu, which also tilts the map 50°; desktop: the product
+  menu, no tilt). Each drawn texel keeps its palette colour, darkened or
+  lifted by the slope its neighbours give under a light from the
+  north-west, 45° up, heights exaggerated 2×. The slope is a 3 × 3 Sobel
+  over neighbours at least 3 km apart on the ground, or one 3 px screen
+  cell if that is more (an echo top jumps between beam heights from gate
+  to gate, so a slope read over less is mostly that): for a sweep, `s`
+  gates in and out along the ray on the rays `da` degrees either side (by
+  the azimuth lookup); for a grid, the texels `s` apart. Heights: an even
+  code's value; an "at least" (odd) code stands at its lower bound and
+  keeps its hatch; code 0 is 0 km (a storm's edge is a real slope). A
+  neighbour with no height to lean on (code 1, the sweep's blank row, off
+  the sweep or the grid, past the client's reach) counts as level with the
+  centre, so coverage edges, the reach and unscanned azimuths are never lit
+  as cliffs; a texel's own colour, and so its edges, are unchanged. The composites and My
+  mosaic get no special case: a grid frame is lit the same way (My mosaic
+  offers no `ETOP`). Colouring by `CMAX` is not offered: a timeline
+  carries one product, so the client never holds both frames.
 - `VIL`, "Rain mass", vertically integrated liquid: the column's scans
   whose value is not no data, ascending. A measured code gives
   `dBZ = min((code − 66) / 2, 56)` (capped: hail would count as water) and

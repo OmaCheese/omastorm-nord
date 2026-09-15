@@ -54,6 +54,8 @@ Item {
     // whole sweep: the shader draws nothing past it and the rings follow.
     property var product: null
     property real reachKm: 0
+    // S24d: Relief: a storm height (ETOP) drawn lit as a surface (radar.frag).
+    property bool relief: false
     readonly property real reachShownKm: reachKm > 0 && reachKm < coverageKm ? reachKm : 0
     readonly property real weatherTopM: 12000
     readonly property real lowBeamM: 2000
@@ -733,6 +735,11 @@ Item {
         // their colour.
         property int hatchAtLeast: map.scan && map.scan.product === "ETOP" ? 1 : 0
         property real reachM: map.reachShownKm * 1000
+        // S24d: a storm height lit as a surface while Relief is on; the
+        // frame's scale and offset give each texel's height.
+        property int relief: map.relief && map.scan && map.scan.product === "ETOP" ? 1 : 0
+        property real codeScale: map.scan && map.scan.scale > 0 ? map.scan.scale : 1
+        property real codeOffset: map.scan && map.scan.offset ? map.scan.offset : 0
         property color hatchInk: map.theme ? map.theme.foreground : "white"
         property vector4d hatchColor: Qt.vector4d(hatchInk.r, hatchInk.g, hatchInk.b, .45)
         // S30: hatched only inside the chosen radars' reach (radar.frag).

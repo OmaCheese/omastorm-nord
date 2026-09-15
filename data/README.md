@@ -132,16 +132,17 @@ lowest `elangle` (`Tilt::Lowest`). `produce-odim.py` gives the same
 Two of AEMET's radars from the same cache (DEC-16), because Spain's eleven
 come in two exports: Alhaurín el Grande (Vaisala IRIS 10.5, like nine of
 them) and Valladolid (IRIS 8.13, like San Sebastián). Cut by
-`scripts/trim-odim.py … --keep DBZH`; answer keys in
+`scripts/trim-odim.py … --keep TH,DBZH` (Alhaurín's lowest tilt: both, so
+the fixture shows TH stored first) or `--keep DBZH`; answer keys in
 `golden/esahr-20260915/` and `golden/eslid-20260915/` from
 `golden/produce-odim.py`, Alhaurín's products from
 `golden/produce-products.py` on its three-tilt extract. Credit `© AEMET`
-(AEMET's reuse notice), CC BY 4.0 as ORD publishes it. Together 198,909
+(AEMET's reuse notice), CC BY 4.0 as ORD publishes it. Together 240,500
 bytes, under the 300 KB a country may take.
 
 | Fixture (`data/fixtures/`) | Original (`https://s3.waw3-1.cloudferro.com/openradar-24h/2026/09/15/…`) | Original bytes, sha256 | Extract bytes | Kept |
 |---|---|---|---|---|
-| `ord_esahr_202609151900.h5` | `ES/esahr/PVOL/esahr@20260915T1900@0.5_1.3_2.1@DBZH_TH.h5` | 213,439, `a632c07e…37dbc2` | 39,556 | DBZH, lowest tilt |
+| `ord_esahr_202609151900.h5` | `ES/esahr/PVOL/esahr@20260915T1900@0.5_1.3_2.1@DBZH_TH.h5` | 213,439, `a632c07e…37dbc2` | 81,147 | TH, DBZH, lowest tilt |
 | `ord_esahr_202609151900_tilts.h5` | the same | | 102,024 | DBZH, 0.5, 1.3, 2.1° |
 | `ord_eslid_202609151900.h5` | `ES/eslid/PVOL/eslid@20260915T1900@0.5_1.4_2.3@DBZH_TH.h5` | 317,446, `aec8c791…101109` | 57,329 | DBZH, lowest tilt |
 
@@ -152,9 +153,12 @@ What they prove in `engine/src/odim.rs`:
   `startazA`/`stopazA`, 250 gates of 1 km; `rstart` 200 is **metres**
   (first gate at 700 m, `odim::rstart_km`); the key decides it from the
   pulse rate (560 Hz: 267.7 km unambiguous, where 200 km + 250 km would be).
-- **Valladolid**: 450 rays of 0.8° with **no azimuths at all** (equal
-  sectors from north; a clutter-against-terrain correlation put the best
-  rotation at 0°), 240 gates, `rstart` 125 in metres (first gate at 625 m).
+- **Valladolid**: 450 rays of 0.8° with **no azimuths in the dataset's
+  `how`** (equal sectors from north, first centre 0.4°; a clutter-against-
+  terrain correlation put the best rotation at 0°), 240 gates, `rstart` 125
+  in metres (first gate at 625 m). The root `/how` does hold 450
+  `startazA`/`stopazA` (first centre ≈ 0.48°); the engine and the key read
+  only a dataset's own per-ray arrays, a 0.08° difference.
 
 AEMET also publishes a Doppler volume (`…@0.5_1.5@DBZH_VRADH.h5`) 7 minutes
 after each; the poller does not read it (`ord::one_task`), so it has no

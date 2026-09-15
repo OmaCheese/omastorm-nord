@@ -651,15 +651,19 @@ mod tests {
     }
 
     /// AEMET (Alhaurín el Grande, S32): an ODIM 2.4 PVOL of float64 with gain
-    /// 1, `undetect` −32 and `nodata` 95.5, TH stored before DBZH, 360 rays of
-    /// 250 gates of 1 km, and `rstart` 200 written in metres: the first gate's
-    /// centre is 700 m out, not 200.5 km (the key decides the unit from the
-    /// pulse rate, independently of `rstart_km`).
+    /// 1, `undetect` −32 and `nodata` 95.5, TH stored before DBZH (the
+    /// extract keeps both, review S3), 360 rays of 250 gates of 1 km, and
+    /// `rstart` 200 written in metres: the first gate's centre is 700 m out,
+    /// not 200.5 km (the key decides the unit from the pulse rate,
+    /// independently of `rstart_km`).
     #[test]
     fn aemet_alhaurin_reads_rstart_in_metres_and_float_markers() {
         let (sweep, site, golden) =
             matches_golden("ord_esahr_202609151900.h5", "esahr-20260915", Tilt::Lowest);
-        assert_eq!(golden.odim_dataset, "/dataset1/data1");
+        assert_eq!(
+            golden.odim_dataset, "/dataset1/data2",
+            "DBZH, not the TH before it"
+        );
         assert_eq!((sweep.rays.len(), sweep.gates), (360, 250));
         assert_eq!((sweep.first_gate_m, sweep.gate_spacing_m), (700, 1000));
         assert_eq!(golden.ray_time_base, "2026-09-15T19:00:04Z");
@@ -673,10 +677,13 @@ mod tests {
     }
 
     /// AEMET (Valladolid, S32): the older IRIS 8.13 export of two of the
-    /// eleven (San Sebastián's too): 450 rays of 0.8° with no azimuths at all
-    /// (equal sectors from north, like MET Norway's; a clutter-against-
-    /// terrain check put the best rotation at 0°), 240 gates of 1 km and
-    /// `rstart` 125, metres again.
+    /// eleven (San Sebastián's too): 450 rays of 0.8° with no azimuths in the
+    /// dataset's `how`, so equal sectors from north (first centre 0.4°), like
+    /// MET Norway's. The root `/how` does carry 450 `startazA`/`stopazA`
+    /// (first centre ≈ 0.48°); neither the engine nor the key reads a root
+    /// per-ray array (which scan it describes is not said), a 0.08° offset.
+    /// A clutter-against-terrain check put the best rotation at 0°. 240
+    /// gates of 1 km and `rstart` 125, metres again.
     #[test]
     fn aemet_valladolid_has_450_rays_and_no_azimuths() {
         let (sweep, site, golden) =

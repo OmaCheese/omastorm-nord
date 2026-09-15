@@ -467,8 +467,8 @@ the circle. A complete 0.5° or 1° cut needs no blank row.
 | Channel | Meaning |
 | --- | --- |
 | R | palette class + 1; 0 means nothing to draw |
-| G | status bits: 1 range folded, 2 below threshold, 4 outside coverage |
-| B | moment byte in the Level II convention (ODIM DBZH requantized, `code = dBZ × 2 + 66`), for cursor inspection and the weak-return floor |
+| G | status bits: 1 range folded, 2 below threshold, 4 outside coverage; 8 (S24a, `ETOP` only, with R above 0) the storm height is "at least" this ([Storm height and rain mass](#storm-height-and-rain-mass)) |
+| B | moment byte in the Level II convention (ODIM DBZH requantized, `code = dBZ × 2 + 66`), for cursor inspection and the weak-return floor; for `ETOP` and `VIL` their own code (value = (code − `offset`) / `scale` in `units`) |
 | A | 255 |
 
 **Azimuth lookup (`frame.azimuthLut`):** PNG, RGBA, width 3600, height 1.
@@ -517,6 +517,8 @@ derives from `frame.scale` and `frame.offset` for the floor in `units`
 (`ceil(floor × scale + offset)`), and a measured code (2 and up) below it
 draws nothing, exactly as a blank cell does; 0 is no floor. Folded and
 below-threshold codes are never weak, and the legend names the hidden range.
+The floor is in dBZ, so since S24a a client sends `weakBelow` 0 for a frame
+whose `units` are not `dBZ` (`ETOP`, `VIL`), and the legend hides nothing.
 
 **Grid lookup rule:** the centre of each 3 px screen cell, in Web Mercator
 units, becomes a texture position `u = (x − x(west)) / (x(east) − x(west))`,
@@ -658,8 +660,13 @@ frame is the composite, whatever product is chosen.
 
 ```json
 "products":[{"id":"REF","name":"Lowest scan"},{"id":"HYBRID","name":"Clear view"},
-            {"id":"CAPPI","name":"Height","above":["sea","ground"]},{"id":"CMAX","name":"Column max"}]
+            {"id":"CAPPI","name":"Height","above":["sea","ground"]},{"id":"CMAX","name":"Column max"},
+            {"id":"ETOP","name":"Storm height","units":"km"},{"id":"VIL","name":"Rain mass","units":"kg/m²"}]
 ```
+
+`units` (S24a) is sent only on products whose frames are not in dBZ:
+`ETOP` in km, `VIL` in kg/m² ([Storm height and rain mass](#storm-height-and-rain-mass)).
+An engine older than S24a lists neither.
 
 Before S29 the list held `CAPPI1` "Height 1 km" and `CAPPI2` "Height 2 km"
 instead of `CAPPI`; they are now aliases `set_product` still accepts (below).
@@ -675,11 +682,14 @@ Each `hello.sites[]` entry names what the station can show and its angles:
 ```
 
 - `products`: a subset of `hello.products`' ids, in that order; `[]` for a
-  grid station. Every radar can make `REF`. `CAPPI` and `CMAX`
-  are offered where one file holds the radar's every angle and the engine
-  knows them (SMHI, MET Norway, DMI); FMI's radars, whose files hold one
-  angle each in ORD's cache, offer `REF` alone, with `elevations` `[]`.
-  `HYBRID` is offered only where the engine also has a blockage table.
+  grid station. Every radar can make `REF`. `CAPPI`, `CMAX`, `ETOP` and
+  `VIL` are offered wherever the engine knows the radar's angles: SMHI's,
+  MET Norway's and DMI's radars (one file holds every angle) and, since
+  S24a, FMI's, whose files hold one angle each in ORD's cache: the engine
+  reads the five files of one nominal time as one volume ([FMI's
+  volumes](#fmis-volumes)). Before S24a FMI's radars offered `REF` alone,
+  with `elevations` `[]`. `HYBRID` is offered only where the engine also
+  has a blockage table (none for FMI's radars yet).
 - `elevations`: the radar's scan angles, ascending; the position is the
   `elevationIndex`. `beamKm50` and `beamKm100` are the beam centre's height
   above the antenna at 50 and 100 km ground distance, in km with one
@@ -705,10 +715,14 @@ screen:
 | `HYBRID` | `Clear view` | per azimuth, the lowest angle the terrain does not block | the lowest angle (placement only) |
 | `CAPPI` | `Height 3 km`, `Height 3.5 km`, `Height 1 km above ground`, … | per gate, of the angles whose beam holds `heightM` above sea level (or above the ground there), the one whose beam centre is nearest it; none: no data ("no radar at this height") | the lowest angle (placement only) |
 | `CMAX` | `Column max` | per gate, the strongest return of any angle above it | the lowest angle (placement only) |
+| `ETOP` | `Storm height` | per gate, the height above sea level of the highest beam with 18 dBZ or more, in km; "at least" where the highest beam that reaches it still holds that much | the lowest angle (placement only) |
+| `VIL` | `Rain mass` | per gate, the water in the column, kg/m², from every angle | the lowest angle (placement only) |
 
 A client shows an angle beside the product only for `REF`. The texture
-format, `units` (dBZ), palette, bounds, `scale` and `offset` are the same
-for every product, so nothing else in a client changes.
+format is the same for every product. `REF`, `HYBRID`, `CAPPI` and `CMAX`
+share `units` (dBZ), palette, bounds, `scale` and `offset`; `ETOP` and
+`VIL` bring their own in the frame ([Storm height and rain
+mass](#storm-height-and-rain-mass)), which the legend already reads.
 
 **`set_product`.** `{"type":"set_product","product":"CMAX"}`,
 `{"type":"set_product","product":"REF","elevationIndex":3}` for one angle,
@@ -745,11 +759,12 @@ selected `state.product` keeps the choice for the next radar.
 **History.** The catalog keeps each radar's frames per product. After a
 switch the lowest scan backfills its 60 frames as before; any other
 product backfills the newest 12 on an SMHI radar (an hour; each of its
-volumes costs about 39 range requests) and the newest 24 on an ORD radar
-(two hours, one request a file), and its ring fills to 60 as live frames
-arrive. CAPPI, CMAX and HYBRID read the lowest scan anyway, so each of
-their frames also adds the lowest scan's frame of the same volume to the
-station's `-e0` ring, at no extra request. The engine keeps a station's
+volumes costs about 39 range requests), the newest 24 on a MET Norway or
+DMI radar (two hours, one request a file) and the newest 12 on an FMI
+radar (an hour: five files a volume, S24a), and its ring fills to 60 as
+live frames arrive. CAPPI, CMAX, HYBRID, ETOP and VIL read the lowest scan
+anyway, so each of their frames also adds the lowest scan's frame of the
+same volume to the station's `-e0` ring, at no extra request. The engine keeps a station's
 lowest scan and at most two other products (the current one and the one
 before); choosing a third deletes the oldest's frames. Keep-warm stations
 (`OMASTORM_WARM`) keep their lowest scan warm whatever product is chosen.
@@ -807,9 +822,74 @@ with the beam centre `h = R cos(e) / cos(e + s/R) − R` above the antenna.
   not).
 
 The engine reads only the angles a product needs: one for `REF`, the scans
-a pseudo-CAPPI chooses somewhere, every scan for `CMAX`, DBZH only, with
-range requests where the provider allows. What a frame costs is in the
-table below, measured per provider.
+a pseudo-CAPPI chooses somewhere, every scan for `CMAX`, `ETOP` and `VIL`,
+DBZH only, with range requests where the provider allows. What a frame
+costs is measured per provider in the streams' logs (`coord/log/`).
+
+### Storm height and rain mass
+
+Additive since S24a (still version 2). Both are drawn on the lowest scan's
+rays and gates like `CMAX`. An output gate's *column* is the scans covering
+it (above), ascending by angle, each with its value there and its beam
+centre's height `h` above the antenna.
+
+- `ETOP`, "Storm height": of the column's scans whose value is 18 dBZ or
+  more (code 102 and up), the highest angle's; the top is
+  `T = (h + altM) / 1000` km above sea level (`altM` from `hello.sites`).
+  It is **at least** `T` when no scan above that one in the column has a
+  value other than no data (code 1): the highest beam that reaches the
+  gate still holds 18 dBZ, so the storm may reach higher. Where the top
+  angles do not reach (SMHI's 24° and 40° end at 120 km, FMI's 5° at
+  ~184 km) the column's highest scan is a lower one, so far from a radar a
+  tall storm is often "at least"; FMI's highest angle, 5°, is the lowest of
+  the four networks' (SMHI 40°, MET Norway 15.5°, DMI 15°).
+  The code is `2 + 2 × round(5 T)` (the top to 0.2 km, half away from
+  zero), at most 254, plus 1 when it is "at least". So with `scale` 10 and
+  `offset` 2, value = (code − `offset`) / `scale` is the top within 0.1 km
+  either way, an odd code is "at least", and the class rule gives an "at
+  least" top its own top's class (the bounds are whole kilometres). Code 0:
+  the column has a reading (any code but 1) and none reaches 18 dBZ; code
+  1: none, or no scan covers the gate. `units` `km`; `bounds`
+  `[0,2,3,4,5,6,7,8,9,10,12,15,26]` with twelve colours.
+  In the sweep texture an "at least" texel also has G bit 8
+  ([Texture files](#texture-files)); a client may draw it hatched over its
+  colour. An older client draws its colour alone.
+- `VIL`, "Rain mass", vertically integrated liquid: the column's scans
+  whose value is not no data, ascending. A measured code gives
+  `dBZ = min((code − 66) / 2, 56)` (capped: hail would count as water) and
+  `Z = 10^(dBZ / 10)` (mm⁶/m³); below threshold (code 0) gives `Z = 0`.
+  Over each gap between two consecutive beam centres, Marshall–Palmer
+  water `3.44e-6 × ((Z_i + Z_i+1) / 2)^(4/7)` kg/m³ times the gap
+  `h_i+1 − h_i` in metres, summed upward (f64, in that order):
+  kg/m². The code is `2 + round(2 × VIL)`, at most 255 (`scale` 2,
+  `offset` 2: 0.5 kg/m² a code, to 126.5). Code 0: every such scan is
+  below threshold; code 1: there is none. A column with one reading has
+  no gap and a VIL of 0 (code 2). `units` `kg/m²`; `bounds`
+  `[0,1,2,4,7,10,15,20,25,30,40,50,70,127]` with thirteen colours.
+- Both need every scan of the volume (like `CMAX`), and their frames carry
+  the lowest scan along for the `-e0` ring like the other products. Frame
+  ids end in `-etop` and `-vil`.
+- **The weak-return floor** is in dBZ: a client applies it only to frames
+  whose `units` are `dBZ`. A client older than S24a applies its floor to
+  these frames in their own units (a 5 dBZ floor hides storm heights under
+  5 km and rain mass under 5 kg/m²) and shows the legend's hidden part
+  that way; tapping the legend shows them.
+
+### FMI's volumes
+
+Additive since S24a (still version 2). ORD's cache holds each FMI radar's
+scans as `SCAN` files of one angle each: every nominal time, five files at
+0.3° (0.5° at Korppoo, 0.1° at Luosto), 0.7°, 1.5°, 3.0° and 5.0° (every
+FMI radar, ORD's listings of 2026-09-15). For any product but the lowest
+scan the engine reads all the files of one nominal time as one volume
+(per angle the best quantity, `DBZH` else `TH`), its scans ascending by
+angle; the newest time waits until it has as many angles as the time
+before. Each file is read whole in one request (75–210 KB, 0.6–0.8 MB a
+volume), and the five scans are kept in the tilt store as one volume, so
+every other product of that time then costs no request. The lowest scan
+alone still reads its one file, as before S24a. `elevations` lists the
+five angles; `REF` at another index reads the whole volume too. The 5°
+scan ends at ~184 km (367 gates of 500 m), the others at 250 km.
 
 ## My mosaic
 
@@ -1127,3 +1207,20 @@ Additive since (S30, still version 2):
   when it resends its remembered set, that set replaces the height one;
   one that lists the rules from `hello` may offer `Height` and send it
   without a height, which the engine takes as 2,000 m above sea level.
+
+Additive since (S24a, still version 2):
+
+- `hello.products` gains `ETOP` "Storm height" and `VIL` "Rain mass", each
+  with `units`; `hello.sites[].products` lists them wherever `CMAX` is.
+- FMI's radars offer `CAPPI`, `CMAX`, `ETOP` and `VIL` and list their five
+  angles in `elevations`, read as one volume per nominal time ([FMI's
+  volumes](#fmis-volumes)).
+- An `ETOP` or `VIL` frame has its own `units`, `palette`, `bounds`,
+  `scale` and `offset` ([Storm height and rain
+  mass](#storm-height-and-rain-mass)); every other frame is unchanged. The
+  sweep texture's G channel gains bit 8 ("at least", `ETOP` only).
+- A client applies the weak-return floor to dBZ frames only. An older
+  client lists the two products from `hello` and draws them with their own
+  legend, applying its floor in their units (tap the legend to show all),
+  and draws no hatch on "at least" tops. A client facing an older engine
+  finds neither in `hello` and offers neither.

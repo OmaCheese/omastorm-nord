@@ -2902,6 +2902,62 @@ mod tests {
             task.abort();
         }
     }
+    /// S31: a radar opened on the placeholder loads its first frame; a
+    /// composite's product loads over the composite's newest frame, whose
+    /// files stay published and referenced; a station opened on a
+    /// catalogued frame shows no first stage.
+    #[test]
+    fn a_load_names_its_first_frame_and_a_composites_product_loads_over_it() {
+        let (mut shared, runtime) = live_shared("loading");
+        let _guard = runtime.enter();
+        let later = || Instant::now() + Duration::from_secs(5);
+        assert!(shared.select_site("vara").0);
+        shared.snapshot();
+        let first = shared.state.loading.clone().unwrap();
+        assert_eq!(
+            (first.stage, first.percent, first.total, first.unit),
+            (loading::Stage::First, 0, 1, loading::Unit::Frames)
+        );
+        assert_eq!(first.label, "Vara Reflectivity 0.5°: first frame");
+        // The composite's ring holds a frame: it opens on it, no first stage.
+        let mut frame = fixture_frame();
+        frame.id = "nordic-20260914T100000Z-e0".into();
+        shared
+            .catalog
+            .store("nordic", &frame, 1, b"sweep", b"lut", "p")
+            .unwrap();
+        assert!(shared.select_site("nordic").0);
+        assert_eq!(shared.loading.wire(later()), None);
+        // Its product has no frame: the placeholder, the fill's first
+        // stage, and the composite under it.
+        let (changed, refused) = shared.set_product(products::CMAX, 0, None, None);
+        assert!(changed && refused.is_none());
+        assert!(shared.state.frame.scan_time.is_empty());
+        shared.snapshot();
+        let product = shared.state.loading.clone().unwrap();
+        assert_eq!(product.stage, loading::Stage::First);
+        assert_eq!(product.label, "Nordic Column max: placing the radars");
+        let under = product.under.expect("the composite under its product");
+        assert_eq!(under.id, frame.id);
+        assert!(
+            under
+                .texture
+                .starts_with("tex/sweep-nordic-20260914T100000Z-e0-")
+        );
+        assert_eq!(fs::read(shared.dir.join(&under.texture)).unwrap(), b"sweep");
+        assert!(
+            shared.state.referenced_files().any(|p| p == under.texture),
+            "kept from the texture cleanup"
+        );
+        // Its first frame on screen: 100, and no composite under it.
+        shared.loading.shown(Instant::now());
+        shared.snapshot();
+        let shown = shared.state.loading.clone().unwrap();
+        assert_eq!((shown.percent, shown.under.is_none()), (100, true));
+        if let Some(task) = shared.live.take() {
+            task.abort();
+        }
+    }
     #[test]
     fn catalogued_frames_keep_stable_names_and_name_them_in_the_timeline() {
         let root = std::env::temp_dir().join(format!("omastorm-stable-{}", std::process::id()));

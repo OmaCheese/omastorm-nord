@@ -2146,11 +2146,13 @@ impl Schedule {
                 total += need;
                 done += if self.has(r, t) {
                     need
-                } else {
+                } else if top > t {
                     self.scans
                         .range(t + 1..=top)
                         .filter(|(_, v)| v[r].is_some())
                         .count() as u32
+                } else {
+                    0
                 };
             }
             // Closest to completion; the newer on a tie.
@@ -3621,6 +3623,83 @@ mod tests {
         assert!(!order.ready(now).contains(&t), "waiting for the far ring");
         order.add(0, t - CADENCE_MS, have(120, 475, t - CADENCE_MS), now, true);
         assert!(order.ready(now).contains(&t), "the far ring is in");
+    }
+
+    #[test]
+    fn a_silent_radar_is_not_waited_for_and_the_fill_counts_what_is_in() {
+        let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS;
+        let have = || Have {
+            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+            cost: Cost::default(),
+        };
+        let now = t + DUE_MS; // T is the newest due time
+        let mut s = Schedule::new(vec![5_000.0; 3], &[]).with_depth(3);
+        // Nothing in: each radar is expected to bring its newest (one
+        // cadence past T) and T itself.
+        let fill = s.fill(now).unwrap();
+        assert_eq!(
+            (fill.stage, fill.done, fill.total, fill.t),
+            (crate::loading::Stage::First, 0, 6, t)
+        );
+        // Radar 0's newest is T + 5: that time is now the closest to
+        // completion (1 of 3; it builds first once every radar's newest is
+        // in), where T would be 1 of 6.
+        s.add(0, t + CADENCE_MS, have(), now, true);
+        let fill = s.fill(now).unwrap();
+        assert_eq!((fill.done, fill.total, fill.t), (1, 3, t + CADENCE_MS));
+        // Radar 0 brings T, radar 1's newest is T: 3 of 5 volumes, 2 of 3 radars.
+        s.add(0, t, have(), now, true);
+        s.add(1, t, have(), now, true);
+        let fill = s.fill(now).unwrap();
+        assert_eq!(
+            (fill.done, fill.total, fill.radars_in, fill.counted),
+            (3, 5, 2, 3)
+        );
+        assert_eq!(
+            fill.progress("Nordic Rain mass").label,
+            format!(
+                "Nordic Rain mass: 2 of 3 radars in for {}",
+                utc(t, "%H:%MZ")
+            )
+        );
+        assert!(s.ready(now).is_empty(), "radar 2 missing and no quiet yet");
+        // Radar 2 is silent (Kiruna): it leaves the count, and T builds at
+        // once instead of after QUIET_MS without arrivals.
+        s.set_silent(2, true);
+        let fill = s.fill(now).unwrap();
+        assert_eq!((fill.done, fill.total, fill.silent), (3, 3, 1));
+        assert_eq!(
+            fill.progress("Nordic Rain mass").label,
+            format!(
+                "Nordic Rain mass: 2 of 2 radars in for {} (1 silent)",
+                utc(t, "%H:%MZ")
+            )
+        );
+        assert_eq!(s.ready(now), [t], "built without the silent radar");
+        s.mark_built(t);
+        // History: the window's three times, T built for both counted
+        // radars, T - 5 with one scan in.
+        s.add(1, t - CADENCE_MS, have(), now, true);
+        let fill = s.fill(now).unwrap();
+        assert_eq!(
+            (fill.stage, fill.done, fill.total, fill.built, fill.window),
+            (crate::loading::Stage::History, 3, 6, 1, 3)
+        );
+        assert_eq!(
+            fill.progress("Nordic Rain mass").label,
+            "Nordic Rain mass: history 1 of 3 frames (1 silent)"
+        );
+        // A scan counts the radar again; a time given up on is done.
+        s.set_silent(2, false);
+        assert_eq!(s.fill(now).unwrap().total, 9);
+        s.mark_built(t - CADENCE_MS);
+        s.forget(t - 2 * CADENCE_MS);
+        assert_eq!(s.fill(now), None, "the window is built: the fill is over");
+        // Every radar silent and nothing in: nothing to build.
+        let mut none = Schedule::new(vec![5_000.0], &[]);
+        none.set_silent(0, true);
+        none.touch(now);
+        assert!(none.ready(now + QUIET_MS).is_empty());
     }
 
     #[test]

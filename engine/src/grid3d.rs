@@ -35,8 +35,9 @@ use tokio::sync::mpsc::Sender;
 pub const LEVELS: usize = 24;
 pub const LEVEL_M: u32 = 500;
 /// A column is `FACTOR` × `FACTOR` of the 2,000 m texels: 4,000 m of Web
-/// Mercator, about 2 km of ground at 60° N. At 2,000 m the Nordic grid's
-/// codes, counts and radar bits would be ~290 MB (`coord/log/S24c.md`).
+/// Mercator, about 2 km of ground at 60° N. The Nordic grid is then 836 ×
+/// 1149 columns, 77 MB; at 2,000 m its codes, counts and radar bits would be
+/// 92 MB each and its column masks 31 MB, ~307 MB (`coord/log/S24c.md`).
 pub const FACTOR: i64 = 2;
 /// A section's column length on the ground, and the most columns.
 pub const COLUMN_M: f64 = 2000.0;
@@ -1484,5 +1485,94 @@ mod tests {
                 .is_none()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn memory_kb(field: &str) -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap_or_default()
+            .lines()
+            .find(|l| l.starts_with(field))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|kb| kb.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Measurement, not a check (ignored): the Nordic grid from a copy of a
+    /// tilt store at a fixed frame time, in release: fill seconds and memory,
+    /// then a cut across the column with the highest echo top.
+    /// `OMASTORM_BENCH_STORE=<copy> OMASTORM_BENCH_TIME=2026-09-15T12:00:00Z
+    /// [OMASTORM_BENCH_OUT=<dir>] cargo test --release grid3d::tests::a_real
+    /// -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn a_real_nordic_grid_from_a_tilt_store() {
+        let dir = std::env::var("OMASTORM_BENCH_STORE").expect("OMASTORM_BENCH_STORE");
+        let when = std::env::var("OMASTORM_BENCH_TIME")
+            .unwrap_or_else(|_| "2026-09-15T12:00:00Z".to_owned());
+        let t = chrono::DateTime::parse_from_rfc3339(&when)
+            .unwrap()
+            .timestamp_millis();
+        let store = crate::tilts::Store::open(dir.into(), u64::MAX).unwrap();
+        let sites = crate::providers::table().sites;
+        let nordic = sites.iter().find(|s| s.id == "nordic").unwrap();
+        let rss_before = memory_kb("VmRSS:");
+        let job = Job::new(nordic, &Set::default(), &sites, "nordic-bench", &when, t).unwrap();
+        let built = job.build_from(&store).unwrap();
+        let (peak, held) = (memory_kb("VmHWM:"), memory_kb("VmRSS:"));
+        let grid = built.grid.expect("a grid");
+        let stats = &built.stats;
+        // The column with the highest echo (≥ 18 dBZ) top.
+        let mut best = (0usize, 0usize);
+        for column in 0..grid.cols * grid.rows {
+            let cells = column * LEVELS..(column + 1) * LEVELS;
+            let top = cells
+                .clone()
+                .rev()
+                .find(|&c| grid.counts[c] > 0 && dbz(grid.codes[c]).is_some_and(|v| v >= ETOP_DBZ))
+                .map_or(0, |c| c - cells.start + 1);
+            if top > best.1 {
+                best = (column, top);
+            }
+        }
+        let (r, c) = (best.0 / grid.cols, best.0 % grid.cols);
+        let x = ((grid.west + c as i64) * FACTOR + 1) as f64 * PIXEL_M;
+        let y = ((grid.top - r as i64) * FACTOR + 1) as f64 * PIXEL_M;
+        let lon = (x / crate::composite::MERCATOR_R).to_degrees();
+        let lat = crate::composite::mercator_lat(y);
+        let (wlat, wlon) = crate::terrain::destination(lat, lon, 270.0, 150_000.0);
+        let (elat, elon) = crate::terrain::destination(lat, lon, 90.0, 150_000.0);
+        let started = Instant::now();
+        let cut = grid.cut(Point { lat: wlat, lon: wlon }, Point { lat: elat, lon: elon });
+        let cut_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let profile = Profile::of(&grid, &job, lat, lon);
+        let summary = serde_json::json!({
+            "time": when,
+            "radarsUsed": stats.used.len(),
+            "missing": stats.missing,
+            "fillSeconds": built.seconds,
+            "grid": [grid.cols, grid.rows, LEVELS],
+            "gridMB": grid.bytes() as f64 / 1e6,
+            "samples": stats.samples,
+            "crowdedColumns": stats.crowded,
+            "rssBeforeMB": rss_before / 1024,
+            "peakMB": peak / 1024,
+            "rssHoldingMB": held / 1024,
+            "tallest": {"lat": lat, "lon": lon, "echoTopM": profile.echo_top_m, "radars": profile.radars},
+            "cut": {"from": [wlat, wlon], "to": [elat, elon], "columns": cut.columns,
+                    "ms": cut_ms, "radars": cut.radars},
+        });
+        eprintln!("{summary:#}");
+        drop(grid);
+        eprintln!("after drop: RSS {} MB", memory_kb("VmRSS:") / 1024);
+        if let Ok(out) = std::env::var("OMASTORM_BENCH_OUT") {
+            let out = std::path::PathBuf::from(out);
+            std::fs::create_dir_all(&out).unwrap();
+            std::fs::write(out.join("bench.json"), format!("{summary:#}\n")).unwrap();
+            let png = crate::gray_png(cut.columns as u32, LEVELS as u32, &cut.codes).unwrap();
+            std::fs::write(out.join("bench-cut-codes.png"), png).unwrap();
+            let reply = crate::line(&Message::Profile(&profile));
+            std::fs::write(out.join("bench-profile.json"), reply).unwrap();
+        }
+        assert!(built.seconds < 3.0, "fill {:.2} s", built.seconds);
     }
 }

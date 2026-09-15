@@ -141,7 +141,12 @@ mod tests {
     #[test]
     fn the_grid_parses_and_knows_the_nordic_ground() {
         let g = grid().expect("engine/data/terrain-nordic-2km.bin parses");
-        assert!(g.width > 1000 && g.height > 1000, "{} × {}", g.width, g.height);
+        assert!(
+            g.width > 1000 && g.height > 1000,
+            "{} × {}",
+            g.width,
+            g.height
+        );
         // Every radar of the table lies well inside the box.
         for s in crate::providers::table().sites {
             if s.kind == crate::protocol::SiteKind::Polar {
@@ -197,7 +202,11 @@ mod tests {
         // A point: the texel whose Mercator square holds it.
         let lon = ((101.5 * PIXEL_M) / MERCATOR_R).to_degrees();
         let lat = crate::composite::mercator_lat(48.5 * PIXEL_M);
-        assert_eq!(g.at(lat, lon), 30.0, "column 101, the row whose north edge is 49");
+        assert_eq!(
+            g.at(lat, lon),
+            30.0,
+            "column 101, the row whose north edge is 49"
+        );
         assert!(Grid::parse(b"not a grid").is_err());
     }
 }

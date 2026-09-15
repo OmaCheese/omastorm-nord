@@ -485,16 +485,25 @@ pub enum Command {
         /// Optional since S20: 0 when absent.
         #[serde(default)]
         elevation_index: u32,
-        /// `CAPPI`'s height above sea level in metres (S29); optional.
+        /// `CAPPI`'s height in metres (S29); optional.
         #[serde(default)]
         height_m: Option<u32>,
+        /// What `CAPPI`'s height is above, `sea` or `ground` (S30); optional.
+        #[serde(default)]
+        above: Option<String>,
     },
     /// My mosaic's radars, each with an optional reach, and its rule (S25,
-    /// `mosaic::choose` checks them).
+    /// `mosaic::choose_with` checks them), with the `height` rule's height
+    /// and what it is above (S30).
+    #[serde(rename_all = "camelCase")]
     SetMosaic {
         sites: Vec<crate::mosaic::SiteArg>,
         #[serde(default)]
         rule: Option<String>,
+        #[serde(default)]
+        height_m: Option<u32>,
+        #[serde(default)]
+        above: Option<String>,
     },
     /// The visible inclusive tile rectangle at one zoom, at most 64 tiles
     /// Answered tile by tile with `tile_ready` to the sender.

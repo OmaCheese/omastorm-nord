@@ -174,9 +174,7 @@ pub fn choose(
         })?),
         (CAPPI | CAPPI1 | CAPPI2, _) => Some(Above::Sea),
         (_, Some(word)) => {
-            return Err(format!(
-                "above {word} goes with CAPPI only, not {product}."
-            ));
+            return Err(format!("above {word} goes with CAPPI only, not {product}."));
         }
         _ => None,
     };
@@ -490,6 +488,7 @@ pub fn carry(choice: &Choice, deg: Option<f64>, to: &Station) -> Choice {
             id: REF.to_owned(),
             elevation_index: index as u32,
             height_m: None,
+            above: None,
         };
     }
     if want_for(to, choice).is_some() {
@@ -1600,7 +1599,14 @@ mod tests {
         let ground = want_for(&station, &ok(Some(1000), Some("ground"))).unwrap();
         assert_eq!(
             ground,
-            Want::CappiGround(700.0, 1000, At { lat: 60.0, lon: 9.0 })
+            Want::CappiGround(
+                700.0,
+                1000,
+                At {
+                    lat: 60.0,
+                    lon: 9.0
+                }
+            )
         );
         assert_eq!(ground.variant(), "cappi1000g");
         assert_eq!(ground.product(), (CAPPI, "Height 1 km above ground".into()));
@@ -1728,7 +1734,13 @@ mod tests {
             .map(|(_, t)| t)
             .collect();
         let again = compose(want, subset).unwrap();
-        assert!(again.rays.iter().zip(&out.rays).all(|(a, b)| a.codes == b.codes));
+        assert!(
+            again
+                .rays
+                .iter()
+                .zip(&out.rays)
+                .all(|(a, b)| a.codes == b.codes)
+        );
         assert!(
             keep.len() >= needed(Want::Cappi(base, agl), &infos).len(),
             "at least what the same height above sea level reads"

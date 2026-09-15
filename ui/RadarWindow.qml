@@ -273,15 +273,20 @@ Item {
     // The product chooser (S20, docs/protocol.md products): the selected
     // radar's products (hello.sites[].products, named by hello.products),
     // then its angles with the beam centre's height at 50 and 100 km. Empty
-    // for a composite, an archive, or an engine older than S20, which hides
-    // the chip. The choice is the engine's, shared with every client.
+    // for My mosaic (its set's rule), an archive, or an engine older than
+    // S20, which hides the chip. S24b: the composites (sweden, nordic) list
+    // products the engine makes from their radars; there REF is the
+    // provider's own composite. The choice is the engine's, shared with
+    // every client.
     readonly property var productRows: {
         var st = engine.state;
         var site = engine.sites.find(s => s.id === app.siteId);
-        if (!st || !st.product || st.source !== "live" || !site || site.kind === "grid" || !(site.products || []).length || !engine.products.length) return [];
+        if (!st || !st.product || st.source !== "live" || !site || !(site.products || []).length || !engine.products.length) return [];
         var names = {};
         for (var p of engine.products) names[p.id] = p.name;
-        var rows = site.products.map(id => ({product: id, index: 0, label: (names[id] || id).toUpperCase(), note: ""}));
+        var composite = site.kind === "grid";
+        var rows = site.products.map(id => ({product: id, index: 0, label: composite && id === "REF" ? "COMPOSITE" : (names[id] || id).toUpperCase(),
+                                             note: composite && id !== "REF" ? "ALL RADARS" : ""}));
         if (site.products.indexOf("REF") >= 0)
             (site.elevations || []).forEach((e, i) => { if (i > 0) rows.push({product: "REF", index: i, label: e.deg.toFixed(1) + "°", note: e.beamKm50 + " / " + e.beamKm100 + " KM"}); });
         return rows;

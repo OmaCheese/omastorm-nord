@@ -171,7 +171,10 @@ void main() {
             // Code 1 keeps the grid texel's G bit 4 (no data), so a height
             // slice's holes are hatched (S30).
             float raw = floor(texel.r * 255.0 + .5);
-            texel = vec4(texture(classes, vec2((raw + .5) / 256.0, .5)).r, raw == 1.0 ? 4.0 / 255.0 : 0.0, raw / 255.0, 1.0);
+            // S24b: an ETOP grid's odd measured code is an "at least" top,
+            // G bit 8 as the engine's grid texture marks it.
+            float status = raw == 1.0 ? 4.0 : (hatchAtLeast == 1 && raw >= 2.0 && mod(raw, 2.0) == 1.0 ? 8.0 : 0.0);
+            texel = vec4(texture(classes, vec2((raw + .5) / 256.0, .5)).r, status / 255.0, raw / 255.0, 1.0);
         }
         // S30: a no-data texel outside every chosen radar's reach is not
         // "no radar at this height" but no radar chosen: nothing.

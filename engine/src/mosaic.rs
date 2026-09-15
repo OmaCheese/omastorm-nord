@@ -4249,10 +4249,8 @@ mod tests {
                 measured > if want == Want::Vil { 10 } else { 100 },
                 "{measured}"
             );
-            assert!(
-                off * 10_000 <= checked,
-                "{off} of {checked} differ from the rule"
-            );
+            // Review N1: the rule written out gives every texel exactly.
+            assert_eq!(off, 0, "{off} of {checked} differ from the rule");
             // The frame: the composite's, named by the product, crediting
             // every owner it drew on, with the product's own legend.
             let built = built(&layout, t, combined.codes.clone(), &combined.ends);
@@ -4348,6 +4346,39 @@ mod tests {
         assert!(codes.iter().any(|&c| c >= 2));
         assert_eq!(layout.variant(), "cappi2000");
         assert_eq!(layout.product(), ("CAPPI", "Height 2 km".to_owned()));
+    }
+
+    /// Review N1: a short volume (DMI's alternating scans) takes the texels
+    /// past its lowest scan's edge from its longer predecessor, in the
+    /// maximum's and the lowest beam's paths alike.
+    #[test]
+    fn a_composites_short_volume_takes_its_far_ring_from_the_longer_one() {
+        let nordic = table().into_iter().find(|s| s.id == "nordic").unwrap();
+        let a = radar("ra", 60.0, 10.0, 240.0);
+        let sites = vec![a.clone(), nordic.clone()];
+        // The short volume: 100 gates of 500 m (50 km); the longer one 480.
+        let load = |_: usize| {
+            Some((
+                volume(&[(0.5, 100), (1.5, 110)], 100),
+                Some(volume(&[(0.5, 150), (1.5, 160)], 480)),
+            ))
+        };
+        let code_at = |want: Want, km: f64| {
+            let layout = Layout::grid(&nordic, want, &sites).unwrap();
+            let combined = combine_grid(&layout, load);
+            let (lat, lon) = destination(a.lat, a.lon, 90.0, km * 1000.0);
+            let (c, r) = locate(&layout, lat, lon);
+            combined.codes[(r * layout.width + c) as usize]
+        };
+        assert_eq!(code_at(Want::ColMax, 20.0), 110, "inside the short volume");
+        assert_eq!(code_at(Want::ColMax, 150.0), 160, "its far ring");
+        assert_eq!(
+            code_at(Want::LowestBeam, 20.0),
+            100,
+            "inside the short volume"
+        );
+        assert_eq!(code_at(Want::LowestBeam, 150.0), 150, "its far ring");
+        assert_eq!(code_at(Want::ColMax, 250.0), 1, "past the range");
     }
 
     #[test]

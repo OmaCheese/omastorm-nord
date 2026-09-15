@@ -4429,6 +4429,54 @@ mod tests {
         );
     }
 
+    /// Review S2: seconds per real Nordic frame, read back from a copy of a
+    /// live run's tilt store (`OMASTORM_BENCH_STORE`) at one frame time
+    /// (`OMASTORM_BENCH_TIME`, RFC 3339), every product, as `build_and_send`
+    /// makes it (`assemble_grid`):
+    /// `OMASTORM_BENCH_STORE=… cargo test --release mosaic::tests::a_real -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs a copy of a live run's tilt store"]
+    fn a_real_nordic_frame_from_a_tilt_store() {
+        let dir = std::env::var("OMASTORM_BENCH_STORE").expect("OMASTORM_BENCH_STORE");
+        let when = std::env::var("OMASTORM_BENCH_TIME")
+            .unwrap_or_else(|_| "2026-09-15T12:00:00Z".to_owned());
+        let t = DateTime::parse_from_rfc3339(&when)
+            .unwrap()
+            .timestamp_millis();
+        let store = crate::tilts::Store::open(dir.into(), u64::MAX).unwrap();
+        let sites = table();
+        let nordic = sites.iter().find(|s| s.id == "nordic").unwrap();
+        for want in [
+            Want::ColMax,
+            Want::EchoTop(0.0),
+            Want::Vil,
+            Want::Cappi(2000.0, 2000),
+            Want::LowestBeam,
+        ] {
+            let layout = Layout::grid(nordic, want, &sites).unwrap();
+            let owned: Owned = layout
+                .radars
+                .iter()
+                .map(|r| {
+                    store
+                        .volume(&r.station.id, t)
+                        .ok()
+                        .flatten()
+                        .map(|_| (Arc::new(sweep(1, 1, 0.5, t)), None))
+                })
+                .collect();
+            let present = owned.iter().filter(|o| o.is_some()).count();
+            let started = Instant::now();
+            let (built, unread) = assemble_grid(&layout, t, &owned, Some(&store));
+            eprintln!(
+                "real nordic {} at {when}: {present} of 41 radars, built in {:.2?}; unread {unread:?}",
+                want.variant(),
+                started.elapsed()
+            );
+            assert!(built.is_some());
+        }
+    }
+
     /// Review S1: a composite's whole-volume products build back 3 frame
     /// times, `LOWB` 6 (with `OMASTORM_GRID_BACKFILL` unset, as in tests).
     #[test]

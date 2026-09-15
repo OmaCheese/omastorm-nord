@@ -117,7 +117,8 @@ Item {
         if (drawable && scan && scan.product === "CAPPI") parts.push("hatched: no radar at this height");
         // S24a: a storm height is a lower bound where the highest beam that
         // reaches it still holds 18 dBZ (G bit 8, hatched over its colour).
-        if (drawable && scan && scan.product === "ETOP") parts.push("hatched: at least this high");
+        // Which beams reach a column changes with the scan pattern (review #5).
+        if (drawable && scan && scan.product === "ETOP") parts.push("hatched: at least this high (the hatch moves with the radar's scan pattern)");
         return parts.join(" · ");
     }
     property string tileRoot: ""     // file URL of the runtime directory, for tile paths

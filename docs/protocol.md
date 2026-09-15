@@ -1354,6 +1354,8 @@ once it is built (a few seconds):
   `message`), or `outside` (the point is outside the grid; every level has
   no samples).
 
+## Terrain
+
 Additive since S30 (still version 2). Heights `above` `ground` measure from
 a terrain model the engine carries: `engine/data/terrain-nordic-2km.bin`,
 one mean terrain height per Web Mercator texel of 2,000 m (the composites'

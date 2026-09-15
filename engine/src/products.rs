@@ -58,6 +58,13 @@ pub const CMAX: &str = "CMAX";
 pub const ETOP: &str = "ETOP";
 /// "Rain mass" (S24a): vertically integrated liquid, kg/m².
 pub const VIL: &str = "VIL";
+/// The lowest beam (S24b): on the composites only, per texel the radar
+/// whose lowest clear beam is lowest there (`mosaic.rs`).
+pub const LOWB: &str = "LOWB";
+/// What `sweden` and `nordic` offer (S24b, `docs/protocol.md`, the
+/// composites' products), in the vocabulary's order: `REF` is the
+/// provider's composite, the rest the engine makes from the radars.
+pub const GRID_PRODUCTS: [&str; 6] = [REF, LOWB, CAPPI, CMAX, ETOP, VIL];
 
 /// `CAPPI`'s heights above sea level, in metres (S29).
 pub const HEIGHT_MIN_M: u32 = 500;
@@ -85,7 +92,7 @@ pub struct Info {
 }
 
 /// `hello.products`: the vocabulary, in the order a chooser lists it.
-pub const VOCABULARY: [Info; 6] = [
+pub const VOCABULARY: [Info; 7] = [
     Info {
         id: REF,
         name: "Lowest scan",
@@ -95,6 +102,13 @@ pub const VOCABULARY: [Info; 6] = [
     Info {
         id: HYBRID,
         name: "Clear view",
+        above: &[],
+        units: "",
+    },
+    // S24b: the composites' only (`GRID_PRODUCTS`); no radar offers it.
+    Info {
+        id: LOWB,
+        name: "Lowest beam",
         above: &[],
         units: "",
     },
@@ -339,6 +353,10 @@ pub enum Want {
     EchoTop(f64),
     /// The rain mass (S24a): vertically integrated liquid.
     Vil,
+    /// The lowest beam (S24b): a composite's product only, made by
+    /// `mosaic.rs` across its radars. A radar never makes it; if asked, it
+    /// is the lowest scan.
+    LowestBeam,
 }
 
 /// Where a radar's antenna stands, for the terrain under its gates.
@@ -371,6 +389,7 @@ impl Want {
             HYBRID => blockage.map(Want::Hybrid),
             ETOP => Some(Want::EchoTop(alt_m)),
             VIL => Some(Want::Vil),
+            LOWB => Some(Want::LowestBeam),
             _ => None,
         }
     }
@@ -399,6 +418,7 @@ impl Want {
             Want::Hybrid(_) => (HYBRID, "Clear view".to_owned()),
             Want::EchoTop(_) => (ETOP, "Storm height".to_owned()),
             Want::Vil => (VIL, "Rain mass".to_owned()),
+            Want::LowestBeam => (LOWB, "Lowest beam".to_owned()),
         }
     }
 
@@ -419,6 +439,7 @@ impl Want {
             Want::Hybrid(_) => "clear".to_owned(),
             Want::EchoTop(_) => "etop".to_owned(),
             Want::Vil => "vil".to_owned(),
+            Want::LowestBeam => "lowb".to_owned(),
         }
     }
 
@@ -448,7 +469,7 @@ pub fn variant_of(frame_id: &str) -> &str {
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let hex8 = |s: &str| s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit());
     let letters = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase());
-    let product = matches!(last, "cmax" | "clear" | "etop" | "vil")
+    let product = matches!(last, "cmax" | "clear" | "etop" | "vil" | "lowb")
         || (frame_id.contains('-') && last != "loading" && letters(last))
         || last.strip_prefix("cappi").is_some_and(|h| {
             // S30: above the ground ends in `g`.
@@ -515,7 +536,14 @@ pub fn nominal_angles(station: &Station) -> &'static [f64] {
 /// has a blockage table.
 pub fn for_station(station: &Station) -> (Vec<&'static str>, Vec<Elevation>) {
     if station.kind == SiteKind::Grid {
-        return (Vec::new(), Vec::new());
+        // S24b: a provider's composite offers the products the engine makes
+        // from its radars; My mosaic has its set's rule instead.
+        let products = if station.provider == ProviderId::Mosaic {
+            Vec::new()
+        } else {
+            GRID_PRODUCTS.to_vec()
+        };
+        return (products, Vec::new());
     }
     let angles = nominal_angles(station);
     let km = |m: f64| (m / 100.0).round() / 10.0;
@@ -532,6 +560,8 @@ pub fn for_station(station: &Station) -> (Vec<&'static str>, Vec<Elevation>) {
         .map(|p| p.id)
         .filter(|&id| match id {
             REF => true,
+            // S24b: the composites' only.
+            LOWB => false,
             HYBRID => !angles.is_empty() && blockage(&station.id).is_some(),
             _ => !angles.is_empty(),
         })
@@ -838,7 +868,7 @@ fn cappi_pick(
 
 /// The clear view's scan for one azimuth degree: the lowest at or above
 /// the table's angle, else the highest.
-fn hybrid_pick(infos: &[TiltInfo], tenths: u8) -> usize {
+pub(crate) fn hybrid_pick(infos: &[TiltInfo], tenths: u8) -> usize {
     let mut order: Vec<usize> = (0..infos.len()).collect();
     order.sort_by(|&a, &b| infos[a].elangle.total_cmp(&infos[b].elangle));
     order
@@ -859,7 +889,7 @@ pub fn needed(want: Want, infos: &[TiltInfo]) -> Vec<usize> {
     let mut picked = vec![false; infos.len()];
     picked[lowest] = true;
     match want {
-        Want::Lowest => {}
+        Want::Lowest | Want::LowestBeam => {}
         Want::Angle(deg) => {
             picked[lowest] = false;
             picked[nearest_of(infos, deg)] = true;
@@ -943,7 +973,7 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
     tilts.sort_by(|a, b| a.elangle.total_cmp(&b.elangle));
     let infos: Vec<TiltInfo> = tilts.iter().map(Tilt::info).collect();
     match want {
-        Want::Lowest => return Ok(tilts.swap_remove(0).sweep),
+        Want::Lowest | Want::LowestBeam => return Ok(tilts.swap_remove(0).sweep),
         Want::Angle(deg) => return Ok(tilts.swap_remove(nearest_of(&infos, deg)).sweep),
         _ => {}
     }
@@ -1039,7 +1069,9 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
                     }
                     top.unwrap_or(if below { 0 } else { 1 })
                 }
-                Want::Lowest | Want::Angle(_) => unreachable!("returned above"),
+                Want::Lowest | Want::LowestBeam | Want::Angle(_) => {
+                    unreachable!("returned above")
+                }
                 Want::EchoTop(_) | Want::Vil => unreachable!("composed above"),
             })
             .collect();
@@ -1257,6 +1289,16 @@ pub fn provenance_tag(want: Want) -> String {
 mod tests {
     use super::*;
 
+    /// The choice of `id` at index 0 with no height.
+    fn choice_of(id: &str) -> Choice {
+        Choice {
+            id: id.into(),
+            elevation_index: 0,
+            height_m: None,
+            above: None,
+        }
+    }
+
     /// A scan of `rays` rays and `gates` gates at `elangle`, every code
     /// `code` (or `f(ray, gate)`).
     fn scan(
@@ -1316,7 +1358,16 @@ mod tests {
     #[test]
     fn the_vocabulary_and_choices() {
         let ids: Vec<&str> = VOCABULARY.iter().map(|p| p.id).collect();
-        assert_eq!(ids, ["REF", "HYBRID", "CAPPI", "CMAX", "ETOP", "VIL"]);
+        assert_eq!(
+            ids,
+            ["REF", "HYBRID", "LOWB", "CAPPI", "CMAX", "ETOP", "VIL"]
+        );
+        assert_eq!(
+            Want::of(&choice_of(LOWB), &[], None, 0.0),
+            Some(Want::LowestBeam)
+        );
+        assert_eq!(Want::LowestBeam.variant(), "lowb");
+        assert_eq!(variant_of("nordic-20260915T1200Z-lowb"), "lowb");
         let elevations = [0.5, 1.0, 1.5];
         let choice = |id: &str, index| Choice {
             id: id.into(),
@@ -1773,7 +1824,25 @@ mod tests {
             kind: SiteKind::Grid,
             ..polar(ProviderId::Smhi, "SE")
         };
-        assert_eq!(for_station(&grid), (vec![], vec![]));
+        // S24b: a provider's composite offers the products the engine makes
+        // from its radars, no angles; My mosaic offers none.
+        assert_eq!(for_station(&grid), (GRID_PRODUCTS.to_vec(), vec![]));
+        let mine = Station {
+            provider: ProviderId::Mosaic,
+            ..grid.clone()
+        };
+        assert_eq!(for_station(&mine), (vec![], vec![]));
+        assert_eq!(want_for(&grid, &choice_of(LOWB)), Some(Want::LowestBeam));
+        assert_eq!(want_for(&grid, &choice_of(CMAX)), Some(Want::ColMax));
+        assert_eq!(want_for(&grid, &choice_of(HYBRID)), None);
+        assert_eq!(want_for(&grid, &Choice::default()), Some(Want::Lowest));
+        let radar = polar(ProviderId::Smhi, "SE");
+        assert_eq!(
+            want_for(&radar, &choice_of(LOWB)),
+            None,
+            "no radar makes it"
+        );
+        assert_eq!(carry(&choice_of(LOWB), None, &radar), Choice::default());
         let choice = |id: &str, index| Choice {
             id: id.into(),
             elevation_index: index,
@@ -1795,8 +1864,13 @@ mod tests {
         );
         assert_eq!(
             want_for(&grid, &choice("REF", 0)),
+            Some(Want::Lowest),
+            "S24b: REF on a composite is the composite itself"
+        );
+        assert_eq!(
+            want_for(&grid, &choice("REF", 3)),
             None,
-            "a composite has no products"
+            "a composite has no angles"
         );
         assert_eq!(angle_deg(&smhi, &choice("REF", 5)), Some(4.0));
         assert_eq!(angle_deg(&smhi, &choice("CMAX", 0)), None);
@@ -1889,6 +1963,10 @@ mod tests {
         let hello = serde_json::to_value(VOCABULARY).unwrap();
         assert_eq!(
             hello[2],
+            serde_json::json!({"id":"LOWB","name":"Lowest beam"})
+        );
+        assert_eq!(
+            hello[3],
             serde_json::json!({"id":"CAPPI","name":"Height","above":["sea","ground"]})
         );
         assert_eq!(

@@ -1349,8 +1349,9 @@ once it is built (a few seconds):
 - `levels`: 24, bottom to top. `dbz` is the cell's maximum, `null` when no
   echo was measured there; `samples` its count, 0 where no beam reached it
   (so `dbz` `null` with samples above 0 is clear air, below threshold);
-  `radars` the radars whose beams fed it.
-- `radars`: every radar that reached the column; `echoTopM`: the top of the
+  `radars` the radars whose beams sampled it, echo or clear air (review
+  N3: not only those that saw echo there).
+- `radars`: every radar whose beams reached the column; `echoTopM`: the top of the
   highest level at or above 18 dBZ (`ETOP`'s threshold), `null` when none;
   `echoTopAtLeast` (review S3, additive) is `true` when no beam sampled any
   level above that top, so the storm may reach higher (as `ETOP`'s "at

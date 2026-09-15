@@ -961,6 +961,10 @@ impl Schedule {
         self.built.contains(&newest_due(now))
     }
 
+    pub fn is_built(&self, t: i64) -> bool {
+        self.built.contains(&t)
+    }
+
     pub fn mark_built(&mut self, t: i64) {
         self.built.insert(t);
     }
@@ -1249,6 +1253,9 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
             Ok(Some(event)) => {
                 let now = now_ms();
                 let index = |site: &str| layout.radars.iter().position(|r| r.station.id == site);
+                // A newest volume (not history): how late it came, so the
+                // due time can be judged against the providers.
+                let live = matches!(event, Event::Sweep { .. });
                 match event {
                     Event::Sweep {
                         site,
@@ -1264,6 +1271,20 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
                         if let Some(i) = index(&site) {
                             offline[i] = false;
                             let t = nominal_ms(sweep.start_ms);
+                            if live {
+                                let late = (now - t) / 1000;
+                                log(format_args!(
+                                    "{site} {} in at T + {}:{:02}{}",
+                                    utc(t, "%H:%MZ"),
+                                    late / 60,
+                                    late % 60,
+                                    if schedule.is_built(t) {
+                                        ", after its frame was built"
+                                    } else {
+                                        ""
+                                    }
+                                ));
+                            }
                             let have = Have {
                                 sweep: Arc::new(sweep),
                                 cost: Cost::of(&provenance),

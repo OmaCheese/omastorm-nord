@@ -164,6 +164,9 @@ the chosen radars) and S24b (the vertical products on `sweden`/`nordic`):
   `Mosaic mymosaic: … built in … ms` with the frame's provenance (radars
   used, missing, far rings, and the summed `N range requests, B of T bytes`
   of the scans it read), and `… encoded in … ms, texture … KB, codes … KB`.
+  Each radar's newest volume logs `<radar> HH:MMZ in at T + m:ss`, with
+  `, after its frame was built` when it came too late for its frame: the
+  data for judging `DUE_MS` against the providers.
 
 Costs: a Vara + Hurum + Sindal layout is 601 × 691 texels; release builds
 place it in 16 ms and combine a frame in 6 ms; twelve radars across the

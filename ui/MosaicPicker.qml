@@ -263,7 +263,7 @@ Item {
                             color: row.entry ? picker.theme.accent : "transparent"
                             opacity: row.entry || picker.draft.sites.length < picker.maxSites ? 1 : .35
                         }
-                        Word { text: row.modelData.site.id; font.bold: true; color: row.ink; Layout.preferredWidth: 48 }
+                        Word { text: row.modelData.site.id; font.bold: true; color: row.ink; Layout.preferredWidth: 84 }
                         Word { text: row.modelData.site.name.toUpperCase(); color: row.ink; opacity: .9; Layout.fillWidth: true }
                         Word { text: row.modelData.site.country; font.pixelSize: 10; opacity: .55; visible: !row.entry }
                         Step { visible: !!row.entry; label: "−"; enabled: !!row.entry && Mosaic.reachOf(row.entry, row.modelData.site) > 25; onActivated: picker.stepReach(row.modelData.site.id, -1) }

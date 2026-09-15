@@ -400,31 +400,31 @@
  ],
  "products": {
   "cappi1": {
-   "what": "pseudo-CAPPI at 1000 m above the antenna",
+   "what": "height slice at 1000 m above the antenna, beam +-0.5 deg",
    "file": "cappi1.u8.gz",
    "rays": 720,
    "gates": 960,
    "firstGateM": 125,
    "gateSpacingM": 250,
-   "u8Sha256": "43bb2dc42a57e95462a0080b24bcb0580b5e0567b89a08cad89d91dea4fd3ef6",
+   "u8Sha256": "dae89d8ecb864985ce61ce98e4d756ce77fe8e737be62d00b26770121948b9e5",
    "counts": {
-    "undetect": 638735,
-    "nodata": 0,
-    "measured": 52465
+    "undetect": 303668,
+    "nodata": 384480,
+    "measured": 3052
    }
   },
   "cappi2": {
-   "what": "pseudo-CAPPI at 2000 m above the antenna",
+   "what": "height slice at 2000 m above the antenna, beam +-0.5 deg",
    "file": "cappi2.u8.gz",
    "rays": 720,
    "gates": 960,
    "firstGateM": 125,
    "gateSpacingM": 250,
-   "u8Sha256": "cccb8c003a06d43f8e1e0e2161edb470c3aa874abcbba56582041e91498a6a69",
+   "u8Sha256": "68b854092a752b770be838162a62c914b03f6ea8d28d85ec7710508f3a465224",
    "counts": {
-    "undetect": 638356,
-    "nodata": 0,
-    "measured": 52844
+    "undetect": 377982,
+    "nodata": 290880,
+    "measured": 22338
    }
   },
   "cmax": {
@@ -496,5 +496,5 @@
   "by": "scripts/trim-odim.py --keep DBZH --tilts 0,1,3,6"
  },
  "producedBy": "golden/produce-products.py (h5py 3.16.0, numpy 2.5.3)",
- "producedOn": "2026-09-14"
+ "producedOn": "2026-09-15"
 }

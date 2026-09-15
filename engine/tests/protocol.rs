@@ -229,8 +229,7 @@ fn fixture_transport_and_shared_commands() {
     assert_eq!(
         hello["products"],
         json!([{"id":"REF","name":"Lowest scan"},{"id":"HYBRID","name":"Clear view"},
-               {"id":"CAPPI1","name":"Height 1 km"},{"id":"CAPPI2","name":"Height 2 km"},
-               {"id":"CMAX","name":"Column max"}])
+               {"id":"CAPPI","name":"Height"},{"id":"CMAX","name":"Column max"}])
     );
     let offer = |id: &str| sites.iter().find(|s| s["id"] == id).unwrap().clone();
     assert_eq!(offer("vara")["elevations"].as_array().unwrap().len(), 10);
@@ -240,7 +239,7 @@ fn fixture_transport_and_shared_commands() {
     );
     assert_eq!(
         offer("vara")["products"],
-        json!(["REF", "HYBRID", "CAPPI1", "CAPPI2", "CMAX"])
+        json!(["REF", "HYBRID", "CAPPI", "CMAX"])
     );
     for grid in ["sweden", "nordic"] {
         assert_eq!(offer(grid)["products"], json!([]));
@@ -256,6 +255,20 @@ fn fixture_transport_and_shared_commands() {
     for (command, word) in [
         (json!({"type":"set_product","product":"VIL"}), "VIL"),
         (json!({"type":"set_product","product":"CMAX"}), "archived"),
+        // S29: a height is checked before the station is.
+        (
+            json!({"type":"set_product","product":"CAPPI","heightM":750}),
+            "heightM 750",
+        ),
+        (
+            json!({"type":"set_product","product":"CMAX","heightM":2000}),
+            "CAPPI only",
+        ),
+        (
+            json!({"type":"set_product","product":"CAPPI","heightM":3000}),
+            "archived",
+        ),
+        (json!({"type":"set_product","product":"CAPPI1"}), "archived"),
     ] {
         send(&mut second, command);
         let e = read(&mut second);

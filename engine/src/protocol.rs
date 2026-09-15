@@ -480,6 +480,9 @@ pub enum Command {
         /// Optional since S20: 0 when absent.
         #[serde(default)]
         elevation_index: u32,
+        /// `CAPPI`'s height above sea level in metres (S29); optional.
+        #[serde(default)]
+        height_m: Option<u32>,
     },
     /// The visible inclusive tile rectangle at one zoom, at most 64 tiles
     /// Answered tile by tile with `tile_ready` to the sender.

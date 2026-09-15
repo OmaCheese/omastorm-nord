@@ -1005,8 +1005,8 @@ mod tests {
             assert!(scans_match(&first, &file), "{station} cmax read");
             for want in [
                 Want::ColMax,
-                Want::Cappi(1000.0),
-                Want::Cappi(2000.0),
+                Want::Cappi(1000.0, 1000),
+                Want::Cappi(2000.0, 2000),
                 Want::Hybrid(golden_table(station)),
                 Want::Angle(4.0),
                 Want::Angle(1.0),
@@ -1061,13 +1061,17 @@ mod tests {
             &slot.compose(Want::Lowest, which).unwrap().unwrap(),
             &file
         ));
-        assert!(slot.compose(Want::Cappi(1000.0), which).unwrap().is_none());
-        let cappi = decode(open(fixture), Want::Cappi(1000.0), which, Some(&slot)).unwrap();
-        let file =
-            crate::products::decode_volume(open(fixture), Want::Cappi(1000.0), which).unwrap();
+        assert!(
+            slot.compose(Want::Cappi(1000.0, 1000), which)
+                .unwrap()
+                .is_none()
+        );
+        let cappi = decode(open(fixture), Want::Cappi(1000.0, 1000), which, Some(&slot)).unwrap();
+        let file = crate::products::decode_volume(open(fixture), Want::Cappi(1000.0, 1000), which)
+            .unwrap();
         assert!(scans_match(&cappi, &file));
         let needed_now = needed(
-            Want::Cappi(1000.0),
+            Want::Cappi(1000.0, 1000),
             store
                 .volume(station, 5_000)
                 .unwrap()

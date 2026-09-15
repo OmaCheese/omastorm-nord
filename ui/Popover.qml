@@ -54,6 +54,8 @@ FocusScope {
         loopSite: card.session.loopSite
         onLoopRequested: site => card.session.loopSite = site
     }
+    // The reach the window's product menu set for each radar (S29).
+    Reach { id: reachStore }
     function step(delta) { connection.stepBy(delta); }
     function play() { connection.togglePlay(); }
     // Respect the same config keys as the window; Enter always expands.
@@ -142,6 +144,8 @@ FocusScope {
                 treatment: card.session.treatment
                 weakFloor: card.session.weakFloor
                 labelSize: 10
+                product: card.state ? card.state.product : null
+                reachKm: reachStore.km(siteId)
                 radarOpacity: card.condition === "unavailable" ? .6 : 1
                 interactive: !card.session.needsLocation
                 onNavigated: (lat, lon, spanKm) => card.session.userNavigated(lat, lon, spanKm)
@@ -161,6 +165,22 @@ FocusScope {
                 function onViewChanged() { map.applyView(); }
             }
             Label { anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 8; text: "⤢"; font.pixelSize: 20; opacity: .65 }
+            // What the rings mean (S29).
+            Rectangle {
+                anchors.top: parent.top; anchors.left: parent.left; anchors.margins: 8
+                width: ringCaption.contentWidth + 8
+                height: ringCaption.contentHeight + 4
+                visible: map.ringNote !== ""
+                color: Qt.alpha(card.theme.background, .92)
+                Label {
+                    id: ringCaption
+                    x: 4; y: 2
+                    width: card.width - 64
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 9; opacity: .75
+                    text: map.ringNote.toUpperCase()
+                }
+            }
             RowLayout {
                 anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 8
                 Rectangle {

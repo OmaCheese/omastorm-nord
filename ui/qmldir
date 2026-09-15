@@ -11,5 +11,6 @@ RadarBar 1.0 RadarBar.qml
 RadarMap 1.0 RadarMap.qml
 RadarMark 1.0 RadarMark.qml
 RadarWindow 1.0 RadarWindow.qml
+Reach 1.0 Reach.qml
 SitePicker 1.0 SitePicker.qml
 Theme 1.0 Theme.qml

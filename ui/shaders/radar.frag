@@ -37,6 +37,15 @@ layout(std140, binding = 0) uniform buf {
     // raw code in R): the texel is rebuilt as class + 1 from `classes`, no
     // status bits, and the code in B, exactly the RGBA grid texel.
     int useCodes;
+    // S29: 1 when the frame is a height slice (`CAPPI`): its no-data texels
+    // (code 1, G bit 4) are "no radar at this height", drawn as a faint
+    // diagonal hatch in `hatchColor` (straight alpha), never as nothing,
+    // which reads as no rain. 0 for every other frame.
+    int hatchNodata;
+    // S29: the reach, a ground distance in metres from the site past which a
+    // polar frame draws nothing; 0 draws the whole sweep.
+    float reachM;
+    vec4 hatchColor;
 };
 // The sweep: one row per radial in ascending azimuth, one texel per gate.
 // For a grid frame, the Web Mercator texture instead, row 0 north.
@@ -148,6 +157,7 @@ void main() {
     float sdLat = sin_(dLat * .5), sdLon = sin_(dLon * .5);
     float h = clamp(sdLat * sdLat + cos(lat0) * cos(lat) * sdLon * sdLon, 0.0, 1.0);
     float groundM = 2.0 * R_M * atan(sqrt(h), sqrt(max(0.0, 1.0 - h)));
+    if (reachM > 0.0 && groundM > reachM) { fragColor=vec4(0); return; }
     float azimuth = degrees(bearingAtan(sin_(dLon) * cos(lat),
                                  sin_(dLat) + sin(lat0) * cos(lat) * 2.0 * sdLon * sdLon));
     if (azimuth < 0.0) azimuth += 360.0;
@@ -186,6 +196,10 @@ vec4 shade(vec4 code, vec2 pixel) {
             vec3 color = cross ? vec3(245) : vec3(24);
             return vec4(color/255.0,1.0)*qt_Opacity;
         }
+        // No radar at this height (S29): one pixel in six along the
+        // diagonals, so the hole reads as a hole and not as clear sky.
+        if (hatchNodata == 1 && status == 4 && mod(floor(pixel.x) + floor(pixel.y), 6.0) < 1.0)
+            return vec4(hatchColor.rgb * hatchColor.a, hatchColor.a) * qt_Opacity;
         return vec4(0);
     }
     int b=value-1;

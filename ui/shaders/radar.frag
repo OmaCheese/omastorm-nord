@@ -129,8 +129,10 @@ void main() {
         if (useCodes == 1) {
             // Code texture: the raw code in R (a grayscale PNG reads it in
             // R, G and B alike); class + 1 from the lookup strip.
+            // Code 1 keeps the grid texel's G bit 4 (no data), so a height
+            // slice's holes are hatched (S30).
             float raw = floor(texel.r * 255.0 + .5);
-            texel = vec4(texture(classes, vec2((raw + .5) / 256.0, .5)).r, 0.0, raw / 255.0, 1.0);
+            texel = vec4(texture(classes, vec2((raw + .5) / 256.0, .5)).r, raw == 1.0 ? 4.0 / 255.0 : 0.0, raw / 255.0, 1.0);
         }
         fragColor = shade(texel, pixel);
         return;

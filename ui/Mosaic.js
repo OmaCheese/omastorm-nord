@@ -19,9 +19,14 @@ function valid(set) {
         && set.sites.every(function (s) { return !!s && typeof s.id === "string"; });
 }
 
+// A height of the `height` rule (S30): 500 to 12,000 m in steps of 500.
+function validHeight(m) { return typeof m === "number" && m >= 500 && m <= 12000 && m % 500 === 0; }
+
 // set_mosaic for `set`, leaving out radars `sites` (hello.sites) no longer
-// lists; a full reach is sent as none.
-function command(set, sites) {
+// lists; a full reach is sent as none. A height set (S30) sends its height
+// and what it is above, and goes as lowest beam to an engine whose
+// hello.mosaic `rules` has no height.
+function command(set, sites, rules) {
     var out = [];
     for (var i = 0; i < set.sites.length; i++) {
         var s = set.sites[i];
@@ -30,11 +35,28 @@ function command(set, sites) {
         var r = reachOf(s, site);
         out.push(r < fullKm(site) ? { id: s.id, reachKm: Math.round(r) } : { id: s.id });
     }
-    return { type: "set_mosaic", sites: out, rule: set.rule || "lowest" };
+    var rule = set.rule || "lowest";
+    if (rule === "height" && rules && !rules.some(function (x) { return x.id === "height"; })) rule = "lowest";
+    var c = { type: "set_mosaic", sites: out, rule: rule };
+    if (rule === "height") {
+        c.heightM = validHeight(set.heightM) ? set.heightM : 2000;
+        c.above = set.above === "ground" ? "ground" : "sea";
+    }
+    return c;
 }
 
 // A rule's display name from hello.mosaic.rules.
 function ruleName(rules, id) {
     var r = (rules || []).find(function (x) { return x.id === id; });
     return r ? r.name : id || "";
+}
+
+// A height's name, as the engine names its frames (S30).
+function heightName(m, above) {
+    return "Height " + m / 1000 + " km" + (above === "ground" ? " above ground" : "");
+}
+
+// A set's name: its rule's, or for a height set its height's.
+function setName(rules, set) {
+    return set && set.rule === "height" ? heightName(validHeight(set.heightM) ? set.heightM : 2000, set.above) : ruleName(rules, set ? set.rule : "");
 }

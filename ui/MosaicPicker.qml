@@ -28,8 +28,15 @@ Item {
     property bool compact: false
     property real cardTop: 20
     property bool open: false
-    /// The working copy, {sites: [{id, reachKm}], rule}.
-    property var draft: ({ sites: [], rule: "lowest" })
+    /// The working copy, {sites: [{id, reachKm}], rule, heightM, above}
+    /// (the height and what it is above count only for the height rule, S30).
+    property var draft: ({ sites: [], rule: "lowest", heightM: 2000, above: "sea" })
+    /// S30: heights above the ground; an older engine's CAPPI entry in
+    /// hello.products says nothing about them.
+    readonly property bool groundOffered: {
+        var p = engine ? engine.products.find(x => x.id === "CAPPI") : null;
+        return !!p && Array.isArray(p.above) && p.above.indexOf("ground") >= 0;
+    }
     /// The radars in list order, fixed when the checklist opens.
     property var radars: []
     property int cursor: 0
@@ -69,9 +76,12 @@ Item {
         if (!info || !engine) return;
         var st = engine.state;
         var from = st && st.mosaic && st.mosaic.sites && st.mosaic.sites.length ? st.mosaic : store ? store.set : null;
+        var heightM = from && Mosaic.validHeight(from.heightM) ? from.heightM : 2000;
+        var above = from && from.above === "ground" ? "ground" : "sea";
         draft = Mosaic.valid(from)
-            ? { sites: from.sites.filter(s => siteOf(s.id)).map(s => ({ id: s.id, reachKm: Mosaic.reachOf(s, siteOf(s.id)) })), rule: from.rule || "lowest" }
-            : { sites: [], rule: "lowest" };
+            ? { sites: from.sites.filter(s => siteOf(s.id)).map(s => ({ id: s.id, reachKm: Mosaic.reachOf(s, siteOf(s.id)) })), rule: from.rule || "lowest", heightM: heightM, above: above }
+            : { sites: [], rule: "lowest", heightM: heightM, above: above };
+        if (draft.rule === "height" && !(info.rules || []).some(r => r.id === "height")) setRule("lowest");
         var list = engine.sites.filter(s => s.kind !== "grid")
             .map(s => ({ site: s, km: Location.distanceKm(centerLat, centerLon, s.lat, s.lon) }));
         var nearest = {};
@@ -96,33 +106,46 @@ Item {
             var full = Mosaic.fullKm(siteOf(id)), r = reach ? reach.km(id) : 0;
             sites.push({ id: id, reachKm: r > 0 && r < full ? r : full });
         }
-        draft = { sites: sites, rule: draft.rule };
+        draft = withSites(sites);
     }
+    /// The draft with other radars, the rule and height kept.
+    function withSites(sites) { return { sites: sites, rule: draft.rule, heightM: draft.heightM, above: draft.above }; }
     // 25 km steps; past the radar's range is its full range.
     function stepped(now, delta) {
         return delta < 0 ? Math.max(25, Math.ceil(now / 25) * 25 - 25) : Math.floor(now / 25) * 25 + 25;
     }
     function stepReach(id, delta) {
-        draft = { rule: draft.rule, sites: draft.sites.map(s => {
+        draft = withSites(draft.sites.map(s => {
             if (s.id !== id) return s;
             var site = siteOf(s.id), full = Mosaic.fullKm(site), next = stepped(Mosaic.reachOf(s, site), delta);
             return { id: s.id, reachKm: next >= full ? full : next };
-        }) };
+        }));
     }
     // Every radar to one reach: a step from the longest set now.
     function stepAll(delta) {
         if (!draft.sites.length) return;
         var base = Math.max.apply(null, draft.sites.map(s => Mosaic.reachOf(s, siteOf(s.id))));
         var next = stepped(base, delta);
-        draft = { rule: draft.rule, sites: draft.sites.map(s => {
+        draft = withSites(draft.sites.map(s => {
             var full = Mosaic.fullKm(siteOf(s.id));
             return { id: s.id, reachKm: next >= full ? full : next };
-        }) };
+        }));
     }
     function fullAll() {
-        draft = { rule: draft.rule, sites: draft.sites.map(s => ({ id: s.id, reachKm: Mosaic.fullKm(siteOf(s.id)) })) };
+        draft = withSites(draft.sites.map(s => ({ id: s.id, reachKm: Mosaic.fullKm(siteOf(s.id)) })));
     }
-    function setRule(id) { draft = { sites: draft.sites, rule: id }; }
+    function setRule(id) { draft = { sites: draft.sites, rule: id, heightM: draft.heightM, above: draft.above }; }
+    // S30: the height rule's height, 500 m steps, and what it is above.
+    function stepHeight(delta) {
+        var m = Math.max(500, Math.min(12000, (draft.heightM || 2000) + 500 * delta));
+        draft = { sites: draft.sites, rule: draft.rule, heightM: m, above: draft.above };
+    }
+    function setHeight(m) {
+        if (Mosaic.validHeight(m)) draft = { sites: draft.sites, rule: draft.rule, heightM: m, above: draft.above };
+    }
+    function setAbove(above) {
+        draft = { sites: draft.sites, rule: draft.rule, heightM: draft.heightM, above: above === "ground" ? "ground" : "sea" };
+    }
     function nextRule() {
         var rules = info ? info.rules : [];
         var at = rules.findIndex(r => r.id === draft.rule);
@@ -131,9 +154,13 @@ Item {
     function accept() {
         if (!engine || !draft.sites.length) return;
         var set = { sites: draft.sites.slice(), rule: draft.rule };
+        if (set.rule === "height") {
+            set.heightM = draft.heightM;
+            set.above = groundOffered ? draft.above : "sea";
+        }
         close();
         if (store) store.keep(set);
-        engine.send(Mosaic.command(set, engine.sites));
+        engine.send(Mosaic.command(set, engine.sites, info ? info.rules : null));
         shown(set);
     }
     function reachText(entry) {
@@ -158,6 +185,7 @@ Item {
         else if (event.key === Qt.Key_Space && row) toggle(row.site.id);
         else if ((event.key === Qt.Key_Left || event.key === Qt.Key_Right) && row && picked(row.site.id)) stepReach(row.site.id, event.key === Qt.Key_Left ? -1 : 1);
         else if (event.key === Qt.Key_R) nextRule();
+        else if ((event.key === Qt.Key_BracketLeft || event.key === Qt.Key_BracketRight) && draft.rule === "height") stepHeight(event.key === Qt.Key_BracketLeft ? -1 : 1);
         else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) accept();
         else event.accepted = false;
     }
@@ -205,7 +233,21 @@ Item {
                 font.pixelSize: 10; opacity: .6
                 text: picker.draft.rule === "strongest"
                     ? "EACH SPOT: THE STRONGEST ECHO ANY TICKED RADAR SEES THERE"
+                    : picker.draft.rule === "height"
+                    ? "EACH SPOT: THE RADAR WHOSE BEAM PASSES NEAREST THE HEIGHT, THE NEARER ON A TIE; HATCHED WHERE NONE REACHES IT. READS EACH RADAR'S WHOLE VOLUME"
                     : "EACH SPOT: THE RADAR WHOSE BEAM IS LOWEST THERE, THE NEARER ON A TIE"
+            }
+            // S30: the height rule's height and what it is measured from.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                visible: picker.draft.rule === "height"
+                Word { text: "HEIGHT"; font.pixelSize: 10; opacity: .6 }
+                Word { text: (picker.draft.heightM || 2000) / 1000 + " KM"; color: picker.theme.accent; font.pixelSize: 10; Layout.fillWidth: true }
+                Step { label: "−"; enabled: (picker.draft.heightM || 2000) > 500; onActivated: picker.stepHeight(-1) }
+                Step { label: "+"; enabled: (picker.draft.heightM || 2000) < 12000; onActivated: picker.stepHeight(1) }
+                Step { visible: picker.groundOffered; label: "SEA"; enabled: picker.draft.above === "ground"; onActivated: picker.setAbove("sea") }
+                Step { visible: picker.groundOffered; label: "GROUND"; enabled: picker.draft.above !== "ground"; onActivated: picker.setAbove("ground") }
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -276,7 +318,7 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 12
-                Word { text: "SPACE TICK · ← → REACH · R RULE · ↵ SHOW"; font.pixelSize: 10; opacity: .55; Layout.fillWidth: true; visible: !picker.compact }
+                Word { text: picker.draft.rule === "height" ? "SPACE TICK · ← → REACH · [ ] HEIGHT · ↵ SHOW" : "SPACE TICK · ← → REACH · R RULE · ↵ SHOW"; font.pixelSize: 10; opacity: .55; Layout.fillWidth: true; visible: !picker.compact }
                 Item { Layout.fillWidth: true; visible: picker.compact }
                 Rectangle {
                     implicitWidth: showText.implicitWidth + 18

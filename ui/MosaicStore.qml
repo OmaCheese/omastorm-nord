@@ -17,11 +17,17 @@ QtObject {
         if (Quickshell.env("OMASTORM_CONFIG")) return "";
         return (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omastorm-se/mosaic.json";
     }
-    /// {sites: [{id, reachKm}], rule}, or null before any.
+    /// {sites: [{id, reachKm}], rule}, and for a height set heightM and
+    /// above (S30), or null before any.
     property var set: null
     property string error: ""
     function text(value) {
-        return JSON.stringify({ sites: value.sites.map(s => ({ id: s.id, reachKm: s.reachKm })), rule: value.rule || "lowest" });
+        var kept = { sites: value.sites.map(s => ({ id: s.id, reachKm: s.reachKm })), rule: value.rule || "lowest" };
+        if (kept.rule === "height") {
+            kept.heightM = Mosaic.validHeight(value.heightM) ? value.heightM : 2000;
+            kept.above = value.above === "ground" ? "ground" : "sea";
+        }
+        return JSON.stringify(kept);
     }
     /// Remember `value` when it is a set and differs from the one kept.
     function keep(value) {

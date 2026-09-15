@@ -1622,15 +1622,16 @@ mod tests {
         let y = ((grid.top - r as i64) * FACTOR + 1) as f64 * PIXEL_M;
         let lon = (x / crate::composite::MERCATOR_R).to_degrees();
         let lat = crate::composite::mercator_lat(y);
-        let (wlat, wlon) = crate::terrain::destination(lat, lon, 270.0, 150_000.0);
-        // Review N5: from the west end through the column itself (a line
+        let (wlat, wlon) = crate::terrain::destination(lat, lon, 270.0, 151_000.0);
+        // Review N5: from the west end through the column itself, a column
+        // middle on it (151 columns of 2 km; the 76th at 151 km) (a line
         // between two points at one latitude bows away from it).
         let west = Point {
             lat: wlat,
             lon: wlon,
         };
         let through = bearing_deg(west, Point { lat, lon });
-        let (elat, elon) = crate::terrain::destination(wlat, wlon, through, 300_000.0);
+        let (elat, elon) = crate::terrain::destination(wlat, wlon, through, 302_000.0);
         let started = Instant::now();
         let cut = grid.cut(
             Point {

@@ -413,6 +413,36 @@ QtObject {
         mosaicResent = true;
         engine.send(command);
     }
+    // Review S3 (S24b): a composite's product (sweden, nordic) makes the
+    // engine read every radar's volumes, and this session's connection alone
+    // would keep it polled with nothing on screen. Once the popover and the
+    // window have both been closed for a few seconds, the composite goes back
+    // to REF; the product is chosen again when a surface opens on that
+    // station. A popover counts itself (Popover.qml); the window sets
+    // windowOpen.
+    property int popovers: 0
+    readonly property bool surfacesOpen: popovers > 0 || windowOpen
+    property var heldProduct: null
+    onSurfacesOpenChanged: surfaceSettle.restart()
+    property Timer surfaceSettle: Timer { interval: 3000; repeat: true; running: true; onTriggered: session.settleGridProduct() }
+    function settleGridProduct() {
+        var st = engine.state;
+        if (!st || st.source !== "live" || !st.product) return;
+        var site = (engine.sites || []).find(s => s.id === st.site.id);
+        var composite = !!site && site.kind === "grid" && site.provider !== "mosaic";
+        if (!surfacesOpen) {
+            if (!composite || st.product.id === "REF") return;
+            var command = {type: "set_product", product: st.product.id};
+            if (st.product.heightM > 0) command.heightM = st.product.heightM;
+            if (st.product.above) command.above = st.product.above;
+            heldProduct = {site: site.id, command: command};
+            engine.send({type: "set_product", product: "REF"});
+        } else if (heldProduct) {
+            var held = heldProduct;
+            heldProduct = null;
+            if (composite && held.site === site.id && st.product.id === "REF") engine.send(held.command);
+        }
+    }
     property Timer persistTimer: Timer { interval: 400; onTriggered: session.persist() }
     onLocatingChanged: viewChanged()
     property Connections engineEvents: Connections {

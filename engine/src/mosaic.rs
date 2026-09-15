@@ -632,7 +632,7 @@ pub struct Radar {
 #[derive(Clone)]
 pub enum Job {
     Mine,
-    Grid { station: Station, want: Want },
+    Grid { station: Box<Station>, want: Want },
 }
 
 /// How a frame's texels are chosen.
@@ -706,7 +706,7 @@ impl Layout {
             above,
         };
         let job = Job::Grid {
-            station: station.clone(),
+            station: Box::new(station.clone()),
             want,
         };
         Layout::place(&set, sites, Some(bbox), job)
@@ -1412,7 +1412,7 @@ fn max_key(code: u8, etop: bool) -> Option<u64> {
         0 => Some(u64::MAX - 1),
         c if etop => {
             let top = u64::from(c - 2) / 2;
-            let exact = u64::from(c % 2 == 0);
+            let exact = u64::from(c.is_multiple_of(2));
             Some(1_000 - (2 * top + exact))
         }
         c => Some(255 - u64::from(c)),
@@ -1447,9 +1447,15 @@ fn max_radar(
     let near = Lookup::new(&near, alt, radar.reach_m);
     let far = far.as_ref().map(|s| Lookup::new(s, alt, radar.reach_m));
     let etop = matches!(own, Want::EchoTop(_));
-    place(pick, layout, index, radar, &near, far.as_ref(), |code, _, _| {
-        max_key(code, etop)
-    });
+    place(
+        pick,
+        layout,
+        index,
+        radar,
+        &near,
+        far.as_ref(),
+        |code, _, _| max_key(code, etop),
+    );
 }
 
 /// A volume's beams for `LOWB`, in its order (ascending by angle), and per
@@ -1539,7 +1545,9 @@ pub type RadarVolumes = (Vec<Tilt>, Option<Vec<Tilt>>);
 /// A composite's product at every texel.
 pub struct Combined {
     pub codes: Vec<u8>,
-    /// Which radar gave each texel, `u8::MAX` for none.
+    /// Which radar gave each texel, `u8::MAX` for none (the answer-key
+    /// tests read it; a frame credits every radar it read, `ends`).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub owner: Vec<u8>,
     /// Each radar's latest scan end; `None` when it was not used.
     pub ends: Vec<Option<i64>>,
@@ -2430,11 +2438,14 @@ async fn build_and_send(
     let Some(built) = built else {
         // Review #6: every volume gone from the store; nothing is sent, and
         // the time is given up rather than tried every second.
-        log_for(&site, format_args!(
-            "{} built with no radar: the tilt store holds none of its volumes ({}); not sent",
-            utc(t, "%Y-%m-%dT%H:%MZ"),
-            unread.join(", ")
-        ));
+        log_for(
+            &site,
+            format_args!(
+                "{} built with no radar: the tilt store holds none of its volumes ({}); not sent",
+                utc(t, "%Y-%m-%dT%H:%MZ"),
+                unread.join(", ")
+            ),
+        );
         schedule.forget(t);
         return true;
     };
@@ -2449,18 +2460,21 @@ async fn build_and_send(
             ),
         );
     }
-    log_for(&site, format_args!(
-        "{} built{} in {:.0?}, {} × {}; {provenance}",
-        utc(t, "%Y-%m-%dT%H:%MZ"),
-        if again {
-            " again, for a late scan,"
-        } else {
-            ""
-        },
-        started.elapsed(),
-        built.grid.width,
-        built.grid.height
-    ));
+    log_for(
+        &site,
+        format_args!(
+            "{} built{} in {:.0?}, {} × {}; {provenance}",
+            utc(t, "%Y-%m-%dT%H:%MZ"),
+            if again {
+                " again, for a late scan,"
+            } else {
+                ""
+            },
+            started.elapsed(),
+            built.grid.width,
+            built.grid.height
+        ),
+    );
     let sweep = Scan::Mosaic(Box::new(built));
     let event = if newest {
         Event::Sweep {
@@ -2492,7 +2506,14 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         return std::future::pending().await;
     }
     let place = move || Layout::new(&set, &sites);
-    run(STATION.to_owned(), "My mosaic".into(), place, events, cached).await;
+    run(
+        STATION.to_owned(),
+        "My mosaic".into(),
+        place,
+        events,
+        cached,
+    )
+    .await;
 }
 
 /// A composite's product (S24b): `main.rs` starts it while `station`
@@ -2601,7 +2622,12 @@ async fn run(
                     };
             } else {
                 ord += missing;
-                ord_files += missing * if whole { volume_requests(&radar.station) } else { 1 };
+                ord_files += missing
+                    * if whole {
+                        volume_requests(&radar.station)
+                    } else {
+                        1
+                    };
             }
         }
         log_for(
@@ -2631,11 +2657,7 @@ async fn run(
         &site,
         format_args!(
             "{from_the_store} {} from the tilt store; {} frames catalogued; building back {depth}",
-            if height {
-                "volumes"
-            } else {
-                "lowest scans"
-            },
+            if height { "volumes" } else { "lowest scans" },
             cached.len()
         ),
     );
@@ -3954,6 +3976,493 @@ mod tests {
             eprintln!("Vara at {m} m: {same} of {total} texels as its own CAPPI, {holes} holes");
             assert!(same * 100 >= total * 98, "{m} m: {same} of {total}");
             assert!(holes > 0 && holes < total, "{m} m: {holes} holes");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The composites' products (S24b)
+    // -----------------------------------------------------------------------
+
+    /// Every scan of one of S20's `_tilts` fixtures, ascending by angle.
+    fn tilts_of(fixture: &str) -> Vec<Tilt> {
+        let file = std::fs::File::open(format!("{RAW}{fixture}")).unwrap();
+        let mut tilts = crate::products::scans_of(file).unwrap();
+        tilts.sort_by(|a, b| a.elangle.total_cmp(&b.elangle));
+        tilts
+    }
+
+    /// The protocol's lookup of one scan placed at `deg` (written from the
+    /// text, not `Lookup`/`Beam`): its code and beam centre above sea level
+    /// at distance unit `d` and bearing entry `entry` (`rows`: the scan's
+    /// azimuth lookup).
+    fn look(
+        sweep: &Sweep,
+        rows: &[u16],
+        alt: f64,
+        deg: f64,
+        d: usize,
+        entry: usize,
+    ) -> Option<(u8, f64)> {
+        let (e, theta) = (deg.to_radians(), d as f64 * UNIT_M / EARTH_M);
+        let c = (e + theta).cos();
+        let gate = ((EARTH_M * theta.sin() / c - f64::from(sweep.first_gate_m))
+            / f64::from(sweep.gate_spacing_m))
+        .round();
+        if gate < 0.0 || gate >= f64::from(sweep.gates) || rows[entry] == NONE {
+            return None;
+        }
+        let h = alt + (EARTH_M * e.cos() / c - EARTH_M);
+        Some((sweep.rays[usize::from(rows[entry])].codes[gate as usize], h))
+    }
+
+    /// The maximum's rule written out (`docs/protocol.md`, the composites'
+    /// products): the highest measured value (a storm height's top, the
+    /// exact over the "at least"), else 0 if any is 0, else 1.
+    fn maximum(codes: &[u8], etop: bool) -> u8 {
+        let rank = |c: u8| {
+            if etop {
+                (u32::from(c) - 2) / 2 * 2 + u32::from(c.is_multiple_of(2))
+            } else {
+                u32::from(c)
+            }
+        };
+        codes
+            .iter()
+            .copied()
+            .filter(|&c| c >= 2)
+            .max_by_key(|&c| rank(c))
+            .unwrap_or(if codes.contains(&0) { 0 } else { 1 })
+    }
+
+    const S20: [(&str, &str); 3] = [
+        ("vara", "radar_vara_qcvol_202609131055_tilts.h5"),
+        ("nohur", "ord_nohur_202609140930_tilts.h5"),
+        ("dksin", "ord_dksin_202609140940_tilts.h5"),
+    ];
+
+    /// The plan's answer key (§S24b, tests): S20's Vara, Hurum and Sindal
+    /// volumes (their times differ; this is the geometry and the combine
+    /// rules, not timing) placed on the real `nordic` grid, every other radar
+    /// missing; each product checked point by point against the protocol's
+    /// rule written out here, from each radar's own product (`CMAX`, `ETOP`,
+    /// `VIL`: `products::compose`, S20/S24a's byte-exact keys) or its own
+    /// scans (`LOWB`).
+    #[test]
+    fn the_composites_products_on_the_nordic_grid_from_s20s_fixtures() {
+        let sites = table();
+        let nordic = sites.iter().find(|s| s.id == "nordic").unwrap().clone();
+        let template: Frame = serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
+        let stations: Vec<Station> = S20
+            .iter()
+            .map(|(id, _)| sites.iter().find(|s| s.id == *id).unwrap().clone())
+            .collect();
+        let t = nominal_ms(tilts_of(S20[0].1)[0].sweep.start_ms);
+        for want in [
+            Want::ColMax,
+            Want::EchoTop(0.0),
+            Want::Vil,
+            Want::LowestBeam,
+        ] {
+            let started = Instant::now();
+            let layout = Layout::grid(&nordic, want, &sites).unwrap();
+            let placed = started.elapsed();
+            assert_eq!((layout.width, layout.height), (1671, 2297));
+            assert_eq!(layout.radars.len(), 41);
+            // The composite's box on the 2 km lattice (to a nanodegree).
+            let west = ((mercator_x(3.0) / PIXEL_M).floor() * PIXEL_M / MERCATOR_R).to_degrees();
+            let north = mercator_lat((mercator_y(71.5) / PIXEL_M).ceil() * PIXEL_M);
+            assert!(
+                (layout.west - west).abs() < 1e-9 && (layout.north - north).abs() < 1e-9,
+                "{} {}",
+                layout.west,
+                layout.north
+            );
+            assert!(layout.west <= 3.0 && layout.north >= 71.5);
+            let started = Instant::now();
+            let combined = combine_grid(&layout, |i| {
+                let id = &layout.radars[i].station.id;
+                let (_, fixture) = S20.iter().find(|(f, _)| f == id)?;
+                Some((tilts_of(fixture), None))
+            });
+            eprintln!(
+                "nordic {}: 41 radars placed in {placed:?}; 3 fixtures combined in {:?}",
+                want.variant(),
+                started.elapsed()
+            );
+            let mut used: Vec<&str> = layout
+                .radars
+                .iter()
+                .zip(&combined.ends)
+                .filter(|(_, e)| e.is_some())
+                .map(|(r, _)| r.station.id.as_str())
+                .collect();
+            used.sort_unstable();
+            assert_eq!(
+                used,
+                ["dksin", "nohur", "vara"],
+                "only the radars with a volume"
+            );
+            // What the rule is made of, per radar: its own product, or for
+            // `LOWB` its scans and blockage table.
+            let etop = matches!(want, Want::EchoTop(_));
+            let own: Vec<Sweep> = stations
+                .iter()
+                .zip(&S20)
+                .map(|(st, (_, f))| {
+                    let w = match want {
+                        Want::EchoTop(_) => Want::EchoTop(st.alt_m),
+                        Want::LowestBeam => Want::Lowest,
+                        w => w,
+                    };
+                    crate::products::compose(w, tilts_of(f)).unwrap()
+                })
+                .collect();
+            let scans: Vec<Vec<Tilt>> = S20.iter().map(|(_, f)| tilts_of(f)).collect();
+            let infos: Vec<Vec<TiltInfo>> = scans
+                .iter()
+                .map(|v| v.iter().map(Tilt::info).collect())
+                .collect();
+            let own_rows: Vec<Vec<u16>> = own.iter().map(rows_of).collect();
+            let scan_rows: Vec<Vec<Vec<u16>>> = scans
+                .iter()
+                .map(|v| v.iter().map(|t| rows_of(&t.sweep)).collect())
+                .collect();
+            // Each radar's texels' ground distance and bearing as the layout
+            // placed them (placement is S25's, checked against the sphere in
+            // its own test); what is checked here is the combine rules.
+            let placed: Vec<&Radar> = stations
+                .iter()
+                .map(|st| {
+                    layout
+                        .radars
+                        .iter()
+                        .find(|r| r.station.id == st.id)
+                        .unwrap()
+                })
+                .collect();
+            let (mut checked, mut off, mut measured) = (0usize, 0usize, 0usize);
+            for r in (0..layout.height as usize).step_by(5) {
+                for c in (0..layout.width as usize).step_by(5) {
+                    // (radar, distance unit, bearing entry) of each in reach.
+                    let near: Vec<(usize, usize, usize)> = placed
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, p)| {
+                            if c < p.c0 || c >= p.c0 + p.w || r < p.r0 || r >= p.r0 + p.h {
+                                return None;
+                            }
+                            let k = (r - p.r0) * p.w + (c - p.c0);
+                            (p.dist[k] != NONE)
+                                .then(|| (i, usize::from(p.dist[k]), usize::from(p.az[k])))
+                        })
+                        .collect();
+                    if near.is_empty() {
+                        continue;
+                    }
+                    let expected = if want == Want::LowestBeam {
+                        // Each radar's clear beam at this degree (its
+                        // blockage table, else its lowest scan), placed at
+                        // its own angle; the lowest beam centre, then the
+                        // nearer radar.
+                        near.iter()
+                            .filter_map(|&(i, d, entry)| {
+                                let st = &stations[i];
+                                let k = crate::products::blockage(&st.id).map_or(0, |b| {
+                                    crate::products::hybrid_pick(
+                                        &infos[i],
+                                        b.tenths[entry / 10 % 360],
+                                    )
+                                });
+                                let tilt = &scans[i][k];
+                                let (code, h) = look(
+                                    &tilt.sweep,
+                                    &scan_rows[i][k],
+                                    st.alt_m,
+                                    tilt.elangle,
+                                    d,
+                                    entry,
+                                )?;
+                                (code != 1).then_some((code, h.round(), d))
+                            })
+                            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)))
+                            .map_or(1, |c| c.0)
+                    } else {
+                        // Each radar's own product at its frame's angle; the
+                        // maximum.
+                        let codes: Vec<u8> = near
+                            .iter()
+                            .filter_map(|&(i, d, entry)| {
+                                let deg = own[i].elevation_deg();
+                                look(&own[i], &own_rows[i], stations[i].alt_m, deg, d, entry)
+                                    .map(|x| x.0)
+                            })
+                            .collect();
+                        maximum(&codes, etop)
+                    };
+                    let got = combined.codes[r * layout.width as usize + c];
+                    checked += 1;
+                    measured += usize::from(got >= 2);
+                    off += usize::from(got != expected);
+                }
+            }
+            eprintln!(
+                "nordic {}: {checked} texels checked, {off} differ, {measured} measured",
+                want.variant()
+            );
+            assert!(checked > 10_000, "{checked}");
+            // Rain mass under 0.25 kg/m² draws nothing (S24a review #4), so
+            // these volumes have little of it.
+            assert!(
+                measured > if want == Want::Vil { 10 } else { 100 },
+                "{measured}"
+            );
+            assert!(
+                off * 10_000 <= checked,
+                "{off} of {checked} differ from the rule"
+            );
+            // The frame: the composite's, named by the product, crediting
+            // every owner it drew on, with the product's own legend.
+            let built = built(&layout, t, combined.codes.clone(), &combined.ends);
+            let f = frame(&template, &nordic, &built);
+            assert_eq!(f.id, format!("nordic-20260913T105500Z-{}", want.variant()));
+            assert_eq!(f.kind, FrameKind::Grid);
+            assert_eq!(
+                f.attribution,
+                "SMHI, CC BY 4.0; MET Norway, CC BY 4.0; DMI, CC BY 4.0"
+            );
+            assert_eq!((f.site.lat, f.site.lon), (nordic.lat, nordic.lon));
+            let g = f.grid.as_ref().unwrap();
+            assert_eq!((g.xsize, g.ysize), (1671, 2297));
+            match want {
+                Want::EchoTop(_) => {
+                    assert_eq!((f.product.as_str(), f.units.as_str()), ("ETOP", "km"));
+                    assert_eq!((f.scale, f.offset), (10.0, 2.0));
+                    // "At least" tops: G bit 8 in the grid texture, on
+                    // exactly the odd measured codes.
+                    let mut pixels =
+                        built
+                            .grid
+                            .texture_coded(&f.bounds, f.palette.len(), f.scale, f.offset);
+                    crate::products::mark_texture(&f.product, &mut pixels);
+                    let marked = pixels.chunks(4).filter(|p| p[1] & 8 != 0).count();
+                    let odd = built
+                        .grid
+                        .codes
+                        .iter()
+                        .filter(|&&c| c >= 2 && c % 2 == 1)
+                        .count();
+                    eprintln!("nordic etop: {odd} 'at least' texels");
+                    assert_eq!(marked, odd);
+                }
+                Want::Vil => assert_eq!(
+                    (f.product.as_str(), f.units.as_str(), f.scale),
+                    ("VIL", "kg/m²", 2.0)
+                ),
+                Want::ColMax => assert_eq!(
+                    (f.product.as_str(), f.units.as_str(), f.scale),
+                    ("CMAX", "dBZ", 2.0)
+                ),
+                _ => {
+                    assert_eq!(
+                        (f.product.as_str(), f.product_name.as_str()),
+                        ("LOWB", "Lowest beam")
+                    );
+                    // Plan §S25: at the Skagerrak midpoint Hurum's lowest
+                    // beam is ~4 km up, Vara's and Sindal's under 2 km.
+                    let (c, r) = locate(&layout, 57.87, 11.48);
+                    let o = combined.owner[(r * layout.width + c) as usize];
+                    assert_ne!(
+                        o as usize,
+                        layout
+                            .radars
+                            .iter()
+                            .position(|r| r.station.id == "nohur")
+                            .unwrap()
+                    );
+                }
+            }
+        }
+        // CAPPI is My mosaic's height rule over the composite's radars: the
+        // same codes and owners as `combine_height` on the same volumes.
+        let layout = Layout::grid(&nordic, Want::Cappi(2000.0, 2000), &sites).unwrap();
+        assert_eq!(layout.make(), Make::Height);
+        let volumes: Vec<Option<Vec<Tilt>>> = layout
+            .radars
+            .iter()
+            .map(|r| {
+                S20.iter()
+                    .find(|(id, _)| *id == r.station.id)
+                    .map(|(_, f)| tilts_of(f))
+            })
+            .collect();
+        let inputs: Vec<Option<Volumes>> = volumes
+            .iter()
+            .map(|v| {
+                v.as_ref().map(|v| Volumes {
+                    primary: v,
+                    outer: None,
+                })
+            })
+            .collect();
+        let (codes, owner) = combine_height(&layout, 2000, false, &inputs);
+        let combined = combine_grid(&layout, |i| {
+            let id = &layout.radars[i].station.id;
+            S20.iter()
+                .find(|(f, _)| f == id)
+                .map(|(_, f)| (tilts_of(f), None))
+        });
+        assert!(codes == combined.codes && owner == combined.owner);
+        assert!(codes.iter().any(|&c| c >= 2));
+        assert_eq!(layout.variant(), "cappi2000");
+        assert_eq!(layout.product(), ("CAPPI", "Height 2 km".to_owned()));
+    }
+
+    #[test]
+    fn a_composites_lowest_beam_takes_the_nearer_radar_and_each_ones_clear_beam() {
+        let nordic = table().into_iter().find(|s| s.id == "nordic").unwrap();
+        // A and B 111 km apart on the 60th parallel, the same scans: 0.5°
+        // (A 100, B 150) and 1.5° (A 110, B 160); no blockage tables.
+        let (a, b) = (
+            radar("ra", 60.0, 10.0, 240.0),
+            radar("rb", 60.0, 12.0, 240.0),
+        );
+        let sites = vec![a.clone(), b.clone(), nordic.clone()];
+        let point =
+            |st: &Station, bearing: f64, km: f64| destination(st.lat, st.lon, bearing, km * 1000.0);
+        let run = |want: Want| {
+            let layout = Layout::grid(&nordic, want, &sites).unwrap();
+            assert_eq!(layout.radars.len(), 2);
+            let combined = combine_grid(&layout, |i| {
+                let (low, high) = if i == 0 { (100, 110) } else { (150, 160) };
+                Some((volume(&[(0.5, low), (1.5, high)], 480), None))
+            });
+            (layout, combined)
+        };
+        let at = |layout: &Layout, combined: &Combined, (lat, lon): (f64, f64)| {
+            let (c, r) = locate(layout, lat, lon);
+            let i = (r * layout.width + c) as usize;
+            (combined.codes[i], combined.owner[i])
+        };
+        let (layout, lowest) = run(Want::LowestBeam);
+        assert_eq!(
+            at(&layout, &lowest, point(&a, 90.0, 30.0)),
+            (100, 0),
+            "A is nearer: its beam is lower"
+        );
+        assert_eq!(
+            at(&layout, &lowest, point(&b, 270.0, 30.0)),
+            (150, 1),
+            "B is nearer"
+        );
+        assert_eq!(
+            at(&layout, &lowest, point(&a, 270.0, 200.0)).0,
+            100,
+            "A alone"
+        );
+        assert_eq!(
+            at(&layout, &lowest, point(&a, 270.0, 250.0)).0,
+            1,
+            "past A's range, and B's"
+        );
+        // The maximum: B's 1.5° wherever it reaches, A's alone past it.
+        let (layout, max) = run(Want::ColMax);
+        assert_eq!(at(&layout, &max, point(&a, 90.0, 30.0)).0, 160);
+        assert_eq!(at(&layout, &max, point(&a, 270.0, 200.0)).0, 110);
+        // ETOP's order: a higher top wins, and of two equal tops the exact.
+        assert!(
+            max_key(22, true) < max_key(23, true),
+            "exact 2.0 km over 'at least' 2.0 km"
+        );
+        assert!(
+            max_key(25, true) < max_key(22, true),
+            "'at least' 2.2 km over exact 2.0 km"
+        );
+        assert!(max_key(2, true) < max_key(0, true) && max_key(1, true).is_none());
+        assert!(max_key(3, false) < max_key(2, false) && max_key(2, false) < max_key(0, false));
+        // A radar's clear beam (S20's blockage table): where its table
+        // clears only above 0.5°, `LOWB` takes its 1.5° scan there.
+        let (id, degree_blocked, degree_clear) = crate::providers::table()
+            .sites
+            .iter()
+            .filter_map(|s| {
+                let b = crate::products::blockage(&s.id)?;
+                let blocked = (0..360).find(|&d| {
+                    (6..=15).contains(&b.tenths[d])
+                        && (6..=15).contains(&b.tenths[(d + 1) % 360])
+                        && (6..=15).contains(&b.tenths[(d + 359) % 360])
+                })?;
+                let clear = (0..360).find(|&d| {
+                    b.tenths[d] <= 5
+                        && b.tenths[(d + 1) % 360] <= 5
+                        && b.tenths[(d + 359) % 360] <= 5
+                })?;
+                Some((s.id.clone(), blocked, clear))
+            })
+            .next()
+            .expect("a radar whose table has a blocked and a clear degree");
+        let real = table().into_iter().find(|s| s.id == id).unwrap();
+        let sites = vec![real.clone(), nordic.clone()];
+        let layout = Layout::grid(&nordic, Want::LowestBeam, &sites).unwrap();
+        let combined = combine_grid(&layout, |_| {
+            Some((volume(&[(0.5, 100), (1.5, 150)], 480), None))
+        });
+        let code_at = |degree: usize| {
+            let (lat, lon) = destination(real.lat, real.lon, degree as f64 + 0.5, 40_000.0);
+            at(&layout, &combined, (lat, lon)).0
+        };
+        assert_eq!(
+            code_at(degree_blocked),
+            150,
+            "{id} at {degree_blocked}°: blocked below 1.5°"
+        );
+        assert_eq!(
+            code_at(degree_clear),
+            100,
+            "{id} at {degree_clear}°: clear at 0.5°"
+        );
+    }
+
+    #[test]
+    fn the_nordic_composites_products_combine_quickly() {
+        // All 41 radars with their providers' angles (plan §S24b: engine CPU
+        // per Nordic mosaic frame under 3 s in release; `cargo test
+        // --release mosaic::tests::the_nordic -- --nocapture`). The volumes
+        // are made as each radar is combined, as the store read is.
+        let sites = table();
+        let nordic = sites.iter().find(|s| s.id == "nordic").unwrap().clone();
+        for want in [
+            Want::ColMax,
+            Want::EchoTop(0.0),
+            Want::Vil,
+            Want::LowestBeam,
+            Want::Cappi(2000.0, 2000),
+        ] {
+            let started = Instant::now();
+            let layout = Layout::grid(&nordic, want, &sites).unwrap();
+            let placed = started.elapsed();
+            let started = Instant::now();
+            let combined = combine_grid(&layout, |i| {
+                let station = &layout.radars[i].station;
+                let code = 110 + (i % 40) as u8;
+                let markers: Vec<(f64, u8)> = crate::products::nominal_angles(station)
+                    .iter()
+                    .map(|&d| (d, code))
+                    .collect();
+                Some((volume(&markers, 480), None))
+            });
+            let took = started.elapsed();
+            let drawn = combined.codes.iter().filter(|&&c| c >= 2).count();
+            eprintln!(
+                "nordic {}: 41 radars on {} × {} texels, placed in {placed:?}, combined in {took:?}, {drawn} texels drawn",
+                want.variant(),
+                layout.width,
+                layout.height
+            );
+            assert!(drawn > 1_000_000, "{drawn}");
+            assert_eq!(combined.ends.iter().filter(|e| e.is_some()).count(), 41);
+            if !cfg!(debug_assertions) {
+                assert!(took < Duration::from_secs(3), "{took:?}");
+            }
         }
     }
 

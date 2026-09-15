@@ -224,13 +224,15 @@ fn fixture_transport_and_shared_commands() {
     assert_eq!(e["command"], "select_site");
     assert!(e["message"].as_str().unwrap().contains("XXXX"));
     // S20: the product vocabulary and what each station offers. The
-    // composites offer nothing; FMI's one-angle files, read as one volume
-    // since S24a, everything but the clear view; state.product starts on
-    // the lowest scan. An archived volume shows its lowest scan only, so
-    // set_product is refused to its sender.
+    // provider composites offer the products the engine makes from their
+    // radars (S24b), My mosaic none; FMI's one-angle files, read as one
+    // volume since S24a, everything but the clear view; state.product
+    // starts on the lowest scan. An archived volume shows its lowest scan
+    // only, so set_product is refused to its sender.
     assert_eq!(
         hello["products"],
         json!([{"id":"REF","name":"Lowest scan"},{"id":"HYBRID","name":"Clear view"},
+               {"id":"LOWB","name":"Lowest beam"},
                {"id":"CAPPI","name":"Height","above":["sea","ground"]},{"id":"CMAX","name":"Column max"},
                {"id":"ETOP","name":"Storm height","units":"km"},{"id":"VIL","name":"Rain mass","units":"kg/m²"}])
     );
@@ -244,10 +246,15 @@ fn fixture_transport_and_shared_commands() {
         offer("vara")["products"],
         json!(["REF", "HYBRID", "CAPPI", "CMAX", "ETOP", "VIL"])
     );
-    for grid in ["sweden", "nordic", "mymosaic"] {
-        assert_eq!(offer(grid)["products"], json!([]));
+    for grid in ["sweden", "nordic"] {
+        assert_eq!(
+            offer(grid)["products"],
+            json!(["REF", "LOWB", "CAPPI", "CMAX", "ETOP", "VIL"])
+        );
         assert_eq!(offer(grid)["elevations"], json!([]));
     }
+    assert_eq!(offer("mymosaic")["products"], json!([]));
+    assert_eq!(offer("mymosaic")["elevations"], json!([]));
     let finnish: Vec<&Value> = sites.iter().filter(|s| s["country"] == "FI").collect();
     assert_eq!(finnish.len(), 12);
     for site in finnish {

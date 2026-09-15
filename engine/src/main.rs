@@ -954,7 +954,8 @@ impl Shared {
             .cloned();
         // S24b: a provider's composite offers the products the engine makes
         // from its radars; My mosaic has none (its set's rule).
-        let offers = |s: &Station| s.kind == SiteKind::Polar || !products::for_station(s).0.is_empty();
+        let offers =
+            |s: &Station| s.kind == SiteKind::Polar || !products::for_station(s).0.is_empty();
         let station = match station {
             Some(s) if self.state.source == Source::Live && offers(&s) => s,
             Some(s) if s.kind == SiteKind::Grid => {

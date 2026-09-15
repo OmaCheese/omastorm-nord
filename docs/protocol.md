@@ -1188,9 +1188,12 @@ reason).
 - `OMASTORM_GRID_BACKFILL` (1–12, the engine's environment) lowers both
   depths, for an engine with less to spend.
 - A product is polled only while its composite is selected and showing it;
-  none is ever kept warm. `OMASTORM_WARM=sweden` keeps the composite (`REF`)
-  warm, also while a product of `sweden` is shown. The measured bytes,
-  requests and seconds per frame are in `coord/log/S24b.md`.
+  none is ever kept warm. A composite kept warm (`OMASTORM_WARM=sweden`)
+  is, like any selected station, not polled by its warm poller while it is
+  selected, so while one of its products is shown its `REF` ring pauses; it
+  backfills the gap when `REF` is shown again or the station is left. The
+  measured bytes, requests and seconds per frame are in
+  `coord/log/S24b.md`.
 
 ## Terrain
 

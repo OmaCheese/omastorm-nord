@@ -657,7 +657,13 @@ impl Grid {
 
     /// `texture` for codes of another `scale` and `offset` (S24b: a
     /// composite's `ETOP` and `VIL` grids, `mosaic.rs`).
-    pub fn texture_coded(&self, bounds: &[i32], classes: usize, scale: f32, offset: f32) -> Vec<u8> {
+    pub fn texture_coded(
+        &self,
+        bounds: &[i32],
+        classes: usize,
+        scale: f32,
+        offset: f32,
+    ) -> Vec<u8> {
         let class = |code: u8| {
             let value = (f32::from(code) - offset) / scale;
             let above = bounds.partition_point(|&b| b as f32 <= value);
@@ -731,7 +737,11 @@ pub fn frame(template: &Frame, station: &Station, grid: &Grid) -> Frame {
 pub fn encode(grid: &Grid, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)> {
     // S24b: a product grid brings its own coding (`ETOP`, `VIL`), and a
     // storm height's "at least" texels get G bit 8, as in a sweep texture.
-    let scale = if frame.scale > 0.0 { frame.scale } else { SCALE };
+    let scale = if frame.scale > 0.0 {
+        frame.scale
+    } else {
+        SCALE
+    };
     let mut pixels = grid.texture_coded(&frame.bounds, frame.palette.len(), scale, frame.offset);
     crate::products::mark_texture(&frame.product, &mut pixels);
     Ok((png(grid.width, grid.height, &pixels)?, Vec::new()))

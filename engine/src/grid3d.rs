@@ -723,8 +723,9 @@ pub struct Sections {
     line: Option<Line>,
     /// The frame the section was last cut for (`None`: cut it again).
     cut_for: Option<String>,
-    /// A build that found nothing for its key, and why.
-    failed: Option<(String, String)>,
+    /// A build that found nothing for its key and frame, and why (review
+    /// S1: another frame at the same time, a product switch, tries again).
+    failed: Option<(String, String, String)>,
     waiting: Vec<Waiting>,
     pub wake: Arc<Notify>,
 }
@@ -890,11 +891,11 @@ impl Sections {
                         stats.missing.len()
                     ),
                 );
-                self.failed = Some((key, message));
+                self.failed = Some((key, job.frame_id.clone(), message));
             }
             Err(e) => {
                 log(&site, format_args!("no grid for {}: {e}", job.scan_time));
-                self.failed = Some((job.key, e));
+                self.failed = Some((job.key.clone(), job.frame_id.clone(), e));
             }
         }
     }
@@ -912,11 +913,12 @@ impl Sections {
         template: &crate::protocol::Frame,
         state: &mut Option<SectionState>,
     ) -> (Option<Job>, bool) {
-        let key = current
+        let ident = current
             .as_ref()
             .ok()
             .and_then(|j| j.as_ref())
-            .map(|j| j.key.clone());
+            .map(|j| (j.key.clone(), j.frame_id.clone()));
+        let key = ident.as_ref().map(|(k, _)| k.clone());
         if let Some(held) = &self.held {
             let stale = key.as_deref() != Some(held.job.key.as_str());
             if stale || held.used.elapsed() >= KEEP {
@@ -937,7 +939,7 @@ impl Sections {
         if self
             .failed
             .as_ref()
-            .is_some_and(|(k, _)| key.as_deref() != Some(k.as_str()))
+            .is_some_and(|(k, f, _)| ident.as_ref().is_none_or(|(ik, ifr)| ik != k || ifr != f))
         {
             self.failed = None;
         }
@@ -963,7 +965,7 @@ impl Sections {
             }
             Ok(Some(job)) => job,
         };
-        if let Some((_, message)) = self.failed.clone() {
+        if let Some((_, _, message)) = self.failed.clone() {
             self.answer_empty(Status::Empty, &message);
             changed |= self.empty_section(state, Status::Empty, message, template);
             return (None, changed);
@@ -1693,6 +1695,66 @@ mod tests {
         let (asked, changed) = sections.pass(Ok(Some(job("twrb-e0"))), &dir, &template, &mut state);
         assert!(asked.is_some() && !changed);
         assert_eq!(state.unwrap().status, Status::Ready);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review S1: nothing stored for a frame is said once for that frame;
+    /// another frame at the same time (the composite's REF, then Column max,
+    /// whose read brings the volumes) is tried again.
+    #[test]
+    fn a_failed_build_is_tried_again_for_another_frame_at_the_same_time() {
+        let dir =
+            std::env::temp_dir().join(format!("omastorm-sections-failed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let template: crate::protocol::Frame =
+            serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
+        let (_, _, sites) = tower();
+        let job = |frame: &str| {
+            Job::new(
+                &sites[1],
+                &Set::default(),
+                &sites,
+                frame,
+                "2026-09-15T12:00:00Z",
+                T,
+            )
+            .unwrap()
+        };
+        let mut sections = Sections::default();
+        let mut state = None;
+        let line = (
+            Point {
+                lat: 59.25,
+                lon: 13.6,
+            },
+            Point {
+                lat: 59.25,
+                lon: 14.8,
+            },
+        );
+        sections.set_line(Some(line), 7, &mut state, &template);
+        let first = sections
+            .pass(Ok(Some(job("twrb-e0"))), &dir, &template, &mut state)
+            .0
+            .unwrap();
+        let nothing = Built {
+            key: first.key.clone(),
+            grid: None,
+            stats: Stats::default(),
+            seconds: 0.0,
+        };
+        sections.built(first, Ok(nothing));
+        assert!(
+            sections
+                .pass(Ok(Some(job("twrb-e0"))), &dir, &template, &mut state)
+                .0
+                .is_none()
+        );
+        assert_eq!(state.as_ref().unwrap().status, Status::Empty);
+        let again = sections
+            .pass(Ok(Some(job("twrb-cmax"))), &dir, &template, &mut state)
+            .0;
+        assert_eq!(again.expect("tried again").frame_id, "twrb-cmax");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

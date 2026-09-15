@@ -46,8 +46,13 @@ pub const MAX_COLUMNS: usize = 300;
 const MAX_FED: u32 = 8;
 /// Radars a column can name (`masks`' bits).
 const MAX_RADARS: usize = 64;
-/// How long a grid is held unused.
+/// How long a grid is held unused after a client asked for something (a
+/// new section, a profile).
 pub const KEEP: Duration = Duration::from_secs(3 * 60);
+/// How long after a cut no client asked for (a standing section re-cut for
+/// a newer frame) it is held (review S2): a standing section does not keep
+/// the grid.
+pub const AUTO_KEEP: Duration = Duration::from_secs(30);
 /// The great-circle sphere of the lookup rule.
 const SPHERE_M: f64 = 6_371_000.0;
 /// No level at this distance (`spans`).
@@ -699,6 +704,8 @@ struct Held {
     job: Job,
     grid: Grid,
     used: Instant,
+    /// How long after `used` it is kept: `KEEP`, or `AUTO_KEEP`.
+    keep: Duration,
 }
 
 struct Line {
@@ -723,6 +730,9 @@ pub struct Sections {
     line: Option<Line>,
     /// The frame the section was last cut for (`None`: cut it again).
     cut_for: Option<String>,
+    /// Whether the section's next cut was asked for by a client
+    /// (`set_section`) rather than by a newer frame.
+    fresh: bool,
     /// A build that found nothing for its key and frame, and why (review
     /// S1: another frame at the same time, a product switch, tries again).
     failed: Option<(String, String, String)>,
@@ -802,10 +812,12 @@ impl Sections {
         match line {
             None => {
                 self.line = None;
+                self.fresh = false;
                 state.take().is_some()
             }
             Some((from, to)) => {
                 self.line = Some(Line { from, to, owner });
+                self.fresh = true;
                 *state = Some(section(from, to, Status::Building, String::new(), template));
                 self.wake.notify_one();
                 true
@@ -830,6 +842,7 @@ impl Sections {
         self.waiting.retain(|w| w.client != client);
         if self.line.as_ref().is_some_and(|l| l.owner == client) {
             self.line = None;
+            self.fresh = false;
             self.cut_for = None;
             return state.take().is_some();
         }
@@ -876,6 +889,7 @@ impl Sections {
                     job,
                     grid,
                     used: Instant::now(),
+                    keep: KEEP,
                 });
             }
             Ok(Built { key, stats, .. }) => {
@@ -921,15 +935,15 @@ impl Sections {
         let key = ident.as_ref().map(|(k, _)| k.clone());
         if let Some(held) = &self.held {
             let stale = key.as_deref() != Some(held.job.key.as_str());
-            if stale || held.used.elapsed() >= KEEP {
+            if stale || held.used.elapsed() >= held.keep {
                 let (site, when) = (held.job.station.id.clone(), held.job.scan_time.clone());
+                let why = if stale {
+                    "a newer frame".to_owned()
+                } else {
+                    format!("unused for {} s", held.keep.as_secs())
+                };
                 self.held = None;
                 trim();
-                let why = if stale {
-                    "a newer frame"
-                } else {
-                    "unused for 3 minutes"
-                };
                 log(
                     &site,
                     format_args!("grid for {when} dropped ({why}); {}", memory()),
@@ -979,9 +993,16 @@ impl Sections {
             return (None, changed);
         }
         if let Some(held) = &mut self.held {
-            // Used: a profile answered or a cut made; `KEEP` after its last
-            // use the grid is dropped, a section on screen or not.
+            // Used: a profile answered or a cut made. Asked for by a client
+            // (a profile, a new section) it is kept `KEEP`; a cut only a
+            // newer frame asked for keeps it `AUTO_KEEP` (review S2), so a
+            // section standing on screen does not hold the grid.
             held.used = Instant::now();
+            held.keep = if self.waiting.is_empty() && !self.fresh {
+                AUTO_KEEP
+            } else {
+                KEEP
+            };
             // Another frame at the same time (a product switch: the same
             // radars and volumes) keeps the grid; what is cut names it.
             if held.job.frame_id != job.frame_id {
@@ -994,6 +1015,7 @@ impl Sections {
             }
             if need_cut && let Some(line) = &self.line {
                 self.cut_for = Some(cut);
+                self.fresh = false;
                 *state = Some(cut_section(held, line, dir, template));
                 changed = true;
             }
@@ -1695,6 +1717,79 @@ mod tests {
         let (asked, changed) = sections.pass(Ok(Some(job("twrb-e0"))), &dir, &template, &mut state);
         assert!(asked.is_some() && !changed);
         assert_eq!(state.unwrap().status, Status::Ready);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review S2: a standing section re-cut for a newer frame holds the new
+    /// grid `AUTO_KEEP`, then lets it go without building it again; a new
+    /// section and a profile keep it `KEEP`.
+    #[test]
+    fn a_standing_sections_grid_is_held_briefly_after_a_newer_frame() {
+        let dir =
+            std::env::temp_dir().join(format!("omastorm-sections-auto-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let template: crate::protocol::Frame =
+            serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
+        let (_, _, sites) = tower();
+        let job = |start: i64| {
+            Job::new(
+                &sites[1],
+                &Set::default(),
+                &sites,
+                &format!("twrb-{start}"),
+                "2026-09-15T12:00:00Z",
+                start,
+            )
+            .unwrap()
+        };
+        let mut sections = Sections::default();
+        let mut state = None;
+        let line = (
+            Point {
+                lat: 59.25,
+                lon: 13.6,
+            },
+            Point {
+                lat: 59.25,
+                lon: 14.8,
+            },
+        );
+        sections.set_line(Some(line), 7, &mut state, &template);
+        let asked = sections
+            .pass(Ok(Some(job(T))), &dir, &template, &mut state)
+            .0
+            .unwrap();
+        sections.built(asked.clone(), built(&asked));
+        sections.pass(Ok(Some(job(T))), &dir, &template, &mut state);
+        assert_eq!(sections.held.as_ref().unwrap().keep, KEEP, "a new section");
+        // A newer frame: built again and cut, then held briefly.
+        let newer = job(T + 300_000);
+        let asked = sections
+            .pass(Ok(Some(newer.clone())), &dir, &template, &mut state)
+            .0
+            .unwrap();
+        sections.built(asked.clone(), built(&asked));
+        let (_, changed) = sections.pass(Ok(Some(newer.clone())), &dir, &template, &mut state);
+        assert!(changed);
+        assert_eq!(state.as_ref().unwrap().frame_id, newer.frame_id);
+        assert_eq!(sections.held.as_ref().unwrap().keep, AUTO_KEEP);
+        sections.held.as_mut().unwrap().used = Instant::now() - AUTO_KEEP;
+        let (rebuilt, _) = sections.pass(Ok(Some(newer.clone())), &dir, &template, &mut state);
+        assert!(
+            !sections.holds() && rebuilt.is_none(),
+            "dropped, not built again"
+        );
+        assert_eq!(state.as_ref().unwrap().status, Status::Ready);
+        // A profile builds it again and keeps it the full time.
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        sections.ask(9, tx, 59.25, 14.2);
+        let asked = sections
+            .pass(Ok(Some(newer.clone())), &dir, &template, &mut state)
+            .0
+            .unwrap();
+        sections.built(asked.clone(), built(&asked));
+        sections.pass(Ok(Some(newer)), &dir, &template, &mut state);
+        assert_eq!(sections.held.as_ref().unwrap().keep, KEEP);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

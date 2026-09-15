@@ -48,14 +48,15 @@ BLOCKED = {"radar": "twrb", "rays": [200, 209]}
 LINES = [
     {"name": "west-east through the tower", "from": {"lat": 59.25, "lon": 13.6}, "to": {"lat": 59.25, "lon": 14.8}},
     {"name": "south-north through the tower", "from": {"lat": 58.9, "lon": 14.2}, "to": {"lat": 59.6, "lon": 14.2}},
-    {"name": "B's blocked sector", "from": {"lat": 58.7, "lon": 14.3}, "to": {"lat": 58.3, "lon": 14.0}},
+    # Along B's bearings 202-204 degrees: inside its no-data sector.
+    {"name": "B's blocked sector", "from": {"lat": 58.75, "lon": 14.8}, "to": {"lat": 58.35, "lon": 14.45}},
     {"name": "over 600 km, mostly outside", "from": {"lat": 57.0, "lon": 10.0}, "to": {"lat": 62.5, "lon": 18.0}},
 ]
 POINTS = [
     {"name": "tower centre", "lat": 59.25, "lon": 14.2},
     {"name": "tower edge", "lat": 59.25, "lon": 14.29},
     {"name": "clear air between the radars", "lat": 59.0, "lon": 14.0},
-    {"name": "under B's blocked sector", "lat": 58.6, "lon": 14.25},
+    {"name": "under B's blocked sector", "lat": 58.59, "lon": 14.63},  # 205 degrees, 50 km from B
     {"name": "outside the grid", "lat": 65.0, "lon": 20.0},
 ]
 

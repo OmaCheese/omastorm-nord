@@ -122,11 +122,7 @@ impl<'a> Stack<'a> {
         let beams: Vec<Beam> = tilts.iter().map(|t| Beam::new(t, reach_m)).collect();
         let spans = beams.iter().map(|b| spans(b, alt_m)).collect();
         let edge = beams.iter().map(|b| b.edge).max().unwrap_or(0);
-        Stack {
-            beams,
-            spans,
-            edge,
-        }
+        Stack { beams, spans, edge }
     }
 }
 
@@ -162,7 +158,8 @@ fn spans(beam: &Beam, alt_m: f64) -> Vec<u16> {
             let r = EARTH_M * theta.sin() / (e + theta).cos();
             let centre = alt_m + height;
             let w = r * half;
-            level_span(centre - w, centre + w).map_or(NO_SPAN, |(lo, hi)| lo as u16 | (hi as u16) << 8)
+            level_span(centre - w, centre + w)
+                .map_or(NO_SPAN, |(lo, hi)| lo as u16 | (hi as u16) << 8)
         })
         .collect()
 }
@@ -383,7 +380,9 @@ fn bearing_deg(a: Point, b: Point) -> f64 {
 
 /// A code as dBZ; `None` for below threshold (0) and no data (1).
 fn dbz(code: u8) -> Option<f64> {
-    (code >= 2).then(|| (f64::from(code) - crate::composite::OFFSET as f64) / crate::composite::SCALE as f64)
+    (code >= 2).then(|| {
+        (f64::from(code) - crate::composite::OFFSET as f64) / crate::composite::SCALE as f64
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -669,7 +668,10 @@ impl Profile {
 }
 
 /// Check a `set_section`'s points: `Ok(None)` clears, `Ok(Some)` sets.
-pub fn check_line(from: Option<Point>, to: Option<Point>) -> Result<Option<(Point, Point)>, String> {
+pub fn check_line(
+    from: Option<Point>,
+    to: Option<Point>,
+) -> Result<Option<(Point, Point)>, String> {
     let (from, to) = match (from, to) {
         (None, None) => return Ok(None),
         (Some(from), Some(to)) => (from, to),
@@ -727,7 +729,13 @@ pub struct Sections {
 }
 
 /// What `state.section` looks like while a cut is being made.
-fn section(from: Point, to: Point, status: Status, message: String, template: &crate::protocol::Frame) -> SectionState {
+fn section(
+    from: Point,
+    to: Point,
+    status: Status,
+    message: String,
+    template: &crate::protocol::Frame,
+) -> SectionState {
     SectionState {
         from,
         to,
@@ -859,7 +867,14 @@ impl Sections {
                     "The tilt store holds no volume of {}'s radars for {}: a section is made from the volumes what is shown reads (Column max, Storm height, Rain mass or Height read whole volumes).",
                     job.station.name, job.scan_time
                 );
-                log(&site, format_args!("nothing to cut for {}: {} radars, none stored", job.scan_time, stats.missing.len()));
+                log(
+                    &site,
+                    format_args!(
+                        "nothing to cut for {}: {} radars, none stored",
+                        job.scan_time,
+                        stats.missing.len()
+                    ),
+                );
                 self.failed = Some((key, message));
             }
             Err(e) => {
@@ -882,7 +897,11 @@ impl Sections {
         template: &crate::protocol::Frame,
         state: &mut Option<SectionState>,
     ) -> (Option<Job>, bool) {
-        let key = current.as_ref().ok().and_then(|j| j.as_ref()).map(|j| j.key.clone());
+        let key = current
+            .as_ref()
+            .ok()
+            .and_then(|j| j.as_ref())
+            .map(|j| j.key.clone());
         if let Some(held) = &self.held {
             let stale = key.as_deref() != Some(held.job.key.as_str());
             if stale || held.used.elapsed() >= KEEP {
@@ -891,14 +910,22 @@ impl Sections {
                     format_args!(
                         "grid for {} dropped ({}); {}",
                         held.job.scan_time,
-                        if stale { "a newer frame" } else { "unused for 3 minutes" },
+                        if stale {
+                            "a newer frame"
+                        } else {
+                            "unused for 3 minutes"
+                        },
                         memory()
                     ),
                 );
                 self.held = None;
             }
         }
-        if self.failed.as_ref().is_some_and(|(k, _)| key.as_deref() != Some(k.as_str())) {
+        if self
+            .failed
+            .as_ref()
+            .is_some_and(|(k, _)| key.as_deref() != Some(k.as_str()))
+        {
             self.failed = None;
         }
         let mut changed = false;
@@ -913,7 +940,12 @@ impl Sections {
             }
             Ok(None) => {
                 self.answer_empty(Status::Empty, "No frame yet.");
-                changed |= self.empty_section(state, Status::Building, "Waiting for the first frame.".into(), template);
+                changed |= self.empty_section(
+                    state,
+                    Status::Building,
+                    "Waiting for the first frame.".into(),
+                    template,
+                );
                 return (None, changed);
             }
             Ok(Some(job)) => job,
@@ -943,7 +975,13 @@ impl Sections {
         if let Some(line) = &self.line
             && state.as_ref().is_none_or(|s| s.status != Status::Building)
         {
-            *state = Some(section(line.from, line.to, Status::Building, String::new(), template));
+            *state = Some(section(
+                line.from,
+                line.to,
+                Status::Building,
+                String::new(),
+                template,
+            ));
             changed = true;
         }
         if self.building.is_some() {
@@ -985,7 +1023,12 @@ impl Sections {
 }
 
 /// Cut `line` from the held grid and publish its texture.
-fn cut_section(held: &Held, line: &Line, dir: &Path, template: &crate::protocol::Frame) -> SectionState {
+fn cut_section(
+    held: &Held,
+    line: &Line,
+    dir: &Path,
+    template: &crate::protocol::Frame,
+) -> SectionState {
     let cut = held.grid.cut(line.from, line.to);
     let mut out = section(line.from, line.to, Status::Ready, String::new(), template);
     out.frame_id.clone_from(&held.job.frame_id);
@@ -1013,4 +1056,433 @@ fn cut_section(held: &Held, line: &Line, dir: &Path, template: &crate::protocol:
         ),
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sweep::{Ray, Sweep};
+    use serde_json::Value;
+    use std::io::Read;
+
+    const KEY: &str = include_str!("../tests/sections/tower-key.json");
+    const VOLUMES: &[u8] = include_bytes!("../tests/sections/tower-volumes.zz");
+    const T: i64 = 1_789_992_000_000;
+
+    fn key() -> Value {
+        serde_json::from_str(KEY).unwrap()
+    }
+
+    /// The key's two radars as stations.
+    fn stations(key: &Value) -> Vec<Station> {
+        key["radars"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| Station {
+                id: r["id"].as_str().unwrap().to_owned(),
+                name: r["id"].as_str().unwrap().to_owned(),
+                lat: r["lat"].as_f64().unwrap(),
+                lon: r["lon"].as_f64().unwrap(),
+                alt_m: r["altM"].as_f64().unwrap(),
+                kind: SiteKind::Polar,
+                range_km: r["rangeKm"].as_f64().unwrap(),
+                ..Station::default()
+            })
+            .collect()
+    }
+
+    /// The key's volumes, as the engine decodes a volume: per radar its
+    /// scans, 360 rays at azimuth k + 0.5.
+    fn volumes(key: &Value) -> Vec<Vec<Tilt>> {
+        let mut raw = Vec::new();
+        flate2::read::ZlibDecoder::new(VOLUMES)
+            .read_to_end(&mut raw)
+            .unwrap();
+        let angles: Vec<f64> = key["angles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_f64().unwrap())
+            .collect();
+        let gates = key["gates"].as_u64().unwrap() as usize;
+        let per_radar = angles.len() * 360 * gates;
+        assert_eq!(raw.len(), per_radar * 2);
+        (0..2)
+            .map(|r| {
+                angles
+                    .iter()
+                    .enumerate()
+                    .map(|(t, &deg)| {
+                        let base = r * per_radar + t * 360 * gates;
+                        Tilt {
+                            elangle: deg,
+                            sweep: Sweep {
+                                rays: (0..360)
+                                    .map(|a| Ray {
+                                        azimuth_deg: a as f32 + 0.5,
+                                        elevation_deg: deg as f32,
+                                        time_ms: T,
+                                        codes: raw[base + a * gates..base + (a + 1) * gates]
+                                            .to_vec(),
+                                    })
+                                    .collect(),
+                                start_ms: T,
+                                end_ms: T + 20_000,
+                                gates: gates as u16,
+                                first_gate_m: key["firstGateM"].as_u64().unwrap() as u32,
+                                gate_spacing_m: key["gateSpacingM"].as_u64().unwrap() as u32,
+                                scale: 2.0,
+                                offset: 66.0,
+                                code1_status: crate::sweep::OUTSIDE_COVERAGE,
+                            },
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The tower's grid, filled by the engine from the key's volumes.
+    fn tower() -> (Grid, Stats, Vec<Station>) {
+        let key = key();
+        let sites = stations(&key);
+        let set = Set {
+            sites: sites
+                .iter()
+                .map(|s| SiteReach {
+                    id: s.id.clone(),
+                    reach_km: s.range_km,
+                })
+                .collect(),
+            rule: Rule::Lowest,
+            height_m: None,
+            above: None,
+        };
+        let layout = Layout::new(&set, &sites).unwrap();
+        let mut volumes: Vec<Option<Vec<Tilt>>> = volumes(&key).into_iter().map(Some).collect();
+        let (grid, stats) = fill(&layout, |i| Some((volumes[i].take()?, None)));
+        (grid, stats, sites)
+    }
+
+    fn point(v: &Value) -> Point {
+        Point {
+            lat: v["lat"].as_f64().unwrap(),
+            lon: v["lon"].as_f64().unwrap(),
+        }
+    }
+
+    fn names(v: &Value) -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// The answer key (plan §S24c tests): a 10 km tower seen by two
+    /// synthetic radars; its cuts and profiles computed independently in
+    /// numpy (`scripts/section-key.py`) from the rule in `docs/protocol.md`,
+    /// the engine's own placement and fill compared cell by cell.
+    #[test]
+    fn a_tower_seen_by_two_radars_matches_the_numpy_key() {
+        let key = key();
+        let (grid, stats, _) = tower();
+        assert_eq!(stats.used, ["twra", "twrb"]);
+        assert!(stats.missing.is_empty());
+        assert_eq!(stats.crowded, 0);
+        let mut cells = 0;
+        for cut in key["cuts"].as_array().unwrap() {
+            let name = cut["name"].as_str().unwrap();
+            let ours = grid.cut(point(&cut["from"]), point(&cut["to"]));
+            assert_eq!(
+                ours.columns as u64,
+                cut["columns"].as_u64().unwrap(),
+                "{name}"
+            );
+            assert!(
+                (ours.length_m - cut["lengthM"].as_f64().unwrap()).abs() < 1e-3,
+                "{name}"
+            );
+            let expected: Vec<u8> = cut["codes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c.as_u64().unwrap() as u8)
+                .collect();
+            let off: Vec<usize> = (0..expected.len())
+                .filter(|&i| ours.codes[i] != expected[i])
+                .collect();
+            assert!(
+                off.is_empty(),
+                "{name}: {} of {} cells differ, first at {:?}",
+                off.len(),
+                expected.len(),
+                off.first()
+            );
+            assert_eq!(ours.radars, names(&cut["radars"]), "{name}");
+            cells += expected.len();
+        }
+        for p in key["profiles"].as_array().unwrap() {
+            let name = p["name"].as_str().unwrap();
+            let column = grid.column(p["lat"].as_f64().unwrap(), p["lon"].as_f64().unwrap());
+            if p["status"] == "outside" {
+                assert!(column.is_none(), "{name}");
+                continue;
+            }
+            let column = column.unwrap();
+            assert_eq!(column.radars, names(&p["radars"]), "{name}");
+            for (k, (level, want)) in column
+                .levels
+                .iter()
+                .zip(p["levels"].as_array().unwrap())
+                .enumerate()
+            {
+                assert_eq!(
+                    u64::from(level.0),
+                    want["code"].as_u64().unwrap(),
+                    "{name} level {k} code"
+                );
+                assert_eq!(
+                    u64::from(level.1),
+                    want["samples"].as_u64().unwrap(),
+                    "{name} level {k} samples"
+                );
+                assert_eq!(level.2, names(&want["radars"]), "{name} level {k} radars");
+            }
+        }
+        assert!(cells > 9_000, "{cells} section cells compared");
+    }
+
+    /// What the tower looks like, whatever the key says: the storm up to
+    /// the highest beam inside it, seen by both radars; clear air around
+    /// it; a no-data sector counts nothing; a long line keeps 300 columns.
+    #[test]
+    fn a_towers_profile_and_cut_look_like_a_tower() {
+        let (grid, _, sites) = tower();
+        let job = Job::new(
+            &sites[0],
+            &Set::default(),
+            &sites,
+            "twra-x",
+            "2026-09-15T12:00:00Z",
+            T,
+        )
+        .unwrap();
+        let centre = Profile::of(&grid, &job, 59.25, 14.2);
+        assert_eq!(centre.status, Status::Ready);
+        assert_eq!(centre.radars, ["twra", "twrb"]);
+        assert_eq!(centre.levels[1].dbz, Some(50.0));
+        assert!(centre.levels[1].samples >= 2);
+        assert_eq!(centre.levels[1].radars, ["twra", "twrb"]);
+        let top = centre.echo_top_m.unwrap();
+        assert!((8_000..=10_500).contains(&top), "echo top {top} m");
+        // Above the tower the beams see clear air (0), or nothing at all.
+        assert!(centre.levels[23].dbz.is_none());
+        let clear = Profile::of(&grid, &job, 59.0, 14.0);
+        assert!(clear.levels[0].samples > 0 && clear.levels[0].dbz.is_none());
+        assert_eq!(clear.echo_top_m, None);
+        let outside = Profile::of(&grid, &job, 65.0, 20.0);
+        assert_eq!(outside.status, Status::Outside);
+        // Under B's no-data sector (bearing 205°, 50 km from B) only A counts.
+        let blocked = Profile::of(&grid, &job, 58.59, 14.63);
+        assert_eq!(blocked.radars, ["twra"]);
+        assert!(
+            blocked
+                .levels
+                .iter()
+                .all(|l| !l.radars.contains(&"twrb".to_owned()))
+        );
+        assert!(blocked.levels[2].samples > 0);
+        let long = grid.cut(
+            Point {
+                lat: 57.0,
+                lon: 10.0,
+            },
+            Point {
+                lat: 62.5,
+                lon: 18.0,
+            },
+        );
+        assert_eq!(long.columns, MAX_COLUMNS);
+        assert!(long.length_m > 600_000.0);
+        // Row 0 is the top level: the tower's cut has its echo at the bottom.
+        let cut = grid.cut(
+            Point {
+                lat: 59.25,
+                lon: 13.6,
+            },
+            Point {
+                lat: 59.25,
+                lon: 14.8,
+            },
+        );
+        let bottom = &cut.codes[(LEVELS - 2) * cut.columns..(LEVELS - 1) * cut.columns];
+        assert!(bottom.contains(&166));
+        assert!(!cut.codes[..cut.columns].contains(&166));
+    }
+
+    #[test]
+    fn levels_are_touched_where_the_beam_reaches_inside_them() {
+        assert_eq!(level_span(100.0, 400.0), Some((0, 0)));
+        assert_eq!(level_span(400.0, 600.0), Some((0, 1)));
+        assert_eq!(level_span(500.0, 1000.0), Some((1, 1)));
+        assert_eq!(level_span(-300.0, 20.0), Some((0, 0)));
+        assert_eq!(level_span(-300.0, 0.0), None);
+        assert_eq!(level_span(11_900.0, 13_000.0), Some((23, 23)));
+        assert_eq!(level_span(12_000.0, 13_000.0), None);
+        assert_eq!(columns_for(1.0), 1);
+        assert_eq!(columns_for(219_600.0), 110);
+        assert_eq!(columns_for(600_000.0), 300);
+        assert_eq!(columns_for(900_000.0), 300);
+    }
+
+    #[test]
+    fn a_section_needs_two_points_in_range_two_kilometres_apart() {
+        let a = Point {
+            lat: 58.0,
+            lon: 12.0,
+        };
+        let b = Point {
+            lat: 58.1,
+            lon: 12.0,
+        };
+        assert_eq!(check_line(None, None), Ok(None));
+        assert_eq!(check_line(Some(a), Some(b)), Ok(Some((a, b))));
+        assert!(check_line(Some(a), None).unwrap_err().contains("both"));
+        assert!(
+            check_line(
+                Some(a),
+                Some(Point {
+                    lat: 91.0,
+                    lon: 0.0
+                })
+            )
+            .unwrap_err()
+            .contains("lat")
+        );
+        let near = Point {
+            lat: 58.01,
+            lon: 12.0,
+        };
+        assert!(
+            check_line(Some(a), Some(near))
+                .unwrap_err()
+                .contains("2 km")
+        );
+    }
+
+    fn built(job: &Job) -> Result<Built, String> {
+        let (grid, stats, _) = tower();
+        Ok(Built {
+            key: job.key.clone(),
+            grid: Some(grid),
+            stats,
+            seconds: 0.0,
+        })
+    }
+
+    /// A section's life (S24b's M1 applied): built on demand, cut, re-cut
+    /// for a newer frame from a new grid (the old one dropped first), gone
+    /// with the client that set it; a profile answered to its sender; a
+    /// frame with nothing stored is said once, not rebuilt every second.
+    #[test]
+    fn a_section_lives_with_its_client_and_follows_the_newest_frame() {
+        let dir = std::env::temp_dir().join(format!("omastorm-sections-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let template: crate::protocol::Frame =
+            serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
+        let (_, _, sites) = tower();
+        let job = |start: i64| {
+            Job::new(
+                &sites[1],
+                &Set::default(),
+                &sites,
+                "twrb-x",
+                "2026-09-15T12:00:00Z",
+                start,
+            )
+            .unwrap()
+        };
+        let mut sections = Sections::default();
+        let mut state = None;
+        // Nothing asked: nothing built.
+        assert!(
+            sections
+                .pass(Ok(Some(job(T))), &dir, &template, &mut state)
+                .0
+                .is_none()
+        );
+        let line = (
+            Point {
+                lat: 59.25,
+                lon: 13.6,
+            },
+            Point {
+                lat: 59.25,
+                lon: 14.8,
+            },
+        );
+        assert!(sections.set_line(Some(line), 7, &mut state, &template));
+        assert_eq!(state.as_ref().unwrap().status, Status::Building);
+        let (asked, _) = sections.pass(Ok(Some(job(T))), &dir, &template, &mut state);
+        let asked = asked.expect("a grid to build");
+        assert!(
+            sections
+                .pass(Ok(Some(job(T))), &dir, &template, &mut state)
+                .0
+                .is_none(),
+            "one build at a time"
+        );
+        sections.built(asked.clone(), built(&asked));
+        let (_, changed) = sections.pass(Ok(Some(job(T))), &dir, &template, &mut state);
+        assert!(changed);
+        let ready = state.clone().unwrap();
+        assert_eq!(ready.status, Status::Ready);
+        assert_eq!(ready.columns, 35);
+        assert_eq!(ready.radars, ["twra", "twrb"]);
+        assert!(crate::protocol::is_texture_path(&ready.texture));
+        assert!(dir.join(&ready.texture).exists());
+        // A profile, answered on its sender's queue at once.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        sections.ask(9, tx, 59.25, 14.2);
+        sections.pass(Ok(Some(job(T))), &dir, &template, &mut state);
+        let reply: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(reply["type"], "profile");
+        assert_eq!(reply["status"], "ready");
+        assert_eq!(reply["levels"].as_array().unwrap().len(), LEVELS);
+        assert_eq!(reply["levels"][1]["dbz"], 50.0);
+        // A newer frame: the grid is dropped before the next is built.
+        let newer = job(T + 300_000);
+        let (next, _) = sections.pass(Ok(Some(newer.clone())), &dir, &template, &mut state);
+        assert!(!sections.holds());
+        assert_eq!(next.unwrap().key, newer.key);
+        assert_eq!(state.as_ref().unwrap().status, Status::Building);
+        // Nothing stored for it: said once, not asked for again.
+        sections.built(
+            newer.clone(),
+            Ok(Built {
+                key: newer.key.clone(),
+                grid: None,
+                stats: Stats::default(),
+                seconds: 0.0,
+            }),
+        );
+        let (again, _) = sections.pass(Ok(Some(newer.clone())), &dir, &template, &mut state);
+        assert!(again.is_none());
+        assert_eq!(state.as_ref().unwrap().status, Status::Empty);
+        assert!(state.as_ref().unwrap().message.contains("tilt store"));
+        // Another client leaving changes nothing; the owner leaving drops it.
+        assert!(!sections.client_left(9, &mut state));
+        assert!(sections.client_left(7, &mut state));
+        assert!(state.is_none());
+        assert!(
+            sections
+                .pass(Ok(Some(newer)), &dir, &template, &mut state)
+                .0
+                .is_none()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

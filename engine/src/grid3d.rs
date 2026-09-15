@@ -925,7 +925,7 @@ impl Sections {
             }
             Ok(Built { key, stats, .. }) => {
                 let message = format!(
-                    "The tilt store holds no volume of {}'s radars for {}: a section is made from the volumes what is shown reads (Column max, Storm height, Rain mass or Height read whole volumes).",
+                    "The tilt store holds no volume of {}'s radars for {}: a section is made from the volumes the shown product reads: switch to Column max, Storm height, Rain mass or Height.",
                     job.station.name, job.scan_time
                 );
                 log(
@@ -1623,7 +1623,14 @@ mod tests {
         let lon = (x / crate::composite::MERCATOR_R).to_degrees();
         let lat = crate::composite::mercator_lat(y);
         let (wlat, wlon) = crate::terrain::destination(lat, lon, 270.0, 150_000.0);
-        let (elat, elon) = crate::terrain::destination(lat, lon, 90.0, 150_000.0);
+        // Review N5: from the west end through the column itself (a line
+        // between two points at one latitude bows away from it).
+        let west = Point {
+            lat: wlat,
+            lon: wlon,
+        };
+        let through = bearing_deg(west, Point { lat, lon });
+        let (elat, elon) = crate::terrain::destination(wlat, wlon, through, 300_000.0);
         let started = Instant::now();
         let cut = grid.cut(
             Point {

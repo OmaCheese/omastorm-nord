@@ -1100,7 +1100,8 @@ pub fn echo_top_code(column: &[(u8, f64)], alt_m: f64) -> u8 {
 /// `VIL`'s code at one output gate (`docs/protocol.md`, rain mass), the same
 /// `column`: Marshall–Palmer water over each gap between consecutive beam
 /// centres with a reading, reflectivity capped at `VIL_CAP_DBZ`, in kg/m²,
-/// as `2 + round(2 × VIL)`. 0: every reading below threshold; 1: none.
+/// as `2 + round(2 × VIL)`. 0: every reading below threshold, or a rain
+/// mass under `VIL_FLOOR`; 1: none.
 pub fn vil_code(column: &[(u8, f64)]) -> u8 {
     let readings = || column.iter().filter(|&&(code, _)| code != 1);
     if readings().next().is_none() {
@@ -1126,8 +1127,15 @@ pub fn vil_code(column: &[(u8, f64)]) -> u8 {
         }
         below = Some((here, height));
     }
+    if total < VIL_FLOOR {
+        return 0;
+    }
     (2 + (2.0 * total).round() as i64).min(255) as u8
 }
+
+/// A rain mass under this, kg/m², is code 0 like a column below threshold,
+/// so any weak echo is not drawn as a "< 1" blob (S24a review #4).
+pub const VIL_FLOOR: f64 = 0.25;
 
 /// Mark the "at least" storm heights in a sweep texture (`Sweep::texture`'s
 /// RGBA pixels): G bit 8 on every odd measured code of an `ETOP` frame
@@ -2303,7 +2311,17 @@ mod tests {
             vil_code(&[(dbz(70.0), 0.0), (dbz(70.0), 10_000.0)]),
             vil_code(&[(dbz(56.0), 0.0), (dbz(56.0), 10_000.0)])
         );
-        assert_eq!(vil_code(&[(dbz(40.0), 1000.0)]), 2, "one reading: no gap");
+        // Review #4: under 0.25 kg/m² is code 0 (not drawn); from 0.25 the
+        // code is at least 3, so code 2 never appears.
+        assert_eq!(vil_code(&[(dbz(40.0), 1000.0)]), 0, "one reading: no gap");
+        let thin = [(dbz(20.0), 1000.0), (dbz(20.0), 2000.0)];
+        let mass = 3.44e-6 * 100f64.powf(4.0 / 7.0) * 1000.0;
+        assert!(mass < VIL_FLOOR, "{mass}");
+        assert_eq!(vil_code(&thin), 0, "{mass} kg/m² is not drawn");
+        let enough = [(dbz(30.0), 1000.0), (dbz(30.0), 3000.0)];
+        let mass = 3.44e-6 * 1000f64.powf(4.0 / 7.0) * 2000.0;
+        assert!((VIL_FLOOR..0.75).contains(&mass), "{mass}");
+        assert_eq!(vil_code(&enough), 3);
         assert_eq!(vil_code(&[(0, 1000.0), (0, 2000.0), (1, 3000.0)]), 0);
         assert_eq!(vil_code(&[(1, 1000.0)]), 1);
         assert_eq!(

@@ -863,8 +863,10 @@ centre's height `h` above the antenna.
   `h_i+1 − h_i` in metres, summed upward (f64, in that order):
   kg/m². The code is `2 + round(2 × VIL)`, at most 255 (`scale` 2,
   `offset` 2: 0.5 kg/m² a code, to 126.5). Code 0: every such scan is
-  below threshold; code 1: there is none. A column with one reading has
-  no gap and a VIL of 0 (code 2). `units` `kg/m²`; `bounds`
+  below threshold, or the rain mass is under 0.25 kg/m² (drawn as
+  nothing, like below threshold, so the code is 3 or more wherever there
+  is any); code 1: there is none. A column with one reading has no gap and
+  a VIL of 0 (code 0). `units` `kg/m²`; `bounds`
   `[0,1,2,4,7,10,15,20,25,30,40,50,70,127]` with thirteen colours.
 - Both need every scan of the volume (like `CMAX`), and their frames carry
   the lowest scan along for the `-e0` ring like the other products. Frame

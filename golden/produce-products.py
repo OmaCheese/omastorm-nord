@@ -211,6 +211,9 @@ def vil_code(column):
     total = 0.0
     for (za, ha), (zb, hb) in zip(zs, zs[1:]):
         total += 3.44e-6 * math.pow((za + zb) / 2.0, 4.0 / 7.0) * (hb - ha)
+    # S24a review #4: under 0.25 kg/m2 is code 0, as below threshold.
+    if total < 0.25:
+        return 0
     return min(2 + int(rnd(2.0 * total)), 255)
 
 

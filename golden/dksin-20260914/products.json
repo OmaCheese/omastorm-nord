@@ -514,11 +514,11 @@
    "gates": 475,
    "firstGateM": 750,
    "gateSpacingM": 500,
-   "u8Sha256": "533581c8d92caf4824a0f376cd62b678751c6e6fe9855f0e4ead198d61a9447e",
+   "u8Sha256": "0805e8705548ae4e8882680f27ae4f1ea5ab370da162ebff265a775d7fa245cb",
    "counts": {
-    "undetect": 149433,
+    "undetect": 170983,
     "nodata": 0,
-    "measured": 21567
+    "measured": 17
    }
   }
  },

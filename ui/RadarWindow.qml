@@ -16,6 +16,10 @@ Item {
     property var manifest: null
     readonly property var store: PluginSession
     property bool opened: session === null
+    // A standalone window has no plugin session but reads the PluginSession
+    // singleton, whose settle timer puts a composite's product back on REF
+    // while no surface is open (S24b S3): this window is one (fixed by S24d).
+    Binding { when: app.session === null; target: app.store; property: "windowOpen"; value: app.opened }
     function open(payload) {
         opened = true;
         if (session) session.windowOpen = true;

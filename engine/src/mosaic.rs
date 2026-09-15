@@ -526,6 +526,16 @@ pub fn choose_with(
             reach_km,
         });
     }
+    // Review N4: a height above the ground over a radar with no terrain
+    // under it (a Spanish one) is above sea level, as `set_product` keeps
+    // it, so `state.mosaic` says what is made.
+    let bare = chosen.iter().any(|c| {
+        crate::providers::resolve(sites, &c.id).is_some_and(|s| !crate::products::has_terrain(s))
+    });
+    let above = match above {
+        Some(Above::Ground) if bare => Some(Above::Sea),
+        above => above,
+    };
     Ok(Set {
         sites: chosen,
         rule,
@@ -4256,6 +4266,18 @@ mod tests {
         assert!(!ground.same(&sea) && !sea.same(&plain));
         assert_ne!(ground.variant(), sea.variant());
         assert_ne!(sea.variant(), plain.variant());
+        // Review N4: above the ground over a radar with no terrain (Spain's)
+        // is above sea level, and the set says so.
+        let with_spain = [SiteArg::Id("nohur".into()), SiteArg::Id("esahr".into())];
+        let bare = choose_with(
+            &sites,
+            &with_spain,
+            Some("height"),
+            Some(3000),
+            Some("ground"),
+        )
+        .unwrap();
+        assert_eq!(bare.above, Some(Above::Sea));
         // A set without a height keeps its S25 name and sends no height.
         let lowest = choose(&sites, &args, None).unwrap();
         let text: String = lowest

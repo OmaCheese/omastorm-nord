@@ -334,7 +334,9 @@ store (never a request), on the blocking pool, one at a time:
   count and which radars fed it (bits over the column's first 8 radars).
 - **Life** (`Sections`, driven by `main.rs`'s `sections` task once a second
   or on a wake): held until the newest frame is replaced (dropped before the
-  next is built) or 3 minutes unused (`KEEP`); a section is re-cut on each
+  next is built), or 3 minutes (`KEEP`) after a client asked (a new
+  section, a profile), or 30 s (`AUTO_KEEP`) after a re-cut only a newer
+  frame asked for (review S2); a section is re-cut on each
   new newest frame while it is set, and dropped with the client that set it
   (`client_left`). A build that finds no stored volume is said once per
   frame (`status` `empty`), not retried every second.

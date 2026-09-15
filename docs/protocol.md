@@ -1281,8 +1281,10 @@ never stored:
   that more radars reach records the first 8 in the station's order per
   cell; `engine.log` counts such columns), and each column every radar
   that reached it.
-- Held until the newest frame is replaced, or 3 minutes after a section or
-  profile last used it, then dropped. While a section is set, a new newest
+- Held until the newest frame is replaced; or 3 minutes after a client
+  last asked for something from it (a new or moved section, a profile);
+  or, after a cut only a newer frame asked for (a section standing on
+  screen), 30 seconds; then dropped. While a section is set, a new newest
   frame builds the next grid and cuts the section again; nothing else
   builds one. A Nordic grid is about 77 MB while held; its fill seconds and
   the engine's memory are in `coord/log/S24c.md`.

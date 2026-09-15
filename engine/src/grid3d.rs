@@ -825,8 +825,10 @@ impl Sections {
         }
     }
 
-    /// A `profile` from `client`, answered on `reply` by the next pass.
+    /// A `profile` from `client`, answered on `reply` by the next pass; a
+    /// newer one from the same client replaces its waiting one (review S4).
     pub fn ask(&mut self, client: u64, reply: Sender<String>, lat: f64, lon: f64) {
+        self.waiting.retain(|w| w.client != client);
         self.waiting.push(Waiting {
             client,
             reply,
@@ -1718,6 +1720,18 @@ mod tests {
         assert!(asked.is_some() && !changed);
         assert_eq!(state.unwrap().status, Status::Ready);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review S4: a client waits for one profile at a time, its latest.
+    #[test]
+    fn a_clients_newer_profile_replaces_its_waiting_one() {
+        let mut sections = Sections::default();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        for (client, lat) in [(9, 1.0), (9, 2.0), (8, 3.0), (9, 4.0)] {
+            sections.ask(client, tx.clone(), lat, 0.0);
+        }
+        let waiting: Vec<(u64, f64)> = sections.waiting.iter().map(|w| (w.client, w.lat)).collect();
+        assert_eq!(waiting, [(8, 3.0), (9, 4.0)]);
     }
 
     /// Review S2: a standing section re-cut for a newer frame holds the new

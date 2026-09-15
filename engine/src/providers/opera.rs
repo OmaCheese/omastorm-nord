@@ -227,6 +227,9 @@ pub struct Hub {
     watching: Mutex<HashMap<String, Watch>>,
     cuts: Mutex<Vec<Cutout>>,
     listing: Mutex<Option<Listing>>,
+    /// Held across "another box's listing, else list": pollers woken
+    /// together (after one read served both) would otherwise both ask.
+    listing_turn: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -685,14 +688,17 @@ pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached:
         let mut failed: Option<Fail> = None;
         let mut caught_up = !due(newest_ms, now);
         if !caught_up {
-            // S33: another box's poller may have just asked the same.
+            // S33: another box's poller may have just asked the same; one
+            // poller at a time asks, so the second finds the first's answer.
             let since = listing_since(newest_ms, now);
+            let turn = cfg.hub.listing_turn.lock().await;
             let listed = match cfg.hub.listed_by_another(&site, since, cfg.poll) {
                 Some(volumes) => Ok((volumes, 0)),
                 None => list_between(&http, &cfg.base, since, now)
                     .await
                     .inspect(|(volumes, _)| cfg.hub.remember_listing(&site, since, volumes)),
             };
+            drop(turn);
             match listed {
                 Ok((volumes, _)) => match volumes.into_iter().next_back() {
                     None => caught_up = newest.is_some(),
@@ -1300,10 +1306,10 @@ mod tests {
                 .any(|(_, _, _, p)| p.contains("cut from the read made for")),
             "{sweeps:?}"
         );
-        // Listings: the live one of one box (the other's may race it at the
-        // start) and each backfill's.
+        // Listings: the live one of one box (taking turns, the other box
+        // reads its answer) and each backfill's.
         let listings = served.iter().filter(|e| e.starts_with("list ")).count();
-        assert!((2..=4).contains(&listings), "{served:?}");
+        assert_eq!(listings, 3, "{served:?}");
         eprintln!(
             "both boxes: {} requests ({} range requests, {listings} listings): {served:?}",
             served.len(),

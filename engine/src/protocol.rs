@@ -92,6 +92,8 @@ pub struct Hello {
     pub sites_notes: String,
     /// The other European radars, for faint map marks only (S23, additive).
     pub reference_sites: Vec<crate::reference::ReferenceSite>,
+    /// What My mosaic accepts (S25, additive).
+    pub mosaic: crate::mosaic::Info,
 }
 
 /// The launcher's view of a running daemon's hello. Only the fields needed to
@@ -206,6 +208,9 @@ pub struct State {
     pub playing: bool,
     /// The chosen product, shared by every client like the station (S20).
     pub product: crate::products::Choice,
+    /// My mosaic's radars and rule, shared like the station (S25); empty
+    /// until a client sends `set_mosaic`.
+    pub mosaic: crate::mosaic::Set,
 }
 
 /// `state.basemap`: what draws the tiles and, for `osm`, whether it can.
@@ -483,6 +488,13 @@ pub enum Command {
         /// `CAPPI`'s height above sea level in metres (S29); optional.
         #[serde(default)]
         height_m: Option<u32>,
+    },
+    /// My mosaic's radars, each with an optional reach, and its rule (S25,
+    /// `mosaic::choose` checks them).
+    SetMosaic {
+        sites: Vec<crate::mosaic::SiteArg>,
+        #[serde(default)]
+        rule: Option<String>,
     },
     /// The visible inclusive tile rectangle at one zoom, at most 64 tiles
     /// Answered tile by tile with `tile_ready` to the sender.

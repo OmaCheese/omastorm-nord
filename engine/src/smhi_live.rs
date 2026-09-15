@@ -186,6 +186,9 @@ pub enum Scan {
     /// CAPPI, CMAX, HYBRID), until the poller sends it on as a frame of its
     /// own (`Event::free_lowest`).
     Product(Sweep, Want, Option<Box<Sweep>>),
+    /// My mosaic's frame (S25, `mosaic.rs`): a grid made by the engine from
+    /// the lowest scans of the chosen radars, with what names and credits it.
+    Mosaic(Box<crate::mosaic::Built>),
 }
 
 impl Scan {
@@ -194,12 +197,14 @@ impl Scan {
         match self {
             Scan::Polar(sweep) | Scan::Product(sweep, ..) => sweep.start_ms,
             Scan::Grid(grid) => grid.start_ms,
+            Scan::Mosaic(built) => built.grid.start_ms,
         }
     }
     pub fn end_ms(&self) -> i64 {
         match self {
             Scan::Polar(sweep) | Scan::Product(sweep, ..) => sweep.end_ms,
             Scan::Grid(grid) => grid.end_ms,
+            Scan::Mosaic(built) => built.grid.end_ms,
         }
     }
     /// A short description for the log.
@@ -210,6 +215,7 @@ impl Scan {
                 format!("{} rays of {}", sweep.rays.len(), want.variant())
             }
             Scan::Grid(grid) => grid.describe(),
+            Scan::Mosaic(built) => format!("mosaic {}", built.grid.describe()),
         }
     }
 }
@@ -1022,6 +1028,9 @@ pub struct Config {
     /// The tilt store volumes are read through (S27); `None` reads every
     /// volume from SMHI, as before.
     pub store: Option<Arc<crate::tilts::Store>>,
+    /// Volumes a backfill reaches back, counting the live one, when not the
+    /// product's own depth (S25: a mosaic radar's hour, `poll_lowest`).
+    pub depth: Option<usize>,
 }
 
 impl Config {
@@ -1037,6 +1046,7 @@ impl Config {
             decode,
             want: Want::Lowest,
             store: None,
+            depth: None,
         }
     }
 }
@@ -1085,6 +1095,18 @@ pub async fn poll(
         }
     };
     poll_with(cfg, site, events, cached).await;
+}
+
+/// The lowest scan of radar `site`, through the tilt store, backfilling
+/// `depth` volumes counting the live one: one of My mosaic's radars (S25,
+/// `mosaic.rs`), whose events go to the mosaic, not to `main.rs`.
+pub async fn poll_lowest(site: String, events: Sender<Event>, known: Vec<i64>, depth: usize) {
+    let cfg = Config {
+        store: crate::tilts::shared(),
+        depth: Some(depth),
+        ..Config::smhi(decode)
+    };
+    poll_with(cfg, site, events, known).await;
 }
 
 /// Aborts its task when dropped, so a poller that is replaced takes its
@@ -1416,7 +1438,7 @@ async fn backfill(
         let loop_ = volumes
             .into_iter()
             .filter(|(t, _)| *t < live_ms && live_ms - *t < HORIZON_MS)
-            .take(BACKFILL - 1);
+            .take(cfg.depth.unwrap_or(BACKFILL).saturating_sub(1));
         for (valid_ms, key) in loop_ {
             if covered(valid_ms, &known) {
                 continue;
@@ -1463,7 +1485,9 @@ async fn backfill(
         }
     };
     // The lowest scan backfills the whole ring, another product an hour.
-    let depth = cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL);
+    let depth = cfg
+        .depth
+        .unwrap_or_else(|| cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL));
     if needs_yesterday(listed.len(), depth) {
         match day(live_ms - 24 * 60 * 60 * 1000).await {
             Ok(earlier) => listed.extend(earlier),
@@ -2097,6 +2121,7 @@ mod tests {
             decode: stub_decode,
             want: Want::Lowest,
             store: None,
+            depth: None,
         }
     }
 

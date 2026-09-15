@@ -126,8 +126,9 @@ fn fixture_transport_and_shared_commands() {
     );
     // The 12 SMHI radars, ORD's 29 of Norway, Finland and Denmark (S15),
     // the national composite (protocol v2) and OPERA's Nordic composite
-    // (S16): every station says its kind, and the composites are the grids.
-    assert_eq!(sites.len(), 43);
+    // (S16) and My mosaic (S25): every station says its kind, and the
+    // composites are the grids.
+    assert_eq!(sites.len(), 44);
     assert!(
         sites
             .iter()
@@ -138,7 +139,7 @@ fn fixture_transport_and_shared_commands() {
         .filter(|s| s["kind"] == "grid")
         .map(|s| s["id"].as_str().unwrap())
         .collect();
-    assert_eq!(grids, ["sweden", "nordic"]);
+    assert_eq!(grids, ["sweden", "nordic", "mymosaic"]);
     let mut ids = std::collections::HashSet::new();
     for site in sites {
         assert!(ids.insert(site["id"].as_str().unwrap()));
@@ -241,7 +242,7 @@ fn fixture_transport_and_shared_commands() {
         offer("vara")["products"],
         json!(["REF", "HYBRID", "CAPPI", "CMAX"])
     );
-    for grid in ["sweden", "nordic"] {
+    for grid in ["sweden", "nordic", "mymosaic"] {
         assert_eq!(offer(grid)["products"], json!([]));
         assert_eq!(offer(grid)["elevations"], json!([]));
     }
@@ -275,6 +276,57 @@ fn fixture_transport_and_shared_commands() {
         assert_eq!(e["type"], "error");
         assert_eq!(e["command"], "set_product");
         assert!(e["message"].as_str().unwrap().contains(word), "{e}");
+    }
+    // S25: My mosaic. The station, what set_mosaic accepts, and the set as
+    // shared state, empty at first. A set is only state until `mymosaic` is
+    // selected, so nothing here reaches the network.
+    assert_eq!(
+        hello["mosaic"],
+        json!({"station":"mymosaic","maxSites":12,"minReachKm":25.0,
+               "rules":[{"id":"lowest","name":"Lowest beam"},{"id":"strongest","name":"Strongest"}]})
+    );
+    let mine = offer("mymosaic");
+    assert_eq!(
+        (&mine["kind"], &mine["provider"], &mine["products"]),
+        (&json!("grid"), &json!("mosaic"), &json!([]))
+    );
+    assert_eq!(sites.last().unwrap()["id"], "mymosaic");
+    assert_eq!(initial["mosaic"], json!({"sites":[],"rule":"lowest"}));
+    for (command, word) in [
+        (json!({"type":"set_mosaic","sites":[]}), "at least one"),
+        (json!({"type":"set_mosaic","sites":["sweden"]}), "composite"),
+        (
+            json!({"type":"set_mosaic","sites":["vara","sevax"]}),
+            "twice",
+        ),
+        (json!({"type":"set_mosaic","sites":["XXXX"]}), "XXXX"),
+        (
+            json!({"type":"set_mosaic","sites":[{"id":"vara","reachKm":10}]}),
+            "minimum",
+        ),
+        (
+            json!({"type":"set_mosaic","sites":["vara"],"rule":"mean"}),
+            "Unknown rule",
+        ),
+        (
+            json!({"type":"set_mosaic","sites":"vara"}),
+            "Invalid set_mosaic",
+        ),
+    ] {
+        send(&mut second, command);
+        let e = read(&mut second);
+        assert_eq!(e["type"], "error");
+        assert_eq!(e["command"], "set_mosaic");
+        assert!(e["message"].as_str().unwrap().contains(word), "{e}");
+    }
+    send(
+        &mut second,
+        json!({"type":"set_mosaic","sites":[{"id":"sevax"},{"id":"nohur","reachKm":150},"dksin"]}),
+    );
+    let chosen = json!({"sites":[{"id":"vara","reachKm":240.0},{"id":"nohur","reachKm":150.0},
+                                 {"id":"dksin","reachKm":238.0}],"rule":"lowest"});
+    for client in [&mut first, &mut second] {
+        state(client, |s| s["mosaic"] == chosen);
     }
     first
         .get_mut()

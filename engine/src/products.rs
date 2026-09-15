@@ -263,9 +263,12 @@ impl Want {
 pub fn variant_of(frame_id: &str) -> &str {
     let last = frame_id.rsplit('-').next().unwrap_or_default();
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let hex8 = |s: &str| s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit());
     let product = matches!(last, "cmax" | "clear")
         || last.strip_prefix("cappi").is_some_and(digits)
-        || last.strip_prefix('a').is_some_and(digits);
+        || last.strip_prefix('a').is_some_and(digits)
+        // S25: a My mosaic set (`mosaic::Set::variant`).
+        || last.strip_prefix('m').is_some_and(hex8);
     if product { last } else { "e0" }
 }
 

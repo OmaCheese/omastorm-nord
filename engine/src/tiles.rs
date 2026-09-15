@@ -817,9 +817,9 @@ mod tests {
                 .iter()
                 .map(|&(x, y)| {
                     let (lon, lat) = (f64::from(x) * QUANTUM, f64::from(y) * QUANTUM);
-                    let hit = boxes.iter().position(|&[w, e, s, n]| {
-                        (s..=n).contains(&lat) && (w..=e).contains(&lon)
-                    });
+                    let hit = boxes
+                        .iter()
+                        .position(|&[w, e, s, n]| (s..=n).contains(&lat) && (w..=e).contains(&lon));
                     if let Some(b) = hit {
                         per_box[b] += 1;
                     }
@@ -881,7 +881,11 @@ mod tests {
             ("las palmas de", "Las Palmas de Gran Canaria", "ES"),
         ] {
             let hit = first(query).unwrap_or_else(|| panic!("{query}: nothing"));
-            assert_eq!((hit.name.as_str(), hit.country.as_str()), (name, country), "{query}");
+            assert_eq!(
+                (hit.name.as_str(), hit.country.as_str()),
+                (name, country),
+                "{query}"
+            );
         }
         // The regions are GeoNames' admin-1 names.
         let sevilla = first("sevilla").expect("Sevilla");

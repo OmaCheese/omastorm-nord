@@ -59,10 +59,8 @@ const COUNTRIES: [&str; 12] = [
 /// forms (Hälsingborg, Döderhultsvik), so this stays an explicit list
 /// (Spain and Portugal checked 2026-09-15: only Lisbon; bilingual names
 /// such as "Donostia / San Sebastián" are GeoNames' own and stay).
-const LOCAL_NAMES: &[(&str, &str, &str)] = &[
-    ("SE", "Gothenburg", "Göteborg"),
-    ("PT", "Lisbon", "Lisboa"),
-];
+const LOCAL_NAMES: &[(&str, &str, &str)] =
+    &[("SE", "Gothenburg", "Göteborg"), ("PT", "Lisbon", "Lisboa")];
 /// Natural Earth names in the gazetteer's countries that are misspelled or
 /// exonyms against GeoNames (Nordic checked 2026-09-14, Iberia 2026-09-15,
 /// by nearest GeoNames place and name); the map's low-zoom labels use the

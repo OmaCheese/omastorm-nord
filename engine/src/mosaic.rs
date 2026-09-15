@@ -1892,6 +1892,15 @@ pub fn newest_due(now: i64) -> i64 {
     (now - DUE_MS).div_euclid(CADENCE_MS) * CADENCE_MS
 }
 
+/// A radar's cadence in ms (S32 review M1): an ORD station's country's
+/// (AEMET's 10 minutes), else `CADENCE_MS`.
+fn cadence_ms(station: &Station) -> i64 {
+    match station.provider {
+        ProviderId::Ord => crate::providers::ord::cadence_for(station).as_millis() as i64,
+        _ => CADENCE_MS,
+    }
+}
+
 /// What one scan cost to read.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Cost {
@@ -1976,6 +1985,9 @@ pub struct Schedule {
     /// S31: frame times given up on (`forget`), done as far as the fill's
     /// progress is concerned.
     dropped: BTreeSet<i64>,
+    /// S32 review M1/S2: each radar's cadence, ms (AEMET's 10 minutes, else
+    /// `CADENCE_MS`): the frame times it publishes for (`expects`).
+    cadences: Vec<i64>,
 }
 
 /// S31: how far a fill has come (`Schedule::fill`): volumes `done` of
@@ -2034,6 +2046,7 @@ impl Schedule {
         Schedule {
             silent: vec![false; ranges.len()],
             dropped: BTreeSet::new(),
+            cadences: vec![CADENCE_MS; ranges.len()],
             ranges,
             scans: BTreeMap::new(),
             built: cached.iter().copied().collect(),
@@ -2050,6 +2063,80 @@ impl Schedule {
         self
     }
 
+    /// S32 review M1: each radar's cadence in ms, in the radars' order (a
+    /// multiple of `CADENCE_MS`; `CADENCE_MS` for every radar by default).
+    pub fn with_cadences(mut self, cadences: Vec<i64>) -> Schedule {
+        if cadences.len() == self.ranges.len() {
+            self.cadences = cadences
+                .into_iter()
+                .map(|c| c.max(CADENCE_MS) / CADENCE_MS * CADENCE_MS)
+                .collect();
+        }
+        self
+    }
+
+    /// Whether radar `radar` publishes a scan for frame time `t`: every
+    /// `CADENCE_MS` for most; AEMET's only on the 10-minute marks.
+    fn expects(&self, radar: usize, t: i64) -> bool {
+        t.rem_euclid(self.cadences[radar]) == 0
+    }
+
+    /// A frame time no radar of the set publishes for (a :x5 time of a set
+    /// of Spanish radars only): not in the window, never built, never
+    /// waited for (review M1: the fill used to wait for it for good).
+    fn void(&self, t: i64) -> bool {
+        (0..self.ranges.len()).all(|r| !self.expects(r, t))
+    }
+
+    /// Review S2: for a time radar `radar` does not publish for, its newest
+    /// scan within its own cadence before `t`, with that scan's time, so a
+    /// mixed set's :x5 frames keep the Spanish radars' :x0 scans.
+    fn carried(&self, radar: usize, t: i64) -> Option<(&Have, i64)> {
+        if self.expects(radar, t) {
+            return None;
+        }
+        self.scans
+            .range(t - self.cadences[radar] + 1..t)
+            .rev()
+            .find_map(|(when, v)| v[radar].as_ref().map(|h| (h, *when)))
+    }
+
+    /// Each radar's scan time for frame `t`: `t`, or its carried scan's.
+    pub fn times(&self, t: i64) -> Vec<i64> {
+        (0..self.ranges.len())
+            .map(|r| {
+                if self.has(r, t) {
+                    t
+                } else {
+                    self.carried(r, t).map_or(t, |(_, when)| when)
+                }
+            })
+            .collect()
+    }
+
+    /// The radars `t` takes a carried scan from, with that scan's time.
+    pub fn carried_at(&self, t: i64) -> Vec<Option<i64>> {
+        (0..self.ranges.len())
+            .map(|r| {
+                (!self.has(r, t))
+                    .then(|| self.carried(r, t).map(|(_, when)| when))
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// The newest due frame time some radar publishes for.
+    fn newest_frame_due(&self, now: i64) -> i64 {
+        let mut t = newest_due(now);
+        for _ in 0..12 {
+            if !self.void(t) {
+                break;
+            }
+            t -= CADENCE_MS;
+        }
+        t
+    }
+
     /// The oldest frame time the selection builds.
     fn oldest(&self, now: i64) -> i64 {
         newest_due(now) - (self.depth as i64 - 1) * CADENCE_MS
@@ -2061,7 +2148,7 @@ impl Schedule {
         let due = newest_due(now);
         let pending = (self.oldest(now)..=due)
             .step_by(CADENCE_MS as usize)
-            .find(|t| !self.built.contains(t))
+            .find(|t| !self.built.contains(t) && !self.void(*t))
             .unwrap_or(due);
         pending - OUTER_MS
     }
@@ -2140,12 +2227,19 @@ impl Schedule {
     /// (`settled`).
     /// A radar its poller calls silent is not waited for (S31); a time with
     /// no scan at all is never complete.
+    /// S32 review S2: a radar that does not publish for `t` is in with its
+    /// carried scan.
     fn complete(&self, t: i64) -> bool {
         self.scans.get(&t).is_some_and(|v| {
             v.iter().any(Option::is_some)
-                && v.iter().enumerate().all(|(radar, have)| {
-                    have.as_ref()
-                        .map_or(self.silent[radar], |h| self.settled(radar, t, &h.sweep))
+                && v.iter().enumerate().all(|(radar, have)| match have {
+                    Some(h) => self.settled(radar, t, &h.sweep),
+                    None => {
+                        self.silent[radar]
+                            || self
+                                .carried(radar, t)
+                                .is_some_and(|(h, when)| self.settled(radar, when, &h.sweep))
+                    }
                 })
         })
     }
@@ -2172,7 +2266,12 @@ impl Schedule {
     pub fn fill(&self, now: i64) -> Option<Fill> {
         let due = newest_due(now);
         let oldest = self.oldest(now);
-        let window: Vec<i64> = (oldest..=due).step_by(CADENCE_MS as usize).collect();
+        // Review M1: not the times no radar of the set publishes for.
+        let window: Vec<i64> = (oldest..=due)
+            .step_by(CADENCE_MS as usize)
+            .filter(|t| !self.void(*t))
+            .collect();
+        let due = window.last().copied().unwrap_or(due);
         let counted: Vec<usize> = (0..self.ranges.len())
             .filter(|r| !self.silent[*r])
             .collect();
@@ -2187,7 +2286,12 @@ impl Schedule {
             let built = (window.len() - open.len()) as u32;
             let held: u32 = open
                 .iter()
-                .map(|&t| counted.iter().filter(|&&r| self.has(r, t)).count() as u32)
+                .map(|&t| {
+                    counted
+                        .iter()
+                        .filter(|&&r| self.has(r, t) || self.carried(r, t).is_some())
+                        .count() as u32
+                })
                 .sum();
             return Some(Fill {
                 stage: crate::loading::Stage::History,
@@ -2213,27 +2317,31 @@ impl Schedule {
         for t in window.iter().copied().chain(later).filter(|t| !finished(t)) {
             let (mut done, mut total) = (0u32, 0u32);
             for &r in &counted {
+                // S32 review M1: a radar's volumes come at its own cadence,
+                // and its scan for `t` is its own time at or before `t`.
+                let step = self.cadences[r];
+                let tr = t - t.rem_euclid(step);
                 let newest = newest_in_hand(r);
                 // Review SF2: a radar whose newest scan is older than `t`
                 // (SMHI's listing lagging, its poller probing forward) brings
                 // its volumes from there up to `t`: each probe counts.
-                if let Some(behind) = newest.filter(|n| *n < t) {
-                    total += ((t - behind) / CADENCE_MS) as u32 + 1;
+                if let Some(behind) = newest.filter(|n| *n < tr) {
+                    total += ((tr - behind) / step) as u32 + 1;
                     done += self
                         .scans
-                        .range(behind..=t)
+                        .range(behind..=tr)
                         .filter(|(_, v)| v[r].is_some())
                         .count() as u32;
                     continue;
                 }
-                let top = newest.unwrap_or((due + CADENCE_MS).max(t));
-                let need = ((top - t) / CADENCE_MS) as u32 + 1;
+                let top = newest.unwrap_or((due + step).max(tr));
+                let need = ((top - tr) / step) as u32 + 1;
                 total += need;
-                done += if self.has(r, t) {
+                done += if self.has(r, tr) {
                     need
-                } else if top > t {
+                } else if top > tr {
                     self.scans
-                        .range(t + 1..=top)
+                        .range(tr + 1..=top)
                         .filter(|(_, v)| v[r].is_some())
                         .count() as u32
                 } else {
@@ -2254,7 +2362,10 @@ impl Schedule {
             done,
             total,
             t,
-            radars_in: counted.iter().filter(|&&r| self.has(r, t)).count(),
+            radars_in: counted
+                .iter()
+                .filter(|&&r| self.has(r, t) || self.carried(r, t).is_some())
+                .count(),
             counted: counted.len(),
             silent,
             built: 0,
@@ -2343,7 +2454,7 @@ impl Schedule {
 
     /// Whether every due frame is built (the newest due included).
     pub fn caught_up(&self, now: i64) -> bool {
-        self.built.contains(&newest_due(now))
+        self.built.contains(&self.newest_frame_due(now))
     }
 
     pub fn is_built(&self, t: i64) -> bool {
@@ -2385,17 +2496,30 @@ impl Schedule {
         let mut owned = Vec::with_capacity(n);
         let mut costs = Vec::with_capacity(n);
         for radar in 0..n {
-            let Some(have) = self.scans.get(&t).and_then(|v| v[radar].as_ref()) else {
-                owned.push(None);
-                costs.push(None);
-                continue;
+            let own = self.scans.get(&t).and_then(|v| v[radar].as_ref());
+            // S32 review S2: else its carried scan, paid for by its own frame.
+            let (have, when, cost) = match (own, self.carried(radar, t)) {
+                (Some(have), _) => (have, t, have.cost),
+                (None, Some((have, when))) => (
+                    have,
+                    when,
+                    Cost {
+                        from_store: true,
+                        ..Cost::default()
+                    },
+                ),
+                (None, None) => {
+                    owned.push(None);
+                    costs.push(None);
+                    continue;
+                }
             };
             let outer = self
                 .short(radar, &have.sweep)
-                .then(|| self.outer(radar, t, &have.sweep))
+                .then(|| self.outer(radar, when, &have.sweep))
                 .flatten();
             owned.push(Some((have.sweep.clone(), outer)));
-            costs.push(Some(have.cost));
+            costs.push(Some(cost));
         }
         (owned, costs)
     }
@@ -2415,6 +2539,7 @@ impl Schedule {
 /// `scripts/soak-report.sh` reads them.
 /// `unread` names radars whose volume the tilt store no longer had when a
 /// height frame was built (S30): missing too.
+#[cfg(test)]
 fn provenance(
     layout: &Layout,
     t_ms: i64,
@@ -2422,13 +2547,30 @@ fn provenance(
     costs: &[Option<Cost>],
     unread: &[String],
 ) -> String {
+    provenance_with(layout, t_ms, owned, costs, unread, &[])
+}
+
+/// `provenance`, naming the radars whose scan is carried from their own
+/// earlier time (S32 review S2: `esahr (its 12:00Z scan)`).
+fn provenance_with(
+    layout: &Layout,
+    t_ms: i64,
+    owned: &Owned,
+    costs: &[Option<Cost>],
+    unread: &[String],
+    carried: &[Option<i64>],
+) -> String {
     let mut parts = Vec::new();
     let mut missing = Vec::new();
     let (mut requests, mut bytes, mut total, mut fetched) = (0, 0, 0, false);
-    for ((radar, input), cost) in layout.radars.iter().zip(owned).zip(costs) {
+    for (i, ((radar, input), cost)) in layout.radars.iter().zip(owned).zip(costs).enumerate() {
         let id = radar.station.id.as_str();
         match (input, cost) {
             (Some(_), Some(_)) if unread.iter().any(|u| u == id) => missing.push(id),
+            (Some(_), Some(_)) if carried.get(i).copied().flatten().is_some() => {
+                let when = carried[i].unwrap_or(t_ms);
+                parts.push(format!("{id} (its {} scan)", utc(when, "%H:%MZ")));
+            }
             (Some((_, outer)), Some(cost)) => {
                 let mut part = id.to_owned();
                 if cost.from_store {
@@ -2574,7 +2716,7 @@ type Loaded = Vec<Option<(Vec<Tilt>, Option<Vec<Tilt>>)>>;
 
 fn load_volumes(
     layout: &Layout,
-    t: i64,
+    times: &[i64],
     owned: &Owned,
     store: Option<&crate::tilts::Store>,
 ) -> Loaded {
@@ -2582,7 +2724,8 @@ fn load_volumes(
         .radars
         .iter()
         .zip(owned)
-        .map(|(radar, input)| {
+        .zip(times)
+        .map(|((radar, input), &t)| {
             let (_, outer) = input.as_ref()?;
             let store = store?;
             let id = &radar.station.id;
@@ -2598,13 +2741,26 @@ fn load_volumes(
 /// The height frame for `t` (S30) from the volumes `store` holds of each
 /// radar's `owned` scans, with the radars whose volume it lacks; `None`
 /// when it holds none of them (review #6: never an empty frame).
+#[cfg(test)]
 fn assemble_height(
     layout: &Layout,
     t: i64,
     owned: &Owned,
     store: Option<&crate::tilts::Store>,
 ) -> (Option<Built>, Vec<String>) {
-    let loaded = load_volumes(layout, t, owned, store);
+    assemble_height_at(layout, t, &vec![t; layout.radars.len()], owned, store)
+}
+
+/// `assemble_height` with each radar's volume read at its own scan time
+/// (S32 review S2: a carried scan's).
+fn assemble_height_at(
+    layout: &Layout,
+    t: i64,
+    times: &[i64],
+    owned: &Owned,
+    store: Option<&crate::tilts::Store>,
+) -> (Option<Built>, Vec<String>) {
+    let loaded = load_volumes(layout, times, owned, store);
     let unread: Vec<String> = layout
         .radars
         .iter()
@@ -2630,9 +2786,21 @@ fn assemble_height(
 /// A composite's frame for `t` (S24b) from the volumes `store` holds of
 /// each radar's `owned` scans, read back radar by radar, with the radars
 /// whose volume it lacks; `None` when it holds none of them.
+#[cfg(test)]
 fn assemble_grid(
     layout: &Layout,
     t: i64,
+    owned: &Owned,
+    store: Option<&crate::tilts::Store>,
+) -> (Option<Built>, Vec<String>) {
+    assemble_grid_at(layout, t, &vec![t; layout.radars.len()], owned, store)
+}
+
+/// `assemble_grid` with each radar's volume read at its own scan time.
+fn assemble_grid_at(
+    layout: &Layout,
+    t: i64,
+    times: &[i64],
     owned: &Owned,
     store: Option<&crate::tilts::Store>,
 ) -> (Option<Built>, Vec<String>) {
@@ -2640,7 +2808,8 @@ fn assemble_grid(
     let combined = combine_grid(layout, |i| {
         let (_, outer) = owned.get(i)?.as_ref()?;
         let id = &layout.radars[i].station.id;
-        let Some(primary) = store.and_then(|s| volume_of(s, id, t)) else {
+        let at = times.get(i).copied().unwrap_or(t);
+        let Some(primary) = store.and_then(|s| volume_of(s, id, at)) else {
             unread.push(id.clone());
             return None;
         };
@@ -2681,6 +2850,7 @@ async fn build_and_send(
     if owned.iter().all(Option::is_none) {
         return true;
     }
+    let (times, carried) = (schedule.times(t), schedule.carried_at(t));
     let again = schedule.is_late(t);
     let newest = schedule.newest_built().is_none_or(|n| t >= n);
     let have = owned.iter().filter(|o| o.is_some()).count();
@@ -2706,11 +2876,11 @@ async fn build_and_send(
             // S24b: every composite product is made from the tilt store,
             // radar by radar.
             let store = crate::tilts::shared();
-            let (built, unread) = assemble_grid(&shared, t, &owned, store.as_deref());
+            let (built, unread) = assemble_grid_at(&shared, t, &times, &owned, store.as_deref());
             (built, owned, unread)
         } else if shared.set.rule == Rule::Height {
             let store = crate::tilts::shared();
-            let (built, unread) = assemble_height(&shared, t, &owned, store.as_deref());
+            let (built, unread) = assemble_height_at(&shared, t, &times, &owned, store.as_deref());
             (built, owned, unread)
         } else {
             let inputs: Vec<Option<Input>> = owned
@@ -2745,7 +2915,7 @@ async fn build_and_send(
         schedule.forget(t);
         return true;
     };
-    let provenance = provenance(layout, t, &owned, &costs, &unread);
+    let provenance = provenance_with(layout, t, &owned, &costs, &unread, &carried);
     if !unread.is_empty() {
         log_for(
             &site,
@@ -2885,7 +3055,15 @@ async fn run(
         .collect();
     let now = now_ms();
     let depth = layout.backfill();
-    let mut schedule = Schedule::new(ranges, &cached).with_depth(depth);
+    // S32 review M1: each radar's own cadence (AEMET's 10 minutes).
+    let cadences = layout
+        .radars
+        .iter()
+        .map(|r| cadence_ms(&r.station))
+        .collect();
+    let mut schedule = Schedule::new(ranges, &cached)
+        .with_depth(depth)
+        .with_cadences(cadences);
     // S31: radars an earlier fill heard were silent are not waited for now;
     // their pollers would say so again only after their first listing.
     for (i, radar) in layout.radars.iter().enumerate() {
@@ -3674,6 +3852,117 @@ mod tests {
             (layout.width, layout.height, PIXEL_M)
         );
         assert!(g.west < 10.0 && g.east > 12.9 && g.north > 59.7 && g.south < 57.4);
+    }
+
+    #[test]
+    fn a_spanish_only_set_fills_its_ten_minute_times_and_ends() {
+        // S32 review M1: AEMET's radars publish on the 10-minute marks only.
+        // The :x5 times are not in the window, so the fill ends (state.loading
+        // clears) once the :x0 times are built, and the set is caught up.
+        let ten = 2 * CADENCE_MS;
+        let t0 = 1_800_000_000_000 - 1_800_000_000_000 % ten;
+        let now = t0 + CADENCE_MS + DUE_MS; // the newest due time is a :x5
+        let have = |t| Have {
+            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+            cost: Cost::default(),
+        };
+        let mut s = Schedule::new(vec![5_000.0; 2], &[])
+            .with_depth(4)
+            .with_cadences(vec![ten; 2]);
+        let first = s.fill(now).unwrap();
+        assert_eq!(
+            (first.stage, first.t, first.window),
+            (crate::loading::Stage::First, t0, 2)
+        );
+        for t in [t0 - ten, t0] {
+            s.add(0, t, have(t), now, true);
+            s.add(1, t, have(t), now, true);
+        }
+        let ready = s.ready(now);
+        assert_eq!(ready, [t0, t0 - ten], "each :x0 complete, no :x5");
+        s.mark_built(t0);
+        let history = s.fill(now).unwrap();
+        assert_eq!(
+            (history.stage, history.built, history.window),
+            (crate::loading::Stage::History, 1, 2)
+        );
+        s.mark_built(t0 - ten);
+        assert_eq!(s.fill(now), None, "the fill ends: state.loading clears");
+        assert!(s.caught_up(now));
+        // The same radars at the default cadence would wait for the :x5
+        // times for good (the stuck ~50 %).
+        let mut five = Schedule::new(vec![5_000.0; 2], &[]).with_depth(4);
+        for t in [t0 - ten, t0] {
+            five.add(0, t, have(t), now, true);
+            five.add(1, t, have(t), now, true);
+            five.mark_built(t);
+        }
+        assert!(five.fill(now).is_some() && !five.caught_up(now));
+    }
+
+    #[test]
+    fn a_mixed_set_s_five_minute_frames_carry_the_ten_minute_radar() {
+        // S32 review S2: a Nordic radar every 5 minutes beside a Spanish one
+        // every 10. The :x5 frame is complete with the Spanish radar's :x0
+        // scan, carried and named in the provenance, instead of built on the
+        // quiet path without it.
+        let (a, b) = (radar("ra", 57.5, 10.0, 5.0), radar("rb", 57.6, 10.2, 5.0));
+        let sites = vec![a, b];
+        let set = Set {
+            sites: vec![
+                SiteReach {
+                    id: "ra".into(),
+                    reach_km: 5.0,
+                },
+                SiteReach {
+                    id: "rb".into(),
+                    reach_km: 5.0,
+                },
+            ],
+            rule: Rule::Lowest,
+            ..Set::default()
+        };
+        let layout = Layout::new(&set, &sites).unwrap();
+        let ten = 2 * CADENCE_MS;
+        let t0 = 1_800_000_000_000 - 1_800_000_000_000 % ten;
+        let x5 = t0 + CADENCE_MS;
+        let now = x5 + DUE_MS;
+        let have = |t| Have {
+            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+            cost: Cost {
+                requests: 1,
+                bytes: 10,
+                total: 10,
+                from_store: false,
+            },
+        };
+        let mut s = Schedule::new(vec![5_000.0; 2], &[])
+            .with_depth(2)
+            .with_cadences(vec![CADENCE_MS, ten]);
+        s.add(0, t0, have(t0), now, true);
+        s.add(1, t0, have(t0), now, true);
+        s.add(0, x5, have(x5), now, true);
+        assert_eq!(
+            s.ready(now),
+            [x5, t0],
+            "the :x5 frame without waiting for quiet"
+        );
+        assert_eq!(s.times(x5), [x5, t0]);
+        assert_eq!(s.carried_at(x5), [None, Some(t0)]);
+        let (owned, costs) = s.inputs(x5);
+        assert!(owned.iter().all(Option::is_some));
+        let text = provenance_with(&layout, x5, &owned, &costs, &[], &s.carried_at(x5));
+        assert!(
+            text.contains(&format!("rb (its {} scan)", utc(t0, "%H:%MZ"))),
+            "{text}"
+        );
+        assert!(text.ends_with("1 range requests, 10 of 10 bytes"), "{text}");
+        // A Spanish time not yet in hand: the Nordic radar alone waits for it.
+        let mut early = Schedule::new(vec![5_000.0; 2], &[])
+            .with_depth(2)
+            .with_cadences(vec![CADENCE_MS, ten]);
+        early.add(0, x5, have(x5), now, true);
+        assert!(!early.complete(x5));
     }
 
     #[test]

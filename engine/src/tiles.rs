@@ -887,9 +887,11 @@ mod tests {
                 "{query}"
             );
         }
-        // The regions are GeoNames' admin-1 names.
+        // The regions are GeoNames' admin-1 names, in Spanish where GeoNames
+        // gives them in English (build.rs `REGION_LOCAL`).
         let sevilla = first("sevilla").expect("Sevilla");
-        assert_eq!(sevilla.region, "Andalusia");
+        assert_eq!(sevilla.region, "Andalucía");
+        assert_eq!(first("lleida").expect("Lleida").region, "Cataluña");
         // Madeira and the Azores lie outside every box: no radar reaches them.
         assert!(first("funchal").is_none());
     }

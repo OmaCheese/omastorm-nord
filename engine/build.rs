@@ -61,6 +61,22 @@ const COUNTRIES: [&str; 12] = [
 /// such as "Donostia / San Sebastián" are GeoNames' own and stay).
 const LOCAL_NAMES: &[(&str, &str, &str)] =
     &[("SE", "Gothenburg", "Göteborg"), ("PT", "Lisbon", "Lisboa")];
+/// GeoNames' admin-1 names that are English, by code: the regions read in
+/// the local language (S32; the same list as `scripts/fetch-ord-sites.sh`
+/// uses for the radars' regions).
+const REGION_LOCAL: &[(&str, &str)] = &[
+    ("ES.51", "Andalucía"),
+    ("ES.52", "Aragón"),
+    ("ES.53", "Canarias"),
+    ("ES.54", "Castilla-La Mancha"),
+    ("ES.55", "Castilla y León"),
+    ("ES.56", "Cataluña"),
+    ("ES.59", "País Vasco"),
+    ("ES.60", "Comunitat Valenciana"),
+    ("ES.07", "Illes Balears"),
+    ("ES.32", "Navarra"),
+    ("PT.14", "Lisboa"),
+];
 /// Natural Earth names in the gazetteer's countries that are misspelled or
 /// exonyms against GeoNames (Nordic checked 2026-09-14, Iberia 2026-09-15,
 /// by nearest GeoNames place and name); the map's low-zoom labels use the
@@ -211,6 +227,10 @@ fn write_gazetteer(raw: &Path, out: &Path) {
             continue;
         };
         if !code.is_empty() && !name.is_empty() {
+            let name = REGION_LOCAL
+                .iter()
+                .find(|(c, _)| *c == code)
+                .map_or(name, |(_, local)| *local);
             admin1.insert(code.to_owned(), name.to_owned());
         }
     }

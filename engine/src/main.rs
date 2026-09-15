@@ -1039,6 +1039,15 @@ impl Shared {
                 );
             }
         };
+        // S32: no terrain under this radar (a Spanish one): a height above
+        // the ground is one above sea level, and `state.product` says so.
+        let choice = match choice.above {
+            Some(products::Above::Ground) if !products::has_terrain(&station) => products::Choice {
+                above: Some(products::Above::Sea),
+                ..choice
+            },
+            _ => choice,
+        };
         let Some(want) = products::want_for(&station, &choice) else {
             let at = if elevation_index > 0 {
                 format!(" at elevation index {elevation_index}")

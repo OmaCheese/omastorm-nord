@@ -189,9 +189,9 @@ const SHORT: f64 = 0.75;
 /// The sphere the lookup rule measures ground distance and bearing on.
 const SPHERE_M: f64 = 6_371_000.0;
 /// Ground distances are kept in units of this many metres.
-const UNIT_M: f64 = 10.0;
+pub(crate) const UNIT_M: f64 = 10.0;
 /// Past a radar's reach, or no ray or gate.
-const NONE: u16 = u16::MAX;
+pub(crate) const NONE: u16 = u16::MAX;
 /// A texture side longer than this is refused (the Nordic composite is
 /// 2297; twelve radars across the Nordics stay under about 2,600).
 const MAX_SIDE: u32 = 4096;
@@ -574,7 +574,7 @@ pub const SPEC: Spec = Spec {
 // Placement
 // ---------------------------------------------------------------------------
 
-fn mercator_x(lon: f64) -> f64 {
+pub(crate) fn mercator_x(lon: f64) -> f64 {
     MERCATOR_R * lon.to_radians()
 }
 
@@ -637,6 +637,21 @@ pub struct Radar {
     /// (`NONE` past the reach) and bearing in tenths of a degree.
     dist: Vec<u16>,
     az: Vec<u16>,
+}
+
+impl Radar {
+    /// S24c (`grid3d.rs`): every texel of its part within the reach, as
+    /// (column, row) on the layout's texture, ground distance in `UNIT_M`
+    /// and bearing in tenths of a degree.
+    pub(crate) fn texels(&self) -> impl Iterator<Item = (usize, usize, usize, u16)> + '_ {
+        (0..self.h).flat_map(move |rr| {
+            (0..self.w).filter_map(move |cc| {
+                let k = rr * self.w + cc;
+                let d = self.dist[k];
+                (d != NONE).then(|| (self.c0 + cc, self.r0 + rr, usize::from(d), self.az[k]))
+            })
+        })
+    }
 }
 
 /// What a layout is made for (S24b): My mosaic's set, or a provider
@@ -1136,18 +1151,18 @@ fn lowest_key(height_m: i32, d: usize) -> u64 {
 /// per ground distance unit up to the reach, its gate (`NONE` off its
 /// gates) and its beam centre's height above the antenna, metres, at its
 /// own angle (`where/elangle`, as a radar's `CAPPI` takes it).
-struct Beam<'a> {
-    deg: f64,
-    sweep: &'a Sweep,
-    rows: Vec<u16>,
-    gate: Vec<u16>,
-    height: Vec<f64>,
+pub(crate) struct Beam<'a> {
+    pub(crate) deg: f64,
+    pub(crate) sweep: &'a Sweep,
+    pub(crate) rows: Vec<u16>,
+    pub(crate) gate: Vec<u16>,
+    pub(crate) height: Vec<f64>,
     /// The first distance unit at or past its far edge.
-    edge: usize,
+    pub(crate) edge: usize,
 }
 
 impl<'a> Beam<'a> {
-    fn new(tilt: &'a Tilt, reach_m: f64) -> Beam<'a> {
+    pub(crate) fn new(tilt: &'a Tilt, reach_m: f64) -> Beam<'a> {
         let units = (reach_m / UNIT_M).round() as usize + 1;
         let e = tilt.elangle.to_radians();
         let sweep = &tilt.sweep;

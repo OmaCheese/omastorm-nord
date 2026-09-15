@@ -51,9 +51,10 @@ pub const ATTRIBUTION: &str = "EUMETNET OPERA, CC BY 4.0";
 pub const IBERIA_ATTRIBUTION: &str = "EUMETNET OPERA (AEMET, IPMA, Météo-France), CC BY 4.0";
 /// The public 24-hour cache of EUMETNET's Open Radar Data.
 pub const BASE: &str = "https://s3.waw3-1.cloudferro.com/openradar-24h";
-/// A stand-in for `BASE` (tests and offline replays against a local copy
-/// of the cache); unset, the provider reads `BASE`.
-pub const BASE_ENV: &str = "OMASTORM_OPERA_URL";
+/// Development only (S33, like S32's `OMASTORM_ORD_BASE`): points the
+/// provider at a stand-in for `BASE`, for tests and offline replays against
+/// a local copy of the cache. Unset (always, in use), it reads `BASE`.
+pub const BASE_ENV: &str = "OMASTORM_OPERA_BASE";
 /// What the texture covers: the embedded geography's box (`engine/build.rs`,
 /// 3–33° E, 53–71.5° N), 1670 × 2297 texels of 2 km (DEC-14).
 pub const NORDIC: LonLatBox = LonLatBox {

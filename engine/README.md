@@ -157,7 +157,8 @@ the chosen radars) and S24b (the vertical products on `sweden`/`nordic`):
   the store, `BACKFILL + 1` deep via `Config.depth`) on a private channel.
   Scans are keyed by `nominal_ms` (the start rounded to 5 minutes).
   `Schedule` decides when: a frame time is built once, as soon as every
-  radar has it, or once it is `DUE_MS` (7 min) old and no scan has arrived
+  radar has it (a short scan together with the longer scan its far ring
+  comes from), or once it is `DUE_MS` (7 min) old and no scan has arrived
   for `QUIET_MS` (30 s); the newest `BACKFILL` (12) due times the catalog
   lacks, newest first. Frames go to `main.rs` as `Scan::Mosaic` events and
   are catalogued like a composite's (code texture included). The log says

@@ -881,7 +881,8 @@ and the gate is one of its gates. Then, with no averaging:
   so the far ring does not blink every other frame; the provenance says so.
 
 **Timing and cost.** The frame for T is built once: as soon as every
-chosen radar's scan for T is in, or else from the scans that have arrived
+chosen radar's scan for T is in (with, for a short DMI scan, the longer
+scan its far ring comes from), or else from the scans that have arrived
 once it is T + 7 minutes and no scan has come in for 30 seconds. A radar
 missing from a frame is named in its provenance, and its area is nodata
 there unless another radar covers it. A missing scan that arrives later

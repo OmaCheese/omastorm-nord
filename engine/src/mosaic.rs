@@ -848,6 +848,11 @@ impl Cost {
     }
 }
 
+/// The far edge of a scan's last gate, metres of slant range.
+fn edge_m(s: &Sweep) -> f64 {
+    f64::from(s.first_gate_m) + f64::from(s.gates) * f64::from(s.gate_spacing_m)
+}
+
 /// One radar's scan at one time.
 #[derive(Clone)]
 pub struct Have {
@@ -930,10 +935,37 @@ impl Schedule {
             .collect()
     }
 
+    /// Whether every radar's scan for `t` is in, and for a short scan the
+    /// longer one its far ring comes from: a backfill delivers newest
+    /// first, so a short scan's older long one may still be on its way.
     fn complete(&self, t: i64) -> bool {
+        self.scans.get(&t).is_some_and(|v| {
+            v.iter().enumerate().all(|(radar, have)| {
+                have.as_ref().is_some_and(|h| {
+                    !self.short(radar, &h.sweep) || self.outer(radar, t, &h.sweep).is_some()
+                })
+            })
+        })
+    }
+
+    /// A scan that reaches less than `SHORT` of its radar's full range.
+    fn short(&self, radar: usize, sweep: &Sweep) -> bool {
+        edge_m(sweep) < SHORT * self.ranges[radar]
+    }
+
+    /// For radar `radar`'s scan `sweep` at `t`: its latest clearly longer
+    /// scan up to `OUTER_MS` older, with that scan's time.
+    fn outer(&self, radar: usize, t: i64, sweep: &Sweep) -> Option<(Arc<Sweep>, i64)> {
+        let reach = edge_m(sweep);
         self.scans
-            .get(&t)
-            .is_some_and(|v| v.iter().all(Option::is_some))
+            .range(t - OUTER_MS..t)
+            .rev()
+            .find_map(|(when, v)| {
+                v[radar]
+                    .as_ref()
+                    .filter(|o| edge_m(&o.sweep) > reach * 1.25)
+                    .map(|o| (o.sweep.clone(), *when))
+            })
     }
 
     /// The frame times to build now, newest first: each of the last
@@ -980,9 +1012,6 @@ impl Schedule {
     /// radar's cost at `t`.
     pub fn inputs(&self, t: i64) -> (Owned, Vec<Option<Cost>>) {
         let n = self.ranges.len();
-        let edge = |s: &Sweep| {
-            f64::from(s.first_gate_m) + f64::from(s.gates) * f64::from(s.gate_spacing_m)
-        };
         let mut owned = Vec::with_capacity(n);
         let mut costs = Vec::with_capacity(n);
         for radar in 0..n {
@@ -991,19 +1020,9 @@ impl Schedule {
                 costs.push(None);
                 continue;
             };
-            let reach = edge(&have.sweep);
-            let outer = (reach < SHORT * self.ranges[radar])
-                .then(|| {
-                    self.scans
-                        .range(t - OUTER_MS..t)
-                        .rev()
-                        .find_map(|(when, v)| {
-                            v[radar]
-                                .as_ref()
-                                .filter(|o| edge(&o.sweep) > reach * 1.25)
-                                .map(|o| (o.sweep.clone(), *when))
-                        })
-                })
+            let outer = self
+                .short(radar, &have.sweep)
+                .then(|| self.outer(radar, t, &have.sweep))
                 .flatten();
             owned.push(Some((have.sweep.clone(), outer)));
             costs.push(Some(have.cost));
@@ -1896,6 +1915,14 @@ mod tests {
         lone.add(0, t - 3 * CADENCE_MS, have(120, 475, 0), t, true);
         lone.add(0, t, have(90, 239, t), t, true);
         assert!(lone.inputs(t).0[0].as_ref().unwrap().1.is_none());
+        // A backfill delivers newest first: a short scan whose long one is
+        // not in yet does not make its frame complete; the long one does.
+        let now = t + 60_000;
+        let mut order = Schedule::new(vec![237_500.0], &[], now);
+        order.add(0, t, have(90, 239, t), now, true);
+        assert!(!order.ready(now).contains(&t), "waiting for the far ring");
+        order.add(0, t - CADENCE_MS, have(120, 475, t - CADENCE_MS), now, true);
+        assert!(order.ready(now).contains(&t), "the far ring is in");
     }
 
     #[test]
@@ -1917,7 +1944,7 @@ mod tests {
         let s = |m: i64| t + m * 60_000;
         // Two radars; the catalog holds the hour before T.
         let cached: Vec<i64> = (1..=BACKFILL as i64).map(|k| t - k * CADENCE_MS).collect();
-        let mut schedule = Schedule::new(vec![240_000.0; 2], &cached, s(5));
+        let mut schedule = Schedule::new(vec![5_000.0; 2], &cached, s(5));
         schedule.add(0, t, have(), s(5), true);
         assert!(schedule.ready(s(6)).is_empty(), "one of two, not due");
         schedule.add(1, t, have(), s(6), true);

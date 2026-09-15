@@ -240,8 +240,9 @@ float gridLight(vec2 tc, float c, float lat, float cellM) {
                      ((nw + 2.0 * n + ne) - (sw + 2.0 * so + se)) / (8.0 * s * texM));
 }
 void main() {
-    // Every treatment paints 3 px screen cells; each cell samples the gate
-    // under its center, so the lookup below runs once per cell, not per texel.
+    // Every treatment paints 3 px screen cells; each fragment looks up the
+    // gate under its cell's centre, so a cell's pixels agree (the lookup,
+    // and the relief below, run per fragment, not once per cell).
     vec2 pixel = qt_TexCoord0 * viewport;
     vec2 samplePixel = floor(pixel / 3.0) * 3.0 + 1.5;
     if (kind == 1) {

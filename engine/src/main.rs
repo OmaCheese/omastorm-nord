@@ -788,14 +788,17 @@ impl Shared {
         self.show_entry(&entry)
     }
     /// The selected station's staleness thresholds, from its provider's
-    /// cadence; SMHI's before any station is selected.
+    /// cadence (an ORD station's from its country's, S32); SMHI's before any
+    /// station is selected.
     fn staleness(&self) -> Staleness {
-        let provider = self
-            .sites
-            .iter()
-            .find(|s| s.id == self.state.site.id)
-            .map_or(providers::ProviderId::Smhi, |s| s.provider);
-        providers::spec(provider).staleness
+        let station = self.sites.iter().find(|s| s.id == self.state.site.id);
+        match station {
+            Some(s) if s.provider == providers::ProviderId::Ord => providers::ord::staleness_for(s),
+            _ => {
+                let provider = station.map_or(providers::ProviderId::Smhi, |s| s.provider);
+                providers::spec(provider).staleness
+            }
+        }
     }
     /// Age of the newest radial received for the live station: the sweep
     /// in progress while one paints, else the newest complete frame.

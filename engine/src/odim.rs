@@ -34,7 +34,12 @@
 //! - **Ray times.** `how/startazT`/`stopazT` (SMHI), else the dataset's
 //!   nominal `startdate`/`starttime` and `enddate`/`endtime` (ORD).
 //! - **Range.** The first gate's centre is `rstart` (km) + `rscale` / 2:
-//!   250 m for SMHI and FMI, 125 m for MET Norway, 750 m for DMI.
+//!   250 m for SMHI and FMI, 125 m for MET Norway, 750 m for DMI. AEMET
+//!   (Spain, S32) writes `rstart` in metres, 200 for a first bin 200 m out
+//!   (`rstart_km`): 700 m for its 1 km gates.
+//! - **Float storage with its own markers (S32).** AEMET stores `TH` then
+//!   `DBZH` as float64 with gain 1, offset 0, `undetect` −32 and `nodata`
+//!   95.5 (IRIS's byte range, 0.5 dB steps); read like any storage.
 //! - **Other angles (S20).** `decode_tilts` reads every scan's `where`, lets
 //!   `products::needed` pick the scans a product needs, and decodes those
 //!   alike (`products.rs`).
@@ -304,7 +309,7 @@ pub fn decode_tilts<R: Read + Seek + Send + 'static>(
         infos.push(TiltInfo {
             elangle: need(&where_, &wpath, "elangle")?,
             // As `sweep_at` writes them into the sweep.
-            first_gate_m: (rstart * 1000.0 + rscale / 2.0).round() as u32,
+            first_gate_m: (rstart_km(rstart) * 1000.0 + rscale / 2.0).round() as u32,
             gate_spacing_m: rscale.round() as u32,
             gates: u16::try_from(bins).map_err(|_| fail(format!("{wpath}: {bins} bins")))?,
         });
@@ -441,12 +446,30 @@ fn sweep_at(file: &File, ds: &str) -> Result<Sweep, OdimError> {
         start_ms,
         end_ms,
         gates,
-        first_gate_m: (rstart * 1000.0 + rscale / 2.0).round() as u32,
+        first_gate_m: (rstart_km(rstart) * 1000.0 + rscale / 2.0).round() as u32,
         gate_spacing_m: rscale.round() as u32,
         scale: SCALE,
         offset: OFFSET,
         code1_status: OUTSIDE_COVERAGE,
     })
+}
+
+/// A `where/rstart` at or above this is metres, not ODIM's kilometres.
+const RSTART_METRES_FROM: f64 = 50.0;
+
+/// `where/rstart` in kilometres. ODIM says kilometres; AEMET's files (Vaisala
+/// IRIS 10.5 exports, ODIM 2.4) write metres: 200 for a first bin 200 m out.
+/// Read as kilometres, its long-range task (PRF 560 Hz, so 268 km
+/// unambiguous, 250 bins of 1 km) would start at 200 km and its Doppler task
+/// (299 bins of 500 m) at 200 km too, both beyond what their pulse rates
+/// can see. No radar starts its first bin tens of kilometres out, so any
+/// value from `RSTART_METRES_FROM` up is taken as metres.
+pub fn rstart_km(rstart: f64) -> f64 {
+    if rstart >= RSTART_METRES_FROM {
+        rstart / 1000.0
+    } else {
+        rstart
+    }
 }
 
 fn site(file: &File) -> Result<OdimSite, OdimError> {

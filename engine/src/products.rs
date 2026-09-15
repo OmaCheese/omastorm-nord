@@ -511,6 +511,10 @@ const DK_ANGLES: [f64; 10] = [0.5, 0.7, 1.0, 1.5, 2.4, 4.8, 8.4, 10.0, 13.0, 15.
 const FI_ANGLES: [f64; 5] = [0.3, 0.7, 1.5, 3.0, 5.0];
 const FI_ANGLES_KORPPOO: [f64; 5] = [0.5, 0.7, 1.5, 3.0, 5.0];
 const FI_ANGLES_LUOSTO: [f64; 5] = [0.1, 0.7, 1.5, 3.0, 5.0];
+/// AEMET's long-range volume (S32, `esahr@20260915T1850@0.5_1.3_2.1@DBZH_TH`),
+/// the same at all 11 radars in ORD's listings of 2026-09-15; the Doppler
+/// volume at :x7 is not read (`ord::one_task`).
+const ES_ANGLES: [f64; 3] = [0.5, 1.3, 2.1];
 
 /// A station's nominal angles, ascending: empty for a composite. FMI's
 /// radars publish a file per angle, which the ORD poller reads as one
@@ -521,6 +525,7 @@ pub fn nominal_angles(station: &Station) -> &'static [f64] {
         (_, ProviderId::Smhi, _) => &SMHI_ANGLES,
         (_, ProviderId::Ord, "NO") => &NO_ANGLES,
         (_, ProviderId::Ord, "DK") => &DK_ANGLES,
+        (_, ProviderId::Ord, "ES") => &ES_ANGLES,
         (_, ProviderId::Ord, "FI") => match station.id.as_str() {
             "fikor" => &FI_ANGLES_KORPPOO,
             "filuo" => &FI_ANGLES_LUOSTO,

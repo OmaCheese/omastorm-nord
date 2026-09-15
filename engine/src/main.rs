@@ -2000,8 +2000,10 @@ fn report(shared: &Mutex<Shared>, site: &str, reason: &str, condition: Connectio
     }
     eprintln!("{} Live {site}: {reason}", iso(now_ms()));
     set(&mut shared.state.connection.status, condition);
-    // S31: no first frame is coming; a history under way goes on.
-    shared.loading.quiet(Instant::now());
+    // S31: no first frame is coming; offline, no stage stays (review NIT5).
+    shared
+        .loading
+        .quiet(Instant::now(), condition == ConnectionStatus::Offline);
     shared.broadcast();
 }
 /// Sections and profiles (S24c): on a wake (a `set_section`, a `profile`)

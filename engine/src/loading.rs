@@ -147,6 +147,9 @@ pub struct Tracker {
     /// A radar's frames backfilled since the load began, and its plan.
     backfilled: u32,
     planned: Option<u32>,
+    /// The composite under a made first stage, for that stage shown again
+    /// after an offline spell (review NIT5).
+    under: Option<Frame>,
     /// A radar's backfill ended (review NIT4): its history stage finishes
     /// as soon as it shows, even if that is after the first stage's linger.
     ended: bool,
@@ -190,7 +193,8 @@ impl Tracker {
                 format!("{name}: placing the radars"),
             ),
         };
-        first.under = under;
+        first.under = under.clone();
+        self.under = under;
         self.current = Some(first);
     }
 
@@ -388,6 +392,7 @@ impl Tracker {
                 self.set_stage(
                     Some(Loading {
                         percent: capped,
+                        under: self.under.clone(),
                         ..counts
                     }),
                     now,
@@ -406,9 +411,20 @@ impl Tracker {
         }
     }
 
-    /// The feed went quiet or offline before the first frame: nothing to
-    /// wait for in that stage.
-    pub fn quiet(&mut self, now: Instant) {
+    /// The feed went silent before the first frame: nothing to wait for in
+    /// that stage (a history under way goes on). Offline (review NIT5): no
+    /// stage stays while no request can succeed; one starts again with the
+    /// feed (a backfill's plan, a made fill's next report).
+    pub fn quiet(&mut self, now: Instant, offline: bool) {
+        if offline {
+            if self.current.is_some() || self.next.is_some() {
+                self.current = None;
+                self.next = None;
+                self.finished_at = None;
+                self.urgent = true;
+            }
+            return;
+        }
         if self
             .current
             .as_ref()
@@ -533,6 +549,33 @@ mod tests {
     /// first frame's 100 lingers (a tilt store with every frame, no
     /// backfill delay): the history stage then shows its real count and
     /// finishes, rather than a stale count that never ends.
+    /// Review NIT5: offline, no stage stays (a history no request can
+    /// finish); the feed back, the next plan or report starts it again.
+    #[test]
+    fn offline_clears_any_stage_and_the_feed_starts_it_again() {
+        let t0 = Instant::now();
+        let mut t = Tracker::default();
+        t.begin(Kind::Radar, "Vara Reflectivity 0.5°", true, None);
+        t.plan("Vara Reflectivity 0.5°", 11, at(t0, 0));
+        assert_eq!(t.wire(at(t0, 0)).unwrap().stage, Stage::History);
+        t.quiet(at(t0, 100), false);
+        assert!(t.wire(at(t0, 100)).is_some(), "silence leaves a history");
+        t.quiet(at(t0, 200), true);
+        assert_eq!(t.wire(at(t0, 200)), None, "offline clears it");
+        t.plan("Vara Reflectivity 0.5°", 4, at(t0, 300));
+        assert_eq!(t.wire(at(t0, 300)).unwrap().total, 4);
+        let frame: Frame = serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
+        t.begin(Kind::Made, "Nordic Rain mass", false, Some(frame));
+        t.quiet(at(t0, 400), true);
+        assert_eq!(t.wire(at(t0, 400)), None);
+        t.progress(report(Stage::First, 5, 10), at(t0, 500));
+        let back = t.wire(at(t0, 500)).unwrap();
+        assert_eq!(
+            (back.stage, back.percent, back.under.is_some()),
+            (Stage::First, 50, true)
+        );
+    }
+
     #[test]
     fn a_backfill_inside_the_linger_shows_and_finishes() {
         let t0 = Instant::now();
@@ -577,7 +620,7 @@ mod tests {
         let mut t = Tracker::default();
         t.begin(Kind::Radar, "Kiruna Reflectivity 0.5°", false, None);
         assert!(t.wire(t0).is_some());
-        t.quiet(at(t0, 100));
+        t.quiet(at(t0, 100), false);
         assert_eq!(t.wire(at(t0, 100)), None);
         t.begin(Kind::Radar, "Vara Reflectivity 0.5°", true, None);
         t.plan("Vara Reflectivity 0.5°", 0, at(t0, 200));

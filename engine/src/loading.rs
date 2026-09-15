@@ -487,13 +487,15 @@ mod tests {
             (Stage::History, 2, 11, 18)
         );
         assert_eq!(history.label, "Vara Reflectivity 0.5°: 2 of 11 frames");
-        for i in 0..9 {
+        for i in 0..8 {
             t.backfilled(at(t0, 1400 + i * 10));
         }
         // Counts wait for the throttle...
         assert_eq!(t.wire(at(t0, 1500)).unwrap().done, 2);
+        assert_eq!(t.wire(at(t0, 2300)).unwrap().done, 10);
         // ...and the last frame is sent at once.
-        assert_eq!(t.wire(at(t0, 2300)).unwrap().done, 11);
+        t.backfilled(at(t0, 2350));
+        assert_eq!(t.wire(at(t0, 2360)).unwrap().percent, 100);
         t.history_end(at(t0, 2400));
         assert_eq!(t.wire(at(t0, 2400)).unwrap().percent, 100);
         assert_eq!(t.wire(at(t0, 3500)), None);

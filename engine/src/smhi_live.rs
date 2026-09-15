@@ -1097,11 +1097,19 @@ pub async fn poll(
     poll_with(cfg, site, events, cached).await;
 }
 
-/// The lowest scan of radar `site`, through the tilt store, backfilling
-/// `depth` volumes counting the live one: one of My mosaic's radars (S25,
-/// `mosaic.rs`), whose events go to the mosaic, not to `main.rs`.
-pub async fn poll_lowest(site: String, events: Sender<Event>, known: Vec<i64>, depth: usize) {
+/// `want` (the lowest scan, or every scan for a height set, S30) of radar
+/// `site`, through the tilt store, backfilling `depth` volumes counting the
+/// live one: one of My mosaic's radars (S25, `mosaic.rs`), whose events go
+/// to the mosaic, not to `main.rs`.
+pub async fn poll_lowest(
+    site: String,
+    events: Sender<Event>,
+    known: Vec<i64>,
+    depth: usize,
+    want: Want,
+) {
     let cfg = Config {
+        want,
         store: crate::tilts::shared(),
         depth: Some(depth),
         ..Config::smhi(decode)

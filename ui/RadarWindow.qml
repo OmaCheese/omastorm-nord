@@ -251,7 +251,7 @@ Item {
             return site ? {id: s.id, lat: site.lat, lon: site.lon, km: Mosaic.reachOf(s, site)} : null;
         }).filter(c => c !== null)
     readonly property string mosaicLabel: !mosaicShown ? "" : !mosaicSet || !mosaicSet.sites.length ? "CHOOSE RADARS"
-        : Mosaic.ruleName(engine.mosaic ? engine.mosaic.rules : [], mosaicSet.rule).toUpperCase() + " / " + mosaicSet.sites.length + (mosaicSet.sites.length === 1 ? " RADAR" : " RADARS")
+        : Mosaic.setName(engine.mosaic ? engine.mosaic.rules : [], mosaicSet).toUpperCase() + " / " + mosaicSet.sites.length + (mosaicSet.sites.length === 1 ? " RADAR" : " RADARS")
     // SHOW in the checklist: My mosaic, centred on the chosen radars.
     function showMosaic(set) {
         if (!engine.mosaic) return;
@@ -288,15 +288,30 @@ Item {
         var st = engine.state;
         if (!st || !st.product) return "";
         var row = productRows.find(r => r.product === st.product.id && r.index === st.product.elevationIndex);
-        return (row ? row.label : st.product.id) + (heightM > 0 ? " " + heightM / 1000 + " KM" : "");
+        return (row ? row.label : st.product.id) + (heightM > 0 ? " " + heightM / 1000 + " KM" + (chosenAbove === "ground" ? " ABOVE GROUND" : "") : "");
     }
     function chooseProduct(row) {
         productMenu.close();
         var command = {type: "set_product", product: row.product, elevationIndex: row.index};
-        // Height again keeps the height on screen (S29); else the engine's
-        // default, 2 km.
+        // Height again keeps the height on screen (S29), and what it is
+        // measured from (S30); else the engine's default, 2 km above sea.
         if (row.product === "CAPPI" && heightM > 0) command.heightM = heightM;
+        if (row.product === "CAPPI" && groundOffered && chosenAbove === "ground") command.above = "ground";
         engine.send(command);
+    }
+    // S30: a height may be above the ground (hello.products' CAPPI entry
+    // says so; an older engine's does not, and the choice stays hidden).
+    readonly property bool groundOffered: {
+        var p = engine.products.find(x => x.id === "CAPPI");
+        return !!p && Array.isArray(p.above) && p.above.indexOf("ground") >= 0;
+    }
+    readonly property string chosenAbove: {
+        var p = engine.state && engine.state.product;
+        return p && p.id === "CAPPI" && p.above === "ground" ? "ground" : "sea";
+    }
+    function setAbove(above) {
+        if (!heightM || above === chosenAbove) return;
+        engine.send({type: "set_product", product: "CAPPI", heightM: heightM, above: above});
     }
     // S29: the Height product's height above sea level in 500 m steps, the
     // − and + of the product menu. A step shows at once and is sent when the
@@ -317,7 +332,9 @@ Item {
         id: heightSend
         interval: 350
         onTriggered: if (app.pendingHeight > 0 && app.pendingHeight !== app.chosenHeight)
-            engine.send({type: "set_product", product: "CAPPI", heightM: app.pendingHeight})
+            engine.send(app.groundOffered
+                ? {type: "set_product", product: "CAPPI", heightM: app.pendingHeight, above: app.chosenAbove}
+                : {type: "set_product", product: "CAPPI", heightM: app.pendingHeight})
     }
     Connections { target: engine; function onRejectionChanged() { if (engine.rejection) app.pendingHeight = 0; } }
     // S29: the reach, remembered per radar (Reach.qml): 25 km steps from
@@ -457,10 +474,13 @@ Item {
         function toggle(id: string): void { mosaicPicker.toggle(id); }
         function step(id: string, delta: int): void { if (id) mosaicPicker.stepReach(id, delta); else mosaicPicker.stepAll(delta); }
         function rule(id: string): void { mosaicPicker.setRule(id); }
+        // S30: the height rule's height (metres) and what it is above.
+        function height(m: int): void { mosaicPicker.setHeight(m); }
+        function above(id: string): void { mosaicPicker.setAbove(id); }
         function status(): string {
             return JSON.stringify({open: mosaicPicker.open, draft: mosaicPicker.draft, all: mosaicPicker.allText, rows: mosaicPicker.radars.length,
                                    circles: app.mosaicCircles.length, label: app.mosaicLabel, shown: app.mosaicShown,
-                                   command: engine.sites.length ? Mosaic.command(mosaicPicker.draft, engine.sites) : null});
+                                   command: engine.sites.length ? Mosaic.command(mosaicPicker.draft, engine.sites, engine.mosaic ? engine.mosaic.rules : null) : null});
         }
     }
     IpcHandler {
@@ -1442,7 +1462,8 @@ Item {
                         LabelText {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
-                            text: "HEIGHT ABOVE SEA · THE BEAM IS 1.7 KM THICK AT 100 KM, SO FINER STEPS REPEAT FAR OUT"
+                            text: (app.chosenAbove === "ground" ? "HEIGHT ABOVE THE GROUND UNDER EACH POINT" : "HEIGHT ABOVE SEA")
+                                + " · THE BEAM IS 1.7 KM THICK AT 100 KM, SO FINER STEPS REPEAT FAR OUT"
                             font.pixelSize: 9; opacity: .55
                         }
                         RowLayout {
@@ -1452,6 +1473,16 @@ Item {
                             LabelText { text: app.heightM / 1000 + " KM"; color: app.theme.accent; Layout.fillWidth: true }
                             MenuStep { label: "−"; enabled: app.heightM > 500; onActivated: app.stepHeight(-1) }
                             MenuStep { label: "+"; enabled: app.heightM < 12000; onActivated: app.stepHeight(1) }
+                        }
+                        // S30: measured from sea level or from the ground.
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 24
+                            spacing: 4
+                            visible: app.groundOffered
+                            LabelText { text: "FROM"; opacity: .6; Layout.fillWidth: true }
+                            MenuStep { label: "SEA"; enabled: app.chosenAbove !== "sea"; onActivated: app.setAbove("sea") }
+                            MenuStep { label: "GROUND"; enabled: app.chosenAbove !== "ground"; onActivated: app.setAbove("ground") }
                         }
                     }
                     ColumnLayout {

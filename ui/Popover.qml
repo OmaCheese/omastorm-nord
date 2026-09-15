@@ -145,6 +145,18 @@ FocusScope {
                 weakFloor: card.session.weakFloor
                 labelSize: 10
                 product: card.state ? card.state.product : null
+                // S30: a My mosaic height frame's holes are hatched only
+                // inside the chosen radars' reach (no circles drawn here).
+                hatchSites: {
+                    var st = card.state;
+                    if (!st || !st.mosaic || !st.mosaic.sites || !(connection.site && connection.site.provider === "mosaic")) return [];
+                    return st.mosaic.sites.map(s => {
+                        var r = connection.sites.find(x => x.id === s.id);
+                        if (!r) return null;
+                        var full = r.rangeKm > 0 ? r.rangeKm : 240;
+                        return { lat: r.lat, lon: r.lon, km: s.reachKm > 0 ? Math.min(s.reachKm, full) : full };
+                    }).filter(c => c !== null);
+                }
                 reachKm: reachStore.km(siteId)
                 radarOpacity: card.condition === "unavailable" ? .6 : 1
                 interactive: !card.session.needsLocation

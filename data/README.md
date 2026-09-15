@@ -193,6 +193,39 @@ same envelope, with admin-1 names from `admin1CodesASCII.txt`.
 not use this table. The city-list checksum covers the official 2026-09-10
 snapshot (69,705 records).
 
+### Terrain (S30)
+
+`engine/data/terrain-nordic-2km.bin`, the ground that heights "above
+ground" are measured from (`docs/protocol.md`, Terrain), is made by
+`scripts/terrain-grid.py` from Mapzen's **Terrain Tiles** (Terrarium PNG
+encoding, zoom 8), open data on AWS
+(<https://registry.opendata.aws/terrain-tiles/>,
+`s3.amazonaws.com/elevation-tiles-prod`), the same tiles
+`scripts/blockage-tables.py` reads for Clear view. The tiles are a blend of
+public elevation models, each with its own credit, listed in
+[joerd's attribution.md](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
+Over the Nordic box they include:
+
+- Kartverket's elevation model (Norway), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/);
+- the National Land Survey of Finland's elevation model, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/);
+- SDFE's elevation model (Denmark), under SDFE's free-data terms;
+- EU-DEM, "produced using Copernicus data and information funded by the
+  European Union";
+- and SRTM, GMTED2010 and ETOPO1 (public domain) where those are absent.
+
+Credit, as the README's "Data and licenses" and every above-ground frame's
+`attribution` give it: "terrain: Mapzen Terrain Tiles (AWS open data; Kartverket,
+NLS Finland, SDFE, EU-DEM/Copernicus)".
+
+Made on 2026-09-15: the box of every station-table radar's 250 km circle on
+the Web Mercator lattice of 2,000 m (1976 × 2556 texels, lattice column 16,
+north row 6034), each texel the mean of the zoom-8 pixels whose centres fall
+in it, sea and land below sea level as 0, in steps of 10 m (highest 2,230 m).
+729 tiles within reach of a radar were read (282 already in the blockage
+tables' cache, 447 fetched, 31.0 MB); the file is 1,025,185 bytes. To remake
+it: `uv run --no-project --with numpy --with pillow python
+scripts/terrain-grid.py --cache <dir>`.
+
 ## Fetching
 
 The engine embeds the Natural Earth geography and the GeoNames gazetteer at

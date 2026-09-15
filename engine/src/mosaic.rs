@@ -30,6 +30,17 @@
 //!   polled only while `mymosaic` is selected (`main.rs` starts `poll`),
 //!   through S27's tilt store first.
 //!
+//! At a height (S30): the `height` rule makes a slice at the set's height,
+//! above sea level or above the ground (`terrain.rs`), from each radar's
+//! **whole volume**: its pollers read every scan into the tilt store
+//! (`Want::ColMax`), the frame reads them back from the store when it is
+//! built (a volume is megabytes decoded; nothing but the lowest scan is
+//! held in memory), and per texel each radar's scan is chosen by the same
+//! height rule a radar's own `CAPPI` uses (`products::nearest_beam`), then
+//! the radar whose beam centre is nearest the height, the nearer on a tie
+//! (`combine_height`). A `height` set builds back `HEIGHT_BACKFILL` frame
+//! times, not `BACKFILL`, as a volume costs 5–6 times a lowest scan.
+//!
 //! Relation to S29's reach slider: the same unit (ground km from the
 //! antenna), range (25 km to full) and meaning, but S29 clips one radar on
 //! a client's screen, while `reachKm` here is applied by the engine before
@@ -37,7 +48,7 @@
 
 use crate::composite::{Grid, MERCATOR_R, OFFSET, PIXEL_M, SCALE, mercator_lat, mercator_y};
 use crate::odim::Tilt as Which;
-use crate::products::{EARTH_M, Want};
+use crate::products::{Above, EARTH_M, Tilt, Want, elevation_to, nearest_beam};
 use crate::protocol::{Frame, FrameKind, FrameStatus, Geometry, SiteKind, Station};
 use crate::providers::{Event, ProviderId, Scan, Spec, Staleness};
 use crate::sweep::Sweep;
@@ -59,9 +70,15 @@ pub const MAX_SITES: usize = 12;
 pub const MIN_REACH_KM: f64 = 25.0;
 /// Frame times a selection builds back, counting the newest: an hour.
 pub const BACKFILL: usize = 12;
-/// Each radar's poller reaches one volume further back than the mosaic, as
-/// its newest volume is usually one cadence ahead of the newest due frame.
-const RADAR_DEPTH: usize = BACKFILL + 1;
+/// A `height` set's with an SMHI radar (S30, `Layout::backfill`): an SMHI
+/// whole volume is ~39 range requests, 5–6 times its lowest scan
+/// (`docs/protocol.md`), so half an hour: twelve SMHI radars with an empty
+/// tilt store then read 12 × 7 volumes, about 3,300 requests, instead of
+/// 12 × 13, about 6,100. A set of ORD radars only (whole files, 1 request
+/// each) builds back `BACKFILL`.
+pub const HEIGHT_BACKFILL: usize = 6;
+/// Range requests an SMHI whole volume costs, for the first-fill estimate.
+const SMHI_VOLUME_REQUESTS: usize = 39;
 /// Every provider publishes a volume per radar every 5 minutes.
 pub const CADENCE_MS: i64 = 5 * 60 * 1000;
 /// The frame for T is due at T + 8 minutes (SMHI publishes 4–5 minutes
@@ -109,23 +126,30 @@ pub enum Rule {
     Lowest,
     /// The strongest return of any radar there.
     Strongest,
+    /// A slice at the set's height (S30, `Set::height_m`, `Set::above`):
+    /// per radar the scan the height rule picks, then the radar whose beam
+    /// centre is nearest the height, the nearer on a tie.
+    Height,
 }
 
 impl Rule {
-    pub const ALL: [Rule; 2] = [Rule::Lowest, Rule::Strongest];
+    pub const ALL: [Rule; 3] = [Rule::Lowest, Rule::Strongest, Rule::Height];
 
     pub fn id(self) -> &'static str {
         match self {
             Rule::Lowest => "lowest",
             Rule::Strongest => "strongest",
+            Rule::Height => "height",
         }
     }
 
-    /// The display name, also `frame.productName`.
+    /// The display name, also `frame.productName` (for `Height` the frame
+    /// names its height instead, `Set::product`).
     pub fn name(self) -> &'static str {
         match self {
             Rule::Lowest => "Lowest beam",
             Rule::Strongest => "Strongest",
+            Rule::Height => "Height",
         }
     }
 
@@ -181,6 +205,12 @@ pub struct SiteReach {
 pub struct Set {
     pub sites: Vec<SiteReach>,
     pub rule: Rule,
+    /// The `height` rule's height, metres, and what it is above (S30);
+    /// `None`, and not sent, for the other rules.
+    #[serde(rename = "heightM", skip_serializing_if = "Option::is_none")]
+    pub height_m: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub above: Option<Above>,
 }
 
 /// 64-bit FNV-1a: names a set, nothing cryptographic.
@@ -210,16 +240,35 @@ impl Set {
         key
     }
 
-    /// The same radars, reaches and rule, in any order.
+    /// The same radars, reaches and rule (and height), in any order.
     pub fn same(&self, other: &Set) -> bool {
-        self.rule == other.rule && self.key() == other.key()
+        self.rule == other.rule
+            && self.height_m == other.height_m
+            && self.above == other.above
+            && self.key() == other.key()
+    }
+
+    /// `frame.product` and `productName`: `REF` and the rule's name, or for
+    /// a height (S30) `CAPPI` and the height's name, as a radar's.
+    pub fn product(&self) -> (&'static str, String) {
+        match (self.rule, self.height_m) {
+            (Rule::Height, Some(m)) => (
+                crate::products::CAPPI,
+                crate::products::height_name(m, self.above.unwrap_or_default()),
+            ),
+            _ => (crate::products::REF, self.rule.name().to_owned()),
+        }
     }
 
     /// The last part of this set's frame ids and its catalog ring: `m` and
-    /// 8 hex digits of the radars, reaches and rule
-    /// (`products::variant_of` knows the form).
+    /// 8 hex digits of the radars, reaches and rule, and a height set's
+    /// height and what it is above (`products::variant_of` knows the form).
+    /// A set without a height is named as before S30.
     pub fn variant(&self) -> String {
         let mut text = String::from(self.rule.id());
+        if let Some(m) = self.height_m {
+            text.push_str(&format!(":{m}:{}", self.above.unwrap_or_default().id()));
+        }
         for (id, tenths) in self.key() {
             text.push_str(&format!("|{id}:{tenths}"));
         }
@@ -243,12 +292,38 @@ pub enum SiteArg {
 }
 
 /// What `set_mosaic` asks for, as `state.mosaic` will hold it, or the error
-/// its sender hears (`docs/protocol.md`, My mosaic).
+/// its sender hears (`docs/protocol.md`, My mosaic): `choose_with` and no
+/// height (the tests'; `main.rs` passes every field to `choose_with`).
+#[cfg(test)]
 pub fn choose(sites: &[Station], args: &[SiteArg], rule: Option<&str>) -> Result<Set, String> {
+    choose_with(sites, args, rule, None, None)
+}
+
+/// `choose` with the `height` rule's `heightM` and `above` (S30), checked
+/// exactly as `set_product` checks them for one radar (`products::choose`),
+/// and refused with any other rule.
+pub fn choose_with(
+    sites: &[Station],
+    args: &[SiteArg],
+    rule: Option<&str>,
+    height_m: Option<u32>,
+    above: Option<&str>,
+) -> Result<Set, String> {
     let rule = match rule {
         None => Rule::Lowest,
         Some(id) => Rule::parse(id)
             .ok_or_else(|| format!("Unknown rule {id}; rules are listed in hello.mosaic."))?,
+    };
+    let (height_m, above) = if rule == Rule::Height {
+        let choice = crate::products::choose(crate::products::CAPPI, 0, height_m, above)?;
+        (choice.height_m, choice.above)
+    } else if height_m.is_some() || above.is_some() {
+        return Err(format!(
+            "heightM and above go with the height rule only, not {}.",
+            rule.id()
+        ));
+    } else {
+        (None, None)
     };
     if args.is_empty() {
         return Err("Choose at least one radar for My mosaic.".into());
@@ -304,6 +379,8 @@ pub fn choose(sites: &[Station], args: &[SiteArg], rule: Option<&str>) -> Result
     Ok(Set {
         sites: chosen,
         rule,
+        height_m,
+        above,
     })
 }
 
@@ -370,7 +447,16 @@ pub fn load(sites: &[Station]) -> Set {
                 .collect()
         })
         .unwrap_or_default();
-    match choose(sites, &args, value["rule"].as_str()) {
+    let height = value["heightM"]
+        .as_u64()
+        .and_then(|m| u32::try_from(m).ok());
+    match choose_with(
+        sites,
+        &args,
+        value["rule"].as_str(),
+        height,
+        value["above"].as_str(),
+    ) {
         Ok(set) => {
             log(format_args!("kept set {} restored", set.variant()));
             set
@@ -478,6 +564,10 @@ pub struct Layout {
     pub south: f64,
     pub radars: Vec<Radar>,
     pub set: Set,
+    /// The Web Mercator lattice index of the west edge and of the north
+    /// edge (x = `.0` × `PIXEL_M`, y = `.1` × `PIXEL_M`): where the terrain
+    /// grid's texels (`terrain.rs`, the same lattice) meet this texture's.
+    pub lattice: (i64, i64),
 }
 
 impl Layout {
@@ -578,6 +668,10 @@ impl Layout {
             .collect();
         let east = (mx_west + f64::from(width) * PIXEL_M) / MERCATOR_R;
         Ok(Layout {
+            lattice: (
+                (mx_west / PIXEL_M).round() as i64,
+                (my_north / PIXEL_M).round() as i64,
+            ),
             width,
             height,
             west: (mx_west / MERCATOR_R).to_degrees(),
@@ -587,6 +681,21 @@ impl Layout {
             radars,
             set: set.clone(),
         })
+    }
+
+    /// Frame times this set builds back (review #8): `BACKFILL`, or
+    /// `HEIGHT_BACKFILL` for a height set with an SMHI radar, whose whole
+    /// volumes cost ~39 range requests each (an ORD file is 1).
+    pub fn backfill(&self) -> usize {
+        let smhi = self
+            .radars
+            .iter()
+            .any(|r| r.station.provider == ProviderId::Smhi);
+        if self.set.rule == Rule::Height && smhi {
+            HEIGHT_BACKFILL
+        } else {
+            BACKFILL
+        }
     }
 
     /// The middle of the texture's box, (lat, lon): `frame.site`.
@@ -737,7 +846,9 @@ pub fn combine(layout: &Layout, rule: Rule, inputs: &[Option<Input>]) -> (Vec<u8
                 };
                 let t = row_base + cc;
                 let key = match rule {
-                    Rule::Lowest => {
+                    // A height set is combined by `combine_height`; here it
+                    // would take the lowest beam.
+                    Rule::Lowest | Rule::Height => {
                         if code == 1 {
                             continue;
                         }
@@ -769,12 +880,223 @@ fn lowest_key(height_m: i32, d: usize) -> u64 {
     (((i64::from(height_m) + (1 << 24)) as u64) << 16) | d as u64
 }
 
+// ---------------------------------------------------------------------------
+// At a height (S30)
+// ---------------------------------------------------------------------------
+
+/// One scan of a radar's volume turned into lookups for the height rule:
+/// per ground distance unit up to the reach, its gate (`NONE` off its
+/// gates) and its beam centre's height above the antenna, metres, at its
+/// own angle (`where/elangle`, as a radar's `CAPPI` takes it).
+struct Beam<'a> {
+    deg: f64,
+    sweep: &'a Sweep,
+    rows: Vec<u16>,
+    gate: Vec<u16>,
+    height: Vec<f64>,
+    /// The first distance unit at or past its far edge.
+    edge: usize,
+}
+
+impl<'a> Beam<'a> {
+    fn new(tilt: &'a Tilt, reach_m: f64) -> Beam<'a> {
+        let units = (reach_m / UNIT_M).round() as usize + 1;
+        let e = tilt.elangle.to_radians();
+        let sweep = &tilt.sweep;
+        let (first, spacing) = (
+            f64::from(sweep.first_gate_m),
+            f64::from(sweep.gate_spacing_m.max(1)),
+        );
+        let gates = f64::from(sweep.gates);
+        let (mut gate, mut height, mut edge) =
+            (Vec::with_capacity(units), Vec::with_capacity(units), units);
+        for d in 0..units {
+            let theta = d as f64 * UNIT_M / EARTH_M;
+            let c = (e + theta).cos();
+            if c <= 1e-9 {
+                edge = edge.min(d);
+                gate.push(NONE);
+                height.push(f64::INFINITY);
+                continue;
+            }
+            let g = ((EARTH_M * theta.sin() / c - first) / spacing).round();
+            if g >= gates {
+                edge = edge.min(d);
+            }
+            gate.push(if g >= 0.0 && g < gates {
+                g as u16
+            } else {
+                NONE
+            });
+            height.push(EARTH_M * e.cos() / c - EARTH_M);
+        }
+        Beam {
+            deg: tilt.elangle,
+            sweep,
+            rows: rows_of(sweep),
+            gate,
+            height,
+            edge,
+        }
+    }
+}
+
+/// A radar's volume for one frame at a height: its scans, ascending by
+/// angle.
+struct Stack<'a> {
+    beams: Vec<Beam<'a>>,
+    /// Where its lowest scan ends: past it a short volume's far ring comes
+    /// from the longer one.
+    edge: usize,
+}
+
+impl<'a> Stack<'a> {
+    fn new(tilts: &'a [Tilt], reach_m: f64) -> Stack<'a> {
+        let beams: Vec<Beam> = tilts.iter().map(|t| Beam::new(t, reach_m)).collect();
+        let edge = beams.first().map_or(0, |b| b.edge);
+        Stack { beams, edge }
+    }
+
+    /// The height rule (`products::nearest_beam`) at distance unit `d` for
+    /// `target` metres above the antenna: the scan's index, `u8::MAX` for
+    /// none.
+    fn pick(&self, d: usize, target: f64) -> u8 {
+        let seen = elevation_to(d as f64 * UNIT_M, target);
+        let covering = self.beams.iter().enumerate().filter_map(|(k, b)| {
+            let g = *b.gate.get(d)?;
+            (g != NONE).then(|| (k, b.deg, b.height[d]))
+        });
+        nearest_beam(seen, target, covering).map_or(u8::MAX, |(k, _)| k as u8)
+    }
+
+    /// The pick at every distance unit for one target: above sea level it
+    /// depends on the distance alone.
+    fn picks(&self, target: f64, units: usize) -> Vec<u8> {
+        (0..units).map(|d| self.pick(d, target)).collect()
+    }
+}
+
+/// One radar's volumes for a frame at a height: its volume at T, scans
+/// ascending by angle, and for a short volume the longer one its far ring
+/// comes from.
+#[derive(Clone, Copy)]
+pub struct Volumes<'a> {
+    pub primary: &'a [Tilt],
+    pub outer: Option<&'a [Tilt]>,
+}
+
+/// Every texel's code under the `height` rule at `height_m` metres above
+/// sea level, or with `ground` above the terrain of each texel, from each
+/// radar's `inputs` (layout order; `None` for a radar with no volume), and
+/// which radar gave it (`u8::MAX` for none) (`docs/protocol.md`, My mosaic):
+/// per radar the scan the height rule picks at the texel; a radar with none,
+/// or whose pick is no data there, is no candidate; of the candidates, the
+/// one whose beam centre is nearest the height, to the metre, the nearer
+/// radar on a tie, and an exact tie the radar earlier in the set.
+pub fn combine_height(
+    layout: &Layout,
+    height_m: u32,
+    ground: bool,
+    inputs: &[Option<Volumes>],
+) -> (Vec<u8>, Vec<u8>) {
+    let width = layout.width as usize;
+    let n = width * layout.height as usize;
+    let mut codes = vec![1u8; n];
+    let mut owner = vec![u8::MAX; n];
+    let mut best = vec![u64::MAX; n];
+    let terrain = if ground { crate::terrain::grid() } else { None };
+    if ground && terrain.is_none() {
+        // Never with the embedded grid (terrain.rs parses it in its tests).
+        debug_assert!(
+            false,
+            "no terrain grid: above the ground falls back to sea level"
+        );
+        log("the terrain grid did not load: this frame is above sea level, not the ground");
+    }
+    for (index, (radar, input)) in layout.radars.iter().zip(inputs).enumerate() {
+        let Some(input) = input else { continue };
+        if input.primary.is_empty() {
+            continue;
+        }
+        // The target above this antenna, before the ground under a texel.
+        let base = f64::from(height_m) - radar.station.alt_m;
+        let primary = Stack::new(input.primary, radar.reach_m);
+        let outer = input
+            .outer
+            .filter(|o| !o.is_empty())
+            .map(|o| Stack::new(o, radar.reach_m));
+        let units = (radar.reach_m / UNIT_M).round() as usize + 1;
+        let flat: [Vec<u8>; 2] = match terrain {
+            None => [
+                primary.picks(base, units),
+                outer
+                    .as_ref()
+                    .map_or_else(Vec::new, |o| o.picks(base, units)),
+            ],
+            Some(_) => [Vec::new(), Vec::new()],
+        };
+        for rr in 0..radar.h {
+            let row = radar.r0 + rr;
+            let north = layout.lattice.1 - row as i64;
+            for cc in 0..radar.w {
+                let k = rr * radar.w + cc;
+                if radar.dist[k] == NONE {
+                    continue;
+                }
+                let d = usize::from(radar.dist[k]);
+                let (stack, side) = match &outer {
+                    Some(o) if d >= primary.edge => (o, 1),
+                    _ => (&primary, 0),
+                };
+                let (pick, target) = match terrain {
+                    None => (flat[side][d], base),
+                    Some(grid) => {
+                        let col = layout.lattice.0 + (radar.c0 + cc) as i64;
+                        let target = base + grid.texel(col, north);
+                        (stack.pick(d, target), target)
+                    }
+                };
+                if pick == u8::MAX {
+                    continue;
+                }
+                let beam = &stack.beams[usize::from(pick)];
+                let ray = beam.rows[usize::from(radar.az[k])];
+                let code = if ray == NONE {
+                    1
+                } else {
+                    beam.sweep.rays[usize::from(ray)].codes[usize::from(beam.gate[d])]
+                };
+                if code == 1 {
+                    continue;
+                }
+                let key = height_key((beam.height[d] - target).abs(), d);
+                let t = row * width + radar.c0 + cc;
+                if key < best[t] {
+                    best[t] = key;
+                    codes[t] = code;
+                    owner[t] = index as u8;
+                }
+            }
+        }
+    }
+    (codes, owner)
+}
+
+/// The height rule's order of two radars: the beam centre nearer the
+/// height (to the metre) first, then the nearer radar (distance units); the
+/// lower key wins.
+fn height_key(miss_m: f64, d: usize) -> u64 {
+    ((miss_m.round().min(f64::from(u32::MAX)) as u64) << 24) | d as u64
+}
+
 /// A built frame: the grid, and what names and credits it.
 pub struct Built {
     pub grid: Grid,
     /// `Set::variant`, the frame id's last part.
     pub variant: String,
-    pub rule: Rule,
+    /// `frame.product` and `productName` (`Set::product`).
+    pub product: &'static str,
+    pub product_name: String,
     /// Every owner the frame drew on, joined by `; `.
     pub attribution: String,
     /// (lat, lon) of the box's middle: `frame.site`.
@@ -782,16 +1104,49 @@ pub struct Built {
 }
 
 /// The frame for T from each radar's `inputs` (layout order; `None` for a
-/// missing radar).
+/// missing radar), under the lowest-scan rules.
 pub fn build(layout: &Layout, t_ms: i64, inputs: &[Option<Input>]) -> Built {
-    let rule = layout.set.rule;
-    let (codes, _) = combine(layout, rule, inputs);
+    let (codes, _) = combine(layout, layout.set.rule, inputs);
+    let ends: Vec<Option<i64>> = inputs
+        .iter()
+        .map(|i| i.as_ref().map(|i| i.primary.end_ms))
+        .collect();
+    built(layout, t_ms, codes, &ends)
+}
+
+/// The frame for T at the set's height (S30) from each radar's volumes.
+pub fn build_height(layout: &Layout, t_ms: i64, inputs: &[Option<Volumes>]) -> Built {
+    let height = layout
+        .set
+        .height_m
+        .unwrap_or(crate::products::HEIGHT_DEFAULT_M);
+    let ground = layout.set.above == Some(Above::Ground);
+    let (codes, _) = combine_height(layout, height, ground, inputs);
+    let ends: Vec<Option<i64>> = inputs
+        .iter()
+        .map(|i| {
+            i.as_ref().map(|v| {
+                v.primary
+                    .iter()
+                    .map(|t| t.sweep.end_ms)
+                    .max()
+                    .unwrap_or(t_ms)
+            })
+        })
+        .collect();
+    built(layout, t_ms, codes, &ends)
+}
+
+/// A frame of `codes`, credited to the radars that had a scan (`ends`,
+/// each one's latest end).
+fn built(layout: &Layout, t_ms: i64, codes: Vec<u8>, ends: &[Option<i64>]) -> Built {
+    let (product, product_name) = layout.set.product();
     let mut owners: Vec<&str> = Vec::new();
     let mut used = Vec::new();
     let mut end_ms = t_ms;
-    for (radar, input) in layout.radars.iter().zip(inputs) {
-        if let Some(input) = input {
-            end_ms = end_ms.max(input.primary.end_ms);
+    for (radar, end) in layout.radars.iter().zip(ends) {
+        if let Some(end) = end {
+            end_ms = end_ms.max(*end);
             used.push(radar.station.id.as_str());
             if !owners.contains(&radar.station.attribution.as_str()) {
                 owners.push(&radar.station.attribution);
@@ -810,11 +1165,17 @@ pub fn build(layout: &Layout, t_ms: i64, inputs: &[Option<Input>]) -> Built {
             east: layout.east,
             north: layout.north,
             south: layout.south,
-            source_projdef: format!("My mosaic, {}: {}", rule.name(), used.join(", ")),
+            source_projdef: format!("My mosaic, {product_name}: {}", used.join(", ")),
         },
         variant: layout.set.variant(),
-        rule,
-        attribution: owners.join("; "),
+        product,
+        product_name,
+        // A height above the ground credits the terrain too (S30).
+        attribution: if layout.set.rule == Rule::Height && layout.set.above == Some(Above::Ground) {
+            format!("{}; {}", owners.join("; "), crate::terrain::CREDIT)
+        } else {
+            owners.join("; ")
+        },
         centre: layout.centre(),
     }
 }
@@ -837,8 +1198,13 @@ pub fn frame(template: &Frame, station: &Station, built: &Built) -> Frame {
             built.variant
         ),
         kind: FrameKind::Grid,
-        product: template.product.clone(),
-        product_name: built.rule.name().to_owned(),
+        // A height slice is `CAPPI` (S30), so clients hatch its holes.
+        product: if built.product == crate::products::REF {
+            template.product.clone()
+        } else {
+            built.product.to_owned()
+        },
+        product_name: built.product_name.clone(),
         units: template.units.clone(),
         elevation_deg: 0.0,
         scan_time: utc(grid.start_ms, "%Y-%m-%dT%H:%M:%SZ"),
@@ -891,6 +1257,20 @@ pub struct Cost {
 }
 
 impl Cost {
+    /// Two reads of one volume together (S30: a product and its free
+    /// lowest scan). From the store when neither made a request and either
+    /// came from it: the free scan's provenance reads as 0 requests, not as
+    /// the store's (review #5).
+    pub fn plus(self, other: Cost) -> Cost {
+        let requests = self.requests + other.requests;
+        Cost {
+            requests,
+            bytes: self.bytes + other.bytes,
+            total: self.total.max(other.total),
+            from_store: requests == 0 && (self.from_store || other.from_store),
+        }
+    }
+
     /// A poller's provenance: `…: N range requests, B of T bytes`, or the
     /// tilt store's.
     pub fn of(provenance: &str) -> Cost {
@@ -942,11 +1322,14 @@ pub struct Schedule {
     /// When a scan last arrived (or the tilt store gave some); `None`
     /// before any: the quiet path needs one (review #1).
     last_arrival: Option<i64>,
+    /// Frame times a selection builds back (`Set::backfill`).
+    depth: usize,
 }
 
 impl Schedule {
     /// `ranges`: each radar's full range in metres; `cached`: frame times
-    /// this set's catalog already holds.
+    /// this set's catalog already holds. Builds back `BACKFILL` frame
+    /// times; `with_depth` for another depth.
     pub fn new(ranges: Vec<f64>, cached: &[i64]) -> Schedule {
         Schedule {
             ranges,
@@ -955,19 +1338,26 @@ impl Schedule {
             late: BTreeSet::new(),
             rebuilt: BTreeSet::new(),
             last_arrival: None,
+            depth: BACKFILL,
         }
     }
 
+    /// The same, building back `depth` frame times (S30: a height set's).
+    pub fn with_depth(mut self, depth: usize) -> Schedule {
+        self.depth = depth.max(1);
+        self
+    }
+
     /// The oldest frame time the selection builds.
-    fn oldest(now: i64) -> i64 {
-        newest_due(now) - (BACKFILL as i64 - 1) * CADENCE_MS
+    fn oldest(&self, now: i64) -> i64 {
+        newest_due(now) - (self.depth as i64 - 1) * CADENCE_MS
     }
 
     /// The oldest scan time worth keeping: the frames still to build, and
     /// the far rings they may take from older scans.
     pub fn floor(&self, now: i64) -> i64 {
         let due = newest_due(now);
-        let pending = (Schedule::oldest(now)..=due)
+        let pending = (self.oldest(now)..=due)
             .step_by(CADENCE_MS as usize)
             .find(|t| !self.built.contains(t))
             .unwrap_or(due);
@@ -1011,8 +1401,22 @@ impl Schedule {
         self.last_arrival.get_or_insert(now);
     }
 
+    /// Radar `radar`'s scan at `t` came again (S30: a height set's volume
+    /// arrives as its product and its free lowest scan): its cost counts
+    /// too, and it is an arrival.
+    pub fn add_cost(&mut self, radar: usize, t: i64, cost: Cost, now: i64) {
+        let held = self
+            .scans
+            .get_mut(&t)
+            .and_then(|v| v.get_mut(radar))
+            .and_then(Option::as_mut);
+        if let Some(have) = held {
+            have.cost = have.cost.plus(cost);
+            self.last_arrival = Some(now);
+        }
+    }
+
     /// Whether radar `radar` has a scan at `t`.
-    #[cfg(test)]
     pub fn has(&self, radar: usize, t: i64) -> bool {
         self.scans
             .get(&t)
@@ -1099,7 +1503,7 @@ impl Schedule {
                 .get(&t)
                 .is_some_and(|v| v.iter().any(Option::is_some))
         };
-        let mut ready: Vec<i64> = (Schedule::oldest(now)..=due)
+        let mut ready: Vec<i64> = (self.oldest(now)..=due)
             .step_by(CADENCE_MS as usize)
             .filter(|&t| !self.built.contains(&t) && (self.complete(t) || (quiet && held(t))))
             .collect();
@@ -1132,6 +1536,13 @@ impl Schedule {
     /// Whether `t` is to be built again for a late scan.
     pub fn is_late(&self, t: i64) -> bool {
         self.late.contains(&t)
+    }
+
+    /// Give up on frame time `t` (S30: the tilt store holds none of its
+    /// volumes): its scans go, so it is not ready again.
+    pub fn forget(&mut self, t: i64) {
+        self.scans.remove(&t);
+        self.late.remove(&t);
     }
 
     /// `t` was built and sent: the first time, or its one late rebuild.
@@ -1184,13 +1595,22 @@ impl Schedule {
 /// missing ones and the far rings; one `N range requests, B of T bytes` at
 /// the end, or the tilt store's words when no scan cost a request, as
 /// `scripts/soak-report.sh` reads them.
-fn provenance(layout: &Layout, t_ms: i64, owned: &Owned, costs: &[Option<Cost>]) -> String {
+/// `unread` names radars whose volume the tilt store no longer had when a
+/// height frame was built (S30): missing too.
+fn provenance(
+    layout: &Layout,
+    t_ms: i64,
+    owned: &Owned,
+    costs: &[Option<Cost>],
+    unread: &[String],
+) -> String {
     let mut parts = Vec::new();
     let mut missing = Vec::new();
     let (mut requests, mut bytes, mut total, mut fetched) = (0, 0, 0, false);
     for ((radar, input), cost) in layout.radars.iter().zip(owned).zip(costs) {
         let id = radar.station.id.as_str();
         match (input, cost) {
+            (Some(_), Some(_)) if unread.iter().any(|u| u == id) => missing.push(id),
             (Some((_, outer)), Some(cost)) => {
                 let mut part = id.to_owned();
                 if cost.from_store {
@@ -1212,7 +1632,7 @@ fn provenance(layout: &Layout, t_ms: i64, owned: &Owned, costs: &[Option<Cost>])
     let mut text = format!(
         "My mosaic {} {}, {} of {} radars at {}: {}",
         layout.set.variant(),
-        layout.set.rule.name(),
+        layout.set.product().1,
         parts.len(),
         layout.radars.len(),
         utc(t_ms, "%H:%MZ"),
@@ -1247,8 +1667,10 @@ fn log(message: impl std::fmt::Display) {
 
 /// Each radar's stored lowest scans from `floor` on: the tilt store's
 /// copies (S27), no request. Built frames' times too (review #2): a newer
-/// frame's far ring may come from them.
-fn from_store(layout: &Layout, floor: i64) -> Vec<(usize, i64, Sweep)> {
+/// frame's far ring may come from them. With `whole` (a height set, S30),
+/// only volumes the store holds every scan of, for a radar whose provider
+/// publishes whole volumes; its poller reads the rest.
+fn from_store(layout: &Layout, floor: i64, whole: bool) -> Vec<(usize, i64, Sweep)> {
     let Some(store) = crate::tilts::shared() else {
         return Vec::new();
     };
@@ -1256,7 +1678,11 @@ fn from_store(layout: &Layout, floor: i64) -> Vec<(usize, i64, Sweep)> {
     for (index, radar) in layout.radars.iter().enumerate() {
         let id = &radar.station.id;
         let volumes = store.volumes(id).unwrap_or_default();
+        let every = whole && !crate::products::nominal_angles(&radar.station).is_empty();
         for (t, source) in volumes.into_iter().filter(|(t, _)| *t >= floor) {
+            if every && !stored_whole(&store, id, t) {
+                continue;
+            }
             let slot = crate::tilts::Slot {
                 store: store.clone(),
                 station: id.clone(),
@@ -1271,11 +1697,102 @@ fn from_store(layout: &Layout, floor: i64) -> Vec<(usize, i64, Sweep)> {
     out
 }
 
+/// Whether the tilt store holds every scan of `station`'s volume at `t`
+/// (S30: a height frame reads them all).
+fn stored_whole(store: &crate::tilts::Store, station: &str, t: i64) -> bool {
+    let Ok(Some(volume)) = store.volume(station, t) else {
+        return false;
+    };
+    let Some(angles) = &volume.angles else {
+        return false;
+    };
+    crate::products::needed(Want::ColMax, angles)
+        .iter()
+        .all(|k| volume.tilts.iter().any(|s| s.dataset == *k))
+}
+
+/// `station`'s volume at `t` from the tilt store, its scans ascending by
+/// angle (in the decoder's order on a tie, as `products::compose` sorts
+/// them); `None` when the store has none of it.
+fn volume_of(store: &crate::tilts::Store, station: &str, t: i64) -> Option<Vec<Tilt>> {
+    let mut tilts: Vec<Tilt> = store
+        .tilts(station, t)
+        .ok()?
+        .into_iter()
+        .map(|(_, tilt)| tilt)
+        .collect();
+    if tilts.is_empty() {
+        return None;
+    }
+    tilts.sort_by(|a, b| a.elangle.total_cmp(&b.elangle));
+    Some(tilts)
+}
+
+/// A height frame's volumes (S30): each radar's at `t`, and its far ring's
+/// when `owned` names one, read back from the tilt store.
+type Loaded = Vec<Option<(Vec<Tilt>, Option<Vec<Tilt>>)>>;
+
+fn load_volumes(
+    layout: &Layout,
+    t: i64,
+    owned: &Owned,
+    store: Option<&crate::tilts::Store>,
+) -> Loaded {
+    layout
+        .radars
+        .iter()
+        .zip(owned)
+        .map(|(radar, input)| {
+            let (_, outer) = input.as_ref()?;
+            let store = store?;
+            let id = &radar.station.id;
+            let primary = volume_of(store, id, t)?;
+            let outer = outer
+                .as_ref()
+                .and_then(|(_, when)| volume_of(store, id, *when));
+            Some((primary, outer))
+        })
+        .collect()
+}
+
+/// The height frame for `t` (S30) from the volumes `store` holds of each
+/// radar's `owned` scans, with the radars whose volume it lacks; `None`
+/// when it holds none of them (review #6: never an empty frame).
+fn assemble_height(
+    layout: &Layout,
+    t: i64,
+    owned: &Owned,
+    store: Option<&crate::tilts::Store>,
+) -> (Option<Built>, Vec<String>) {
+    let loaded = load_volumes(layout, t, owned, store);
+    let unread: Vec<String> = layout
+        .radars
+        .iter()
+        .zip(owned.iter().zip(&loaded))
+        .filter(|(_, (input, volume))| input.is_some() && volume.is_none())
+        .map(|(radar, _)| radar.station.id.clone())
+        .collect();
+    if loaded.iter().all(Option::is_none) {
+        return (None, unread);
+    }
+    let inputs: Vec<Option<Volumes>> = loaded
+        .iter()
+        .map(|v| {
+            v.as_ref().map(|(primary, outer)| Volumes {
+                primary,
+                outer: outer.as_deref(),
+            })
+        })
+        .collect();
+    (Some(build_height(layout, t, &inputs)), unread)
+}
+
 /// Build the frame for `t` on the blocking pool and send it: as the live
 /// frame when it is the newest built, else as history. A late rebuild keeps
 /// its id, so the catalog and every client replace it. `t` is marked built
 /// only once sent (review #8), and a time with no scan at all is never
-/// built (review #1).
+/// built (review #1). A height frame (S30) reads its volumes back from the
+/// tilt store here, and holds them only while it is built.
 async fn build_and_send(
     layout: &Arc<Layout>,
     schedule: &mut Schedule,
@@ -1288,26 +1805,51 @@ async fn build_and_send(
     }
     let again = schedule.is_late(t);
     let newest = schedule.newest_built().is_none_or(|n| t >= n);
-    let provenance = provenance(layout, t, &owned, &costs);
     let shared = layout.clone();
     let started = Instant::now();
     let built = spawn_blocking(move || {
-        let inputs: Vec<Option<Input>> = owned
-            .iter()
-            .map(|o| {
-                o.as_ref().map(|(p, outer)| Input {
-                    primary: p,
-                    outer: outer.as_ref().map(|(s, _)| s.as_ref()),
+        if shared.set.rule == Rule::Height {
+            let store = crate::tilts::shared();
+            let (built, unread) = assemble_height(&shared, t, &owned, store.as_deref());
+            (built, owned, unread)
+        } else {
+            let inputs: Vec<Option<Input>> = owned
+                .iter()
+                .map(|o| {
+                    o.as_ref().map(|(p, outer)| Input {
+                        primary: p,
+                        outer: outer.as_ref().map(|(s, _)| s.as_ref()),
+                    })
                 })
-            })
-            .collect();
-        build(&shared, t, &inputs)
+                .collect();
+            let built = build(&shared, t, &inputs);
+            (Some(built), owned, Vec::new())
+        }
     })
     .await;
-    let Ok(built) = built else {
+    let Ok((built, owned, unread)) = built else {
         log(format_args!("building {} failed", utc(t, "%H:%MZ")));
         return true;
     };
+    let Some(built) = built else {
+        // Review #6: every volume gone from the store; nothing is sent, and
+        // the time is given up rather than tried every second.
+        log(format_args!(
+            "{} built with no radar: the tilt store holds none of its volumes ({}); not sent",
+            utc(t, "%Y-%m-%dT%H:%MZ"),
+            unread.join(", ")
+        ));
+        schedule.forget(t);
+        return true;
+    };
+    let provenance = provenance(layout, t, &owned, &costs, &unread);
+    if !unread.is_empty() {
+        log(format_args!(
+            "{}: the tilt store no longer holds {}'s volume",
+            utc(t, "%H:%MZ"),
+            unread.join(", ")
+        ));
+    }
     log(format_args!(
         "{} built{} in {:.0?}, {} × {}; {provenance}",
         utc(t, "%Y-%m-%dT%H:%MZ"),
@@ -1377,21 +1919,57 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         layout.height,
         started.elapsed()
     ));
+    // A height set's frames are made from the tilt store (S30).
+    let height = layout.set.rule == Rule::Height;
+    if height && crate::tilts::shared().is_none() {
+        let reason = "My mosaic's heights are made from the tilt store, which is off \
+                      (OMASTORM_TILTS_MB=0)"
+            .to_owned();
+        log(&reason);
+        let site = STATION.to_owned();
+        let _ = events.send(Event::Offline { site, reason }).await;
+        return std::future::pending().await;
+    }
     let ranges = layout
         .radars
         .iter()
         .map(|r| r.station.range_km * 1000.0)
         .collect();
     let now = now_ms();
-    let mut schedule = Schedule::new(ranges, &cached);
-    // The tilt store first: every stored lowest scan the frames still to
-    // build can use, with no request.
+    let depth = layout.backfill();
+    let mut schedule = Schedule::new(ranges, &cached).with_depth(depth);
+    // The tilt store first: every stored lowest scan (for a height set,
+    // every whole volume) the frames still to build can use, with no
+    // request.
     let floor = schedule.floor(now);
     let shared = layout.clone();
-    let stored = spawn_blocking(move || from_store(&shared, floor))
+    let stored = spawn_blocking(move || from_store(&shared, floor, height))
         .await
         .unwrap_or_default();
     let from_the_store = stored.len();
+    if height {
+        // What the first fill should cost (review #8): per radar the volumes
+        // of its depth the store lacks; an SMHI volume ~39 range requests,
+        // an ORD file 1; listings besides.
+        let mut held = vec![0usize; layout.radars.len()];
+        for (radar, _, _) in &stored {
+            held[*radar] += 1;
+        }
+        let (mut smhi, mut ord) = (0usize, 0usize);
+        for (radar, have) in layout.radars.iter().zip(&held) {
+            let missing = (depth + 1).saturating_sub(*have);
+            if radar.station.provider == ProviderId::Smhi {
+                smhi += missing;
+            } else {
+                ord += missing;
+            }
+        }
+        log(format_args!(
+            "first fill: about {} range requests ({smhi} SMHI volumes × ~{SMHI_VOLUME_REQUESTS}, \
+             {ord} ORD files × 1) plus listings; {from_the_store} volumes already in the tilt store",
+            smhi * SMHI_VOLUME_REQUESTS + ord
+        ));
+    }
     for (radar, t, sweep) in stored {
         let have = Have {
             sweep: Arc::new(sweep),
@@ -1406,7 +1984,12 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         schedule.touch(now);
     }
     log(format_args!(
-        "{from_the_store} lowest scans from the tilt store; {} frames catalogued",
+        "{from_the_store} {} from the tilt store; {} frames catalogued; building back {depth}",
+        if height {
+            "whole volumes"
+        } else {
+            "lowest scans"
+        },
         cached.len()
     ));
     if schedule.caught_up(now)
@@ -1429,9 +2012,19 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         .enumerate()
         .map(|(i, radar)| {
             let (station, tx, known) = (radar.station.clone(), tx.clone(), schedule.known(i));
+            // A height set reads each whole volume (every height needs
+            // nearly every scan, so every later height is free); a radar
+            // whose provider has one file per angle gives its lowest scan.
+            let want = if height && !crate::products::nominal_angles(&station).is_empty() {
+                Want::ColMax
+            } else {
+                Want::Lowest
+            };
             crate::smhi_live::AbortOnDrop(tokio::spawn(async move {
                 tokio::time::sleep(STAGGER * i as u32).await;
-                crate::providers::poll_lowest(station, tx, known, RADAR_DEPTH).await;
+                // One volume further back than the mosaic, as its newest is
+                // usually one cadence ahead of the newest due frame.
+                crate::providers::poll_lowest(station, tx, known, depth + 1, want).await;
             }))
         })
         .collect();
@@ -1448,18 +2041,23 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
                 match event {
                     Event::Sweep {
                         site,
-                        sweep: Scan::Polar(sweep),
+                        sweep: Scan::Polar(sweep) | Scan::Product(sweep, ..),
                         provenance,
                         ..
                     }
                     | Event::Backfill {
                         site,
-                        sweep: Scan::Polar(sweep),
+                        sweep: Scan::Polar(sweep) | Scan::Product(sweep, ..),
                         provenance,
                     } => {
-                        if let Some(i) = index(&site) {
-                            offline[i] = false;
-                            let t = nominal_ms(sweep.start_ms);
+                        let Some(i) = index(&site) else { continue };
+                        offline[i] = false;
+                        let t = nominal_ms(sweep.start_ms);
+                        if height && schedule.has(i, t) {
+                            // A height set's volume comes as its product and
+                            // the free lowest scan of the same read (S26).
+                            schedule.add_cost(i, t, Cost::of(&provenance), now);
+                        } else {
                             if live {
                                 let late = (now - t) / 1000;
                                 log(format_args!(
@@ -1718,6 +2316,7 @@ mod tests {
                 },
             ],
             rule,
+            ..Set::default()
         };
         let (sa, sb) = (sweep(100, 200, 0.5, 0), sweep(150, 200, 0.5, 0));
         let inputs = [
@@ -2040,6 +2639,7 @@ mod tests {
                 reach_km: 237.5,
             }],
             rule: Rule::Lowest,
+            ..Set::default()
         };
         let layout = Layout::new(&set, &sites).unwrap();
         let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS;
@@ -2078,7 +2678,7 @@ mod tests {
             (120, 120),
             "the long scan past its edge"
         );
-        assert!(provenance(&layout, t, &owned, &costs).contains("ra (far ring"));
+        assert!(provenance(&layout, t, &owned, &costs, &[]).contains("ra (far ring"));
         // A long scan needs no ring; neither does a short one with no long
         // scan within 10 minutes.
         let mut lone = Schedule::new(vec![237_500.0], &[]);
@@ -2169,6 +2769,7 @@ mod tests {
                     },
                 ],
                 rule: Rule::Lowest,
+                ..Set::default()
             },
             &[
                 radar("ra", 58.0, 12.0, 240.0),
@@ -2178,7 +2779,7 @@ mod tests {
         .unwrap();
         let (owned, costs) = schedule.inputs(t + CADENCE_MS);
         assert!(owned[0].is_none() && owned[1].is_some());
-        let text = provenance(&layout, t + CADENCE_MS, &owned, &costs);
+        let text = provenance(&layout, t + CADENCE_MS, &owned, &costs, &[]);
         assert!(
             text.contains("1 of 2 radars") && text.contains("missing ra"),
             "{text}"
@@ -2293,6 +2894,7 @@ mod tests {
                     },
                 ],
                 rule: Rule::Lowest,
+                ..Set::default()
             };
             let layout = Layout::new(&set, &sites).unwrap();
             let (sa, sb) = (sweep(100, 200, deg_a, 0), sweep(150, 200, 0.5, 0));
@@ -2342,6 +2944,7 @@ mod tests {
                 },
             ],
             rule: Rule::Lowest,
+            ..Set::default()
         };
         let layout = Layout::new(&set, &sites).unwrap();
         let (sa, sb) = (sweep(100, 200, 0.5, 0), sweep(150, 200, 0.5, 0));
@@ -2358,6 +2961,491 @@ mod tests {
         let (codes, owner) = combine(&layout, Rule::Lowest, &inputs);
         assert!(owner.iter().all(|&o| o == 0 || o == u8::MAX));
         assert!(codes.contains(&100) && !codes.contains(&150));
+    }
+
+    /// A synthetic volume: one scan per (angle, marker code), 360 rays of
+    /// `gates` 500 m gates.
+    fn volume(markers: &[(f64, u8)], gates: u16) -> Vec<Tilt> {
+        markers
+            .iter()
+            .map(|&(deg, code)| Tilt {
+                elangle: deg,
+                sweep: sweep(code, gates, deg as f32, 0),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_height_set_is_checked_and_named() {
+        let sites = table();
+        let args = [SiteArg::Id("vara".into()), SiteArg::Id("nohur".into())];
+        let ground =
+            choose_with(&sites, &args, Some("height"), Some(3000), Some("ground")).unwrap();
+        assert_eq!(
+            (ground.rule, ground.height_m, ground.above),
+            (Rule::Height, Some(3000), Some(Above::Ground))
+        );
+        let json = serde_json::to_value(&ground).unwrap();
+        assert_eq!(
+            (&json["rule"], &json["heightM"], &json["above"]),
+            (
+                &serde_json::json!("height"),
+                &serde_json::json!(3000),
+                &serde_json::json!("ground")
+            )
+        );
+        let plain = choose_with(&sites, &args, Some("height"), None, None).unwrap();
+        assert_eq!(
+            (plain.height_m, plain.above),
+            (Some(2000), Some(Above::Sea))
+        );
+        // Another height, or the same above sea level, is another set.
+        let sea = choose_with(&sites, &args, Some("height"), Some(3000), Some("sea")).unwrap();
+        assert!(!ground.same(&sea) && !sea.same(&plain));
+        assert_ne!(ground.variant(), sea.variant());
+        assert_ne!(sea.variant(), plain.variant());
+        // A set without a height keeps its S25 name and sends no height.
+        let lowest = choose(&sites, &args, None).unwrap();
+        let text: String = lowest
+            .key()
+            .iter()
+            .map(|(id, t)| format!("|{id}:{t}"))
+            .collect();
+        let hash = fnv1a(format!("lowest{text}").as_bytes());
+        assert_eq!(
+            lowest.variant(),
+            format!("m{:08x}", (hash >> 32) as u32 ^ hash as u32)
+        );
+        assert!(
+            serde_json::to_value(&lowest)
+                .unwrap()
+                .get("heightM")
+                .is_none()
+        );
+        // Frames are named as a radar's height.
+        assert_eq!(
+            ground.product(),
+            ("CAPPI", "Height 3 km above ground".to_owned())
+        );
+        assert_eq!(sea.product().1, "Height 3 km");
+        assert_eq!(lowest.product(), ("REF", "Lowest beam".to_owned()));
+        // Review #8: half an hour with an SMHI radar; a set of ORD radars,
+        // whose whole files are 1 request each, the full hour.
+        let layout_of = |s: &Set| Layout::new(s, &sites).unwrap();
+        assert_eq!(layout_of(&ground).backfill(), HEIGHT_BACKFILL);
+        assert_eq!(layout_of(&lowest).backfill(), BACKFILL);
+        let ord_only = [SiteArg::Id("nohur".into()), SiteArg::Id("dksin".into())];
+        let ord_set = choose_with(&sites, &ord_only, Some("height"), None, None).unwrap();
+        assert_eq!(layout_of(&ord_set).backfill(), BACKFILL);
+        for (rule, m, above, says) in [
+            (Some("height"), Some(750), None, "heightM 750"),
+            (Some("height"), None, Some("space"), "sea or ground"),
+            (Some("lowest"), Some(3000), None, "height rule only"),
+            (None, None, Some("sea"), "height rule only"),
+        ] {
+            let e = choose_with(&sites, &args, rule, m, above).unwrap_err();
+            assert!(e.contains(says), "{e}");
+        }
+        let rules: Vec<&str> = info().rules.iter().map(|r| r.id).collect();
+        assert_eq!(rules, ["lowest", "strongest", "height"]);
+        // A height set builds back half an hour.
+        let now = 1_800_000_000_000;
+        let t = newest_due(now);
+        let have = || Have {
+            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+            cost: Cost::default(),
+        };
+        let mut s = Schedule::new(vec![5_000.0], &[]).with_depth(HEIGHT_BACKFILL);
+        for k in 0..12 {
+            s.add(0, t - k * CADENCE_MS, have(), now, true);
+        }
+        assert_eq!(s.ready(now + QUIET_MS + 1_000).len(), HEIGHT_BACKFILL);
+        // A second read of the same volume adds its cost.
+        s.add_cost(
+            0,
+            t,
+            Cost {
+                requests: 3,
+                bytes: 10,
+                total: 20,
+                from_store: false,
+            },
+            now,
+        );
+        assert_eq!(s.inputs(t).1[0].unwrap().requests, 3);
+    }
+
+    /// The answer key (plan §S30): a tower of heights, 0.5 to 8 km, over
+    /// one texel between two radars with four marked angles each. At each
+    /// height the rule as the protocol words it, written out here, names
+    /// the radar and angle, or no radar; heights where the answer turns on
+    /// less than a hundredth of a degree or 3 m are skipped. Above sea
+    /// level over the Swedish lowlands, and above the ground in Norway's
+    /// mountains, where the ground changes the answer.
+    #[test]
+    fn a_two_radar_tower_picks_the_known_radar_at_each_height() {
+        let angles = [0.5, 1.5, 4.0, 10.0];
+        let va = volume(&[(0.5, 11), (1.5, 12), (4.0, 13), (10.0, 14)], 240);
+        let vb = volume(&[(0.5, 21), (1.5, 22), (4.0, 23), (10.0, 24)], 240);
+        let inputs = [
+            Some(Volumes {
+                primary: &va,
+                outer: None,
+            }),
+            Some(Volumes {
+                primary: &vb,
+                outer: None,
+            }),
+        ];
+        let half = 0.5f64.to_radians();
+        // One radar's pick at `s` metres for `h` above sea level: (code,
+        // miss), and whether it is clear of every edge.
+        let answer = |st: &Station, first: u8, s: f64, h: f64| -> (Option<(u8, f64)>, bool) {
+            let target = h - st.alt_m;
+            let th = s / EARTH_M;
+            let seen =
+                ((EARTH_M + target) * th.cos() - EARTH_M).atan2((EARTH_M + target) * th.sin());
+            let (mut holders, mut clear) = (Vec::new(), true);
+            for (k, &deg) in angles.iter().enumerate() {
+                let e = f64::to_radians(deg);
+                let c = (e + th).cos();
+                let gate = ((EARTH_M * th.sin() / c - 250.0) / 500.0).round();
+                if !(0.0..240.0).contains(&gate) {
+                    continue;
+                }
+                let off = (seen - e).abs() - half;
+                clear &= off.abs().to_degrees() > 0.01;
+                if off <= 0.0 {
+                    let miss = (EARTH_M * e.cos() / c - EARTH_M - target).abs();
+                    holders.push((miss, first + k as u8));
+                }
+            }
+            holders.sort_by(|x, y| x.0.total_cmp(&y.0));
+            if holders.len() > 1 {
+                clear &= holders[1].0 - holders[0].0 > 3.0;
+            }
+            (holders.first().map(|&(m, c)| (c, m)), clear)
+        };
+        // Radars `a` and `b` (reach 120 km), a tower 25 km east of `a`:
+        // the picks per height, `None` where skipped.
+        let run = |a: &Station, b: &Station, above: Above| -> Vec<Option<u8>> {
+            let sites = vec![a.clone(), b.clone()];
+            let (plat, plon) = destination(a.lat, a.lon, 90.0, 25_000.0);
+            let mut picks = Vec::new();
+            for m in (500..=8000).step_by(500) {
+                let set = Set {
+                    sites: vec![
+                        SiteReach {
+                            id: a.id.clone(),
+                            reach_km: 120.0,
+                        },
+                        SiteReach {
+                            id: b.id.clone(),
+                            reach_km: 120.0,
+                        },
+                    ],
+                    rule: Rule::Height,
+                    height_m: Some(m),
+                    above: Some(above),
+                };
+                let layout = Layout::new(&set, &sites).unwrap();
+                let (c, r) = locate(&layout, plat, plon);
+                let (tlat, tlon) = texel(&layout, c, r);
+                let ground = if above == Above::Ground {
+                    crate::terrain::at(tlat, tlon)
+                } else {
+                    0.0
+                };
+                let h = f64::from(m) + ground;
+                let (pa, ca) = answer(a, 11, ground_m(a.lat, a.lon, tlat, tlon), h);
+                let (pb, cb) = answer(b, 21, ground_m(b.lat, b.lon, tlat, tlon), h);
+                let expect = match (pa, pb) {
+                    (Some(x), Some(y)) if (x.1.round() - y.1.round()).abs() < 3.0 => None,
+                    (Some(x), Some(y)) => Some(if x.1 < y.1 { x.0 } else { y.0 }),
+                    (Some(x), None) => Some(x.0),
+                    (None, Some(y)) => Some(y.0),
+                    (None, None) => Some(1),
+                };
+                let expect = expect.filter(|_| ca && cb);
+                let (codes, owner) = combine_height(&layout, m, above == Above::Ground, &inputs);
+                let i = (r * layout.width + c) as usize;
+                if let Some(code) = expect {
+                    assert_eq!(codes[i], code, "{m} m {above:?} ({ground} m of ground)");
+                    let who = match code {
+                        11..=14 => 0,
+                        21..=24 => 1,
+                        _ => u8::MAX,
+                    };
+                    assert_eq!(owner[i], who);
+                }
+                picks.push(expect);
+            }
+            picks
+        };
+        let count = |picks: &[Option<u8>], low: u8, high: u8| {
+            picks
+                .iter()
+                .filter(|p| p.is_some_and(|c| (low..=high).contains(&c)))
+                .count()
+        };
+        // The lowlands: A at 100 m, B at 400 m, 70 km apart.
+        let a = Station {
+            alt_m: 100.0,
+            ..radar("ra", 58.0, 12.0, 120.0)
+        };
+        let b = Station {
+            alt_m: 400.0,
+            ..radar("rb", 58.0, 13.19, 120.0)
+        };
+        let flat = run(&a, &b, Above::Sea);
+        assert!(
+            flat.iter().flatten().count() >= 12
+                && count(&flat, 11, 14) > 0
+                && count(&flat, 21, 24) > 0
+                && count(&flat, 1, 1) > 0,
+            "{flat:?}"
+        );
+        // The mountains: the same towers above sea level and above ground
+        // pick differently.
+        let (a, b) = (
+            Station {
+                alt_m: 1000.0,
+                ..radar("ma", 61.0, 8.0, 120.0)
+            },
+            Station {
+                alt_m: 800.0,
+                ..radar("mb", 61.0, 9.2, 120.0)
+            },
+        );
+        let (tower_lat, tower_lon) = destination(a.lat, a.lon, 90.0, 25_000.0);
+        assert!(crate::terrain::at(tower_lat, tower_lon) > 500.0);
+        let sea = run(&a, &b, Above::Sea);
+        let ground = run(&a, &b, Above::Ground);
+        assert!(ground.iter().flatten().count() >= 10, "{ground:?}");
+        assert!(
+            sea.iter()
+                .zip(&ground)
+                .any(|(s, g)| s.is_some() && g.is_some() && s != g),
+            "{sea:?} {ground:?}"
+        );
+    }
+
+    /// One rule, not two copies: Vara alone at a height draws Vara's own
+    /// Height product (S29, placed by the lookup rule) at nearly every
+    /// texel of its reach; the rest are gate edges, where a texel's own
+    /// distance and the product's 500 m gates round differently.
+    #[test]
+    fn one_radar_at_a_height_is_its_own_cappi() {
+        let sites = table();
+        let vara = sites.iter().find(|s| s.id == "vara").unwrap().clone();
+        let tilts = || {
+            let file = std::fs::File::open(format!("{RAW}radar_vara_qcvol_202609131055_tilts.h5"))
+                .unwrap();
+            let mut t =
+                crate::odim::decode_tilts(file, |infos| (0..infos.len()).collect()).unwrap();
+            t.sort_by(|a, b| a.elangle.total_cmp(&b.elangle));
+            t
+        };
+        let held = tilts();
+        assert!(held.len() >= 3, "{} scans", held.len());
+        for m in [1000u32, 3000, 6000] {
+            let set = choose_with(
+                &sites,
+                &[SiteArg::Id("vara".into())],
+                Some("height"),
+                Some(m),
+                None,
+            )
+            .unwrap();
+            let layout = Layout::new(&set, &sites).unwrap();
+            let input = [Some(Volumes {
+                primary: &held,
+                outer: None,
+            })];
+            let (codes, _) = combine_height(&layout, m, false, &input);
+            let product =
+                crate::products::compose(Want::Cappi(f64::from(m) - vara.alt_m, m), tilts())
+                    .unwrap();
+            let (mut same, mut total, mut holes) = (0, 0, 0);
+            for r in (0..layout.height).step_by(2) {
+                for c in (0..layout.width).step_by(2) {
+                    let (lat, lon) = texel(&layout, c, r);
+                    if ground_m(vara.lat, vara.lon, lat, lon) > 235_000.0 {
+                        continue;
+                    }
+                    let expect = sample(&vara, &product, lat, lon).map_or(1, |x| x.0);
+                    let got = codes[(r * layout.width + c) as usize];
+                    total += 1;
+                    same += usize::from(got == expect);
+                    holes += usize::from(got == 1);
+                }
+            }
+            eprintln!("Vara at {m} m: {same} of {total} texels as its own CAPPI, {holes} holes");
+            assert!(same * 100 >= total * 98, "{m} m: {same} of {total}");
+            assert!(holes > 0 && holes < total, "{m} m: {holes} holes");
+        }
+    }
+
+    #[test]
+    fn twelve_radars_at_a_height_combine_quickly() {
+        // Twelve radars with ten angles each: the plan's budget is a slice
+        // in under 1 s in release, above sea level or the ground.
+        let sites = table();
+        let ids = [
+            "vara",
+            "nohur",
+            "dksin",
+            "angelholm",
+            "karlskrona",
+            "hudiksvall",
+            "ostersund",
+            "lulea",
+            "kiruna",
+            "nosta",
+            "fikor",
+            "fivim",
+        ];
+        let chosen = choose(&sites, &ids.map(|id| SiteArg::Id(id.into())), None).unwrap();
+        let angles = [0.5, 1.0, 1.5, 2.0, 2.5, 4.0, 8.0, 14.0, 24.0, 40.0];
+        for above in [Above::Sea, Above::Ground] {
+            let set = Set {
+                sites: chosen.sites.clone(),
+                rule: Rule::Height,
+                height_m: Some(2000),
+                above: Some(above),
+            };
+            let layout = Layout::new(&set, &sites).unwrap();
+            let volumes: Vec<Vec<Tilt>> = (0..layout.radars.len())
+                .map(|i| volume(&angles.map(|d| (d, 60 + i as u8 * 10)), 480))
+                .collect();
+            let inputs: Vec<Option<Volumes>> = volumes
+                .iter()
+                .map(|v| {
+                    Some(Volumes {
+                        primary: v,
+                        outer: None,
+                    })
+                })
+                .collect();
+            let started = Instant::now();
+            let built = build_height(&layout, 0, &inputs);
+            eprintln!(
+                "12 radars at 2 km {above:?}: {} × {} texels, built in {:?}",
+                layout.width,
+                layout.height,
+                started.elapsed()
+            );
+            assert!(built.grid.codes.iter().any(|&c| c >= 60));
+            assert!(built.grid.codes.contains(&1), "holes between the radars");
+            assert_eq!(built.product, "CAPPI");
+            // Review #3: a frame above the ground credits the terrain.
+            assert_eq!(
+                built.attribution.contains(crate::terrain::CREDIT),
+                above == Above::Ground,
+                "{}",
+                built.attribution
+            );
+        }
+    }
+
+    /// The height path's store reads (review #4, #5, #6): a whole volume and
+    /// the longer one its far ring comes from, a volume the store holds only
+    /// the lowest scan of (a radar's lowest-scan run), and one it does not
+    /// hold; a frame time with none of its volumes in the store is not built
+    /// and is given up; a store-made volume's cost stays the store's.
+    #[test]
+    fn height_frames_read_their_volumes_from_the_store() {
+        let dir = std::env::temp_dir().join(format!("omastorm-s30-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::tilts::Store::open(dir.clone(), u64::MAX).unwrap();
+        let (a, b, c) = (
+            radar("ra", 58.0, 12.0, 120.0),
+            radar("rb", 58.0, 13.2, 120.0),
+            radar("rc", 58.6, 12.6, 120.0),
+        );
+        let sites = vec![a.clone(), b, c];
+        let set = Set {
+            sites: ["ra", "rb", "rc"]
+                .map(|id| SiteReach {
+                    id: id.into(),
+                    reach_km: 120.0,
+                })
+                .to_vec(),
+            rule: Rule::Height,
+            height_m: Some(2000),
+            above: Some(Above::Sea),
+        };
+        let layout = Layout::new(&set, &sites).unwrap();
+        let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS;
+        let save = |id: &str, when: i64, v: &[Tilt], keep: &[usize]| {
+            let infos: Vec<crate::products::TiltInfo> = v.iter().map(Tilt::info).collect();
+            let tilts: Vec<(usize, &Tilt)> = keep.iter().map(|&k| (k, &v[k])).collect();
+            store.save(id, when, "src", Some(&infos), &tilts).unwrap();
+        };
+        // A: a short volume at T (50 km) and a long one 5 minutes before.
+        let short = volume(&[(0.5, 11), (1.5, 12), (4.0, 13)], 100);
+        let long = volume(&[(0.5, 21), (1.5, 22), (4.0, 23)], 240);
+        save("ra", t, &short, &[0, 1, 2]);
+        save("ra", t - CADENCE_MS, &long, &[0, 1, 2]);
+        // B: only its lowest scan. C: nothing.
+        let vb = volume(&[(0.5, 31), (1.5, 32), (4.0, 33)], 240);
+        save("rb", t, &vb, &[0]);
+        assert!(stored_whole(&store, "ra", t) && stored_whole(&store, "ra", t - CADENCE_MS));
+        assert!(!stored_whole(&store, "rb", t) && !stored_whole(&store, "rc", t));
+        assert_eq!(volume_of(&store, "rb", t).map(|v| v.len()), Some(1));
+        assert!(volume_of(&store, "rc", t).is_none());
+        let scan = || Arc::new(sweep(11, 100, 0.5, t));
+        let owned: Owned = vec![
+            Some((scan(), Some((scan(), t - CADENCE_MS)))),
+            Some((scan(), None)),
+            Some((scan(), None)),
+        ];
+        let (built, unread) = assemble_height(&layout, t, &owned, Some(&store));
+        assert_eq!(unread, ["rc"]);
+        let built = built.expect("A and B are in the store");
+        let at = |bearing: f64, km: f64| {
+            let (lat, lon) = destination(a.lat, a.lon, bearing, km * 1000.0);
+            let (col, row) = locate(&layout, lat, lon);
+            built.grid.codes[(row * layout.width + col) as usize]
+        };
+        // 2 km above sea (1.9 km above A): 30 km west, inside the short
+        // volume's 50 km, its 4° beam (seen at ~3.5°); 80 km west, past it,
+        // the long volume's 1.5° beam (seen at ~1.1°): the far ring.
+        assert_eq!(at(270.0, 30.0), 13, "the volume at T");
+        assert_eq!(at(270.0, 80.0), 22, "the far ring from the longer volume");
+        // C is missing from the provenance; B took part with its lowest scan.
+        let costs = vec![Some(Cost::default()); 3];
+        let text = provenance(&layout, t, &owned, &costs, &unread);
+        assert!(
+            text.contains("missing rc") && text.contains("2 of 3 radars"),
+            "{text}"
+        );
+        // Review #6: none of the volumes in the store, or no store: no frame.
+        let only_c: Owned = vec![None, None, Some((scan(), None))];
+        let (none, unread) = assemble_height(&layout, t, &only_c, Some(&store));
+        assert!(none.is_none() && unread == ["rc"]);
+        assert!(assemble_height(&layout, t, &owned, None).0.is_none());
+        let now = t + DUE_MS + 60_000;
+        let mut schedule = Schedule::new(vec![120_000.0; 3], &[]);
+        let have = Have {
+            sweep: scan(),
+            cost: Cost::default(),
+        };
+        schedule.add(2, t, have, now, true);
+        assert_eq!(schedule.ready(now + QUIET_MS + 1_000), [t]);
+        schedule.forget(t);
+        assert!(
+            schedule.ready(now + QUIET_MS + 1_000).is_empty(),
+            "given up"
+        );
+        // Review #5: a volume from the store and its free lowest scan (whose
+        // provenance reads 0 range requests) stay the store's.
+        let stored = Cost::of(&format!("x: {}", crate::tilts::FROM_STORE));
+        let free = Cost::of("x, its lowest scan: 0 range requests, 0 of 5 bytes");
+        assert!(stored.plus(free).from_store && free.plus(stored).from_store);
+        let fetched = Cost::of("x: 39 range requests, 700000 of 800000 bytes");
+        assert!(!fetched.plus(free).from_store && !stored.plus(fetched).from_store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

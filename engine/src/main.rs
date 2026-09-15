@@ -11,6 +11,7 @@ mod providers;
 mod reference;
 mod smhi_live;
 mod sweep;
+mod terrain;
 mod tiles;
 mod tilts;
 
@@ -430,7 +431,12 @@ fn live_frame(
         },
         palette: template.palette.clone(),
         bounds: template.bounds.clone(),
-        attribution: station.attribution.clone(),
+        // A height above the ground credits the terrain too (S30).
+        attribution: if matches!(want, Want::CappiGround(..)) {
+            format!("{}; {}", station.attribution, terrain::CREDIT)
+        } else {
+            station.attribution.clone()
+        },
         grid: None,
     }
 }
@@ -898,8 +904,9 @@ impl Shared {
         product: &str,
         elevation_index: u32,
         height_m: Option<u32>,
+        above: Option<&str>,
     ) -> (bool, Option<String>) {
-        let choice = match products::choose(product, elevation_index, height_m) {
+        let choice = match products::choose(product, elevation_index, height_m, above) {
             Ok(choice) => choice,
             Err(message) => return (false, Some(message)),
         };
@@ -970,8 +977,10 @@ impl Shared {
         &mut self,
         sites: &[mosaic::SiteArg],
         rule: Option<&str>,
+        height_m: Option<u32>,
+        above: Option<&str>,
     ) -> (bool, Option<String>) {
-        let set = match mosaic::choose(&self.sites, sites, rule) {
+        let set = match mosaic::choose_with(&self.sites, sites, rule, height_m, above) {
             Ok(set) => set,
             Err(message) => return (false, Some(message)),
         };
@@ -1324,8 +1333,14 @@ impl Shared {
                 product,
                 elevation_index,
                 height_m,
-            } => self.set_product(&product, elevation_index, height_m),
-            Command::SetMosaic { sites, rule } => self.set_mosaic(&sites, rule.as_deref()),
+                above,
+            } => self.set_product(&product, elevation_index, height_m, above.as_deref()),
+            Command::SetMosaic {
+                sites,
+                rule,
+                height_m,
+                above,
+            } => self.set_mosaic(&sites, rule.as_deref(), height_m, above.as_deref()),
             // Tile requests and place search are answered to the sender, not state.
             Command::TilesNeeded { .. } | Command::SearchPlaces { .. } | Command::Unsupported => {
                 return None;

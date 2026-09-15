@@ -230,7 +230,7 @@ fn fixture_transport_and_shared_commands() {
     assert_eq!(
         hello["products"],
         json!([{"id":"REF","name":"Lowest scan"},{"id":"HYBRID","name":"Clear view"},
-               {"id":"CAPPI","name":"Height"},{"id":"CMAX","name":"Column max"}])
+               {"id":"CAPPI","name":"Height","above":["sea","ground"]},{"id":"CMAX","name":"Column max"}])
     );
     let offer = |id: &str| sites.iter().find(|s| s["id"] == id).unwrap().clone();
     assert_eq!(offer("vara")["elevations"].as_array().unwrap().len(), 10);
@@ -283,7 +283,8 @@ fn fixture_transport_and_shared_commands() {
     assert_eq!(
         hello["mosaic"],
         json!({"station":"mymosaic","maxSites":12,"minReachKm":25.0,
-               "rules":[{"id":"lowest","name":"Lowest beam"},{"id":"strongest","name":"Strongest"}]})
+               "rules":[{"id":"lowest","name":"Lowest beam"},{"id":"strongest","name":"Strongest"},
+                        {"id":"height","name":"Height"}]})
     );
     let mine = offer("mymosaic");
     assert_eq!(
@@ -312,6 +313,16 @@ fn fixture_transport_and_shared_commands() {
             json!({"type":"set_mosaic","sites":"vara"}),
             "Invalid set_mosaic",
         ),
+        // S30: a height goes with the height rule, and is checked as
+        // set_product checks one.
+        (
+            json!({"type":"set_mosaic","sites":["vara"],"heightM":3000}),
+            "height rule only",
+        ),
+        (
+            json!({"type":"set_mosaic","sites":["vara"],"rule":"height","heightM":3000,"above":"space"}),
+            "sea or ground",
+        ),
     ] {
         send(&mut second, command);
         let e = read(&mut second);
@@ -327,6 +338,18 @@ fn fixture_transport_and_shared_commands() {
                                  {"id":"dksin","reachKm":238.0}],"rule":"lowest"});
     for client in [&mut first, &mut second] {
         state(client, |s| s["mosaic"] == chosen);
+    }
+    // S30: the same radars at a height above the ground are another set;
+    // state.mosaic says the height and what it is above.
+    send(
+        &mut second,
+        json!({"type":"set_mosaic","sites":[{"id":"sevax"},{"id":"nohur","reachKm":150},"dksin"],
+               "rule":"height","heightM":3000,"above":"ground"}),
+    );
+    let high = json!({"sites":[{"id":"vara","reachKm":240.0},{"id":"nohur","reachKm":150.0},
+                               {"id":"dksin","reachKm":238.0}],"rule":"height","heightM":3000,"above":"ground"});
+    for client in [&mut first, &mut second] {
+        state(client, |s| s["mosaic"] == high);
     }
     first
         .get_mut()

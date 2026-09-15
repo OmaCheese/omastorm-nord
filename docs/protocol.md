@@ -79,8 +79,12 @@ An engine older than S25 sends none, and a client then offers no mosaic.
 
 ```json
 "mosaic":{"station":"mymosaic","maxSites":12,"minReachKm":25,
-          "rules":[{"id":"lowest","name":"Lowest beam"},{"id":"strongest","name":"Strongest"}]}
+          "rules":[{"id":"lowest","name":"Lowest beam"},{"id":"strongest","name":"Strongest"},
+                   {"id":"height","name":"Height"}]}
 ```
+
+The `height` rule is S30's (a slice at a chosen height across the chosen
+radars); an engine older than S30 lists only the first two.
 
 `hello` also carries `referenceSites` (S23, additive, always sent): the
 other European weather radars, whose positions a client may show for
@@ -198,7 +202,8 @@ It is small (a few KB) so clients replace rather than merge.
 - `mosaic` (S25) is the engine's set for My mosaic, `{"sites":[{"id":"vara",
   "reachKm":240.0}],"rule":"lowest"}`, shared by every client like the
   station; `sites` is `[]` until a client sends `set_mosaic`
-  ([My mosaic](#my-mosaic)). Always sent.
+  ([My mosaic](#my-mosaic)). Always sent. With the `height` rule (S30) it
+  also carries `heightM` and `above`.
 - `frame.palette` has one color per class, in class order, and `frame.bounds`
   has one more entry than `palette`: class `i` covers `bounds[i]` up to
   `bounds[i+1]` in `units`. The UI uploads `palette` to the GPU as a
@@ -304,7 +309,9 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 {"type":"play"}  {"type":"pause"}  {"type":"step","delta":-1}  {"type":"seek","id":"..."}
 {"type":"set_product","product":"REF","elevationIndex":0}
 {"type":"set_product","product":"CAPPI","heightM":3000}
+{"type":"set_product","product":"CAPPI","heightM":1000,"above":"ground"}
 {"type":"set_mosaic","sites":[{"id":"vara"},{"id":"nohur","reachKm":150},{"id":"dksin"}],"rule":"lowest"}
+{"type":"set_mosaic","sites":["vara","nohur","dksin"],"rule":"height","heightM":3000,"above":"sea"}
 {"type":"tiles_needed","z":11,"x0":469,"y0":807,"x1":472,"y1":810}
 ```
 
@@ -361,7 +368,8 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
   `hello.products` (or one of the aliases `CAPPI1`, `CAPPI2`),
   `elevationIndex` (optional, 0 when absent) an index into the selected
   station's `elevations`, used with `REF` only, and `heightM` (optional,
-  S29) the height above sea level in metres, used with `CAPPI` only. An
+  S29) the height in metres, used with `CAPPI` only, above sea level or,
+  with `above` `ground` (optional, S30), above the terrain. An
   unsupported selection returns an `error` to its sender and retains the
   current frame. The rules are in [Products](#products).
 - `step` moves `delta` entries along `timeline` from the frame shown, stopping
@@ -482,7 +490,8 @@ G bit 4 (outside coverage). No lookup table goes with a grid texture.
 grayscale, the grid texture's size and texel order, holding only the raw
 code (the grid texture's B channel): 0 below threshold, 1 no data or off
 the source grid, 2 to 255 measured. A client rebuilds the grid texel from
-it: code 0 or 1 draws nothing; otherwise, with value = (code − `offset`) /
+it: code 0 or 1 draws nothing (in a `CAPPI` frame, S30, code 1 may be hatched
+as "no radar at this height", as the grid texture's G bit 4 allows); otherwise, with value = (code − `offset`) /
 `scale` in `units`, the class is the number of `bounds` at or below value,
 minus one, kept within 0 to `palette.length` − 1, and the texel is class + 1
 with no status bits, exactly what the engine writes to the grid texture
@@ -649,11 +658,14 @@ frame is the composite, whatever product is chosen.
 
 ```json
 "products":[{"id":"REF","name":"Lowest scan"},{"id":"HYBRID","name":"Clear view"},
-            {"id":"CAPPI","name":"Height"},{"id":"CMAX","name":"Column max"}]
+            {"id":"CAPPI","name":"Height","above":["sea","ground"]},{"id":"CMAX","name":"Column max"}]
 ```
 
 Before S29 the list held `CAPPI1` "Height 1 km" and `CAPPI2` "Height 2 km"
 instead of `CAPPI`; they are now aliases `set_product` still accepts (below).
+`above` (S30, only on `CAPPI`) lists what a height can be measured from:
+`sea` level, and `ground` (the terrain, [Terrain](#terrain)). An engine
+older than S30 sends no `above`: its heights are above sea level only.
 
 Each `hello.sites[]` entry names what the station can show and its angles:
 
@@ -678,10 +690,11 @@ Each `hello.sites[]` entry names what the station can show and its angles:
   engine does not know them.
 
 `state.product` is the chosen product, `{"id":"CMAX","elevationIndex":0}`,
-always sent; for `CAPPI` it also carries the height,
-`{"id":"CAPPI","elevationIndex":0,"heightM":3000}` (S29; `heightM` is sent
-with `CAPPI` only). It is shared engine state, like the station: one
-client's `set_product` changes it for every client of that engine.
+always sent; for `CAPPI` it also carries the height and what it is
+measured from, `{"id":"CAPPI","elevationIndex":0,"heightM":3000,"above":"sea"}`
+(S29; `heightM` and, since S30, `above` are sent with `CAPPI` only). It is
+shared engine state, like the station: one client's `set_product` changes
+it for every client of that engine.
 
 `frame.product`, `productName`, and `elevationDeg` describe the frame on
 screen:
@@ -690,7 +703,7 @@ screen:
 |---|---|---|---|
 | `REF` | `Reflectivity` | one scan angle: the lowest (index 0), or the one chosen | that angle |
 | `HYBRID` | `Clear view` | per azimuth, the lowest angle the terrain does not block | the lowest angle (placement only) |
-| `CAPPI` | `Height 3 km`, `Height 3.5 km`, … | per gate, of the angles whose beam holds `heightM` above sea level, the one whose beam centre is nearest it; none: no data ("no radar at this height") | the lowest angle (placement only) |
+| `CAPPI` | `Height 3 km`, `Height 3.5 km`, `Height 1 km above ground`, … | per gate, of the angles whose beam holds `heightM` above sea level (or above the ground there), the one whose beam centre is nearest it; none: no data ("no radar at this height") | the lowest angle (placement only) |
 | `CMAX` | `Column max` | per gate, the strongest return of any angle above it | the lowest angle (placement only) |
 
 A client shows an angle beside the product only for `REF`. The texture
@@ -700,15 +713,20 @@ for every product, so nothing else in a client changes.
 **`set_product`.** `{"type":"set_product","product":"CMAX"}`,
 `{"type":"set_product","product":"REF","elevationIndex":3}` for one angle,
 or `{"type":"set_product","product":"CAPPI","heightM":3000}` for a height.
-`heightM` is metres above sea level, 500 to 12,000 in steps of 500; absent,
-it is 2,000. The aliases `CAPPI1` and `CAPPI2` are `CAPPI` at 1,000 and
-2,000 m (any `heightM` sent with them is ignored), so a client that still
-offers them keeps working; `state.product` then says `CAPPI`.
+`heightM` is metres, 500 to 12,000 in steps of 500; absent, it is 2,000.
+`above` (S30) is `sea` (the default when absent) or `ground`: with
+`ground`, each point's height is `heightM` above the terrain under it
+([Terrain](#terrain)), so over a 1,200 m plateau "1 km" is 2,200 m above
+sea level. The aliases `CAPPI1` and `CAPPI2` are `CAPPI` at 1,000 and
+2,000 m above sea level (any `heightM` or `above` sent with them is
+ignored), so a client that still offers them keeps working; `state.product`
+then says `CAPPI`.
 It is answered with an `error`, and nothing changes, when the id is neither
 in `hello.products` nor an alias, no station or a grid station is selected,
 the selected station cannot make it, `elevationIndex` is not an index of its
-`elevations` (any index but 0 with another product), or `heightM` is outside
-500–12,000, not a multiple of 500, or sent with a product other than `CAPPI`.
+`elevations` (any index but 0 with another product), `heightM` is outside
+500–12,000, not a multiple of 500, or sent with a product other than `CAPPI`,
+or `above` is neither `sea` nor `ground` or is sent with another product.
 Otherwise, when it differs from `state.product` (another height is another
 choice), `state.product` changes and the selected
 radar's `timeline` becomes its history of that product: the newest frame
@@ -768,6 +786,16 @@ with the beam centre `h = R cos(e) / cos(e + s/R) − R` above the antenna.
   between two far-apart high angles it has gaps. The texel is code 1 with G
   bit 4, like any `nodata`; a client that knows the frame is `CAPPI` may
   draw such texels as a faint hatch (S29) rather than nothing.
+  With `above` `ground` (S30) the target varies from gate to gate: at the
+  output ray's azimuth and the gate's ground distance `s`, the point on the
+  6,371 km sphere (the lookup rule's) has terrain `T` ([Terrain](#terrain)),
+  and `H = heightM + T − altM`; the rest is the same rule, gate by gate.
+  The engine reads the angles that could hold any height from
+  `heightM − altM` to `heightM + max(T) − altM`, so it reads at most a
+  scan or two more than above sea level. The rule, "of the beams covering a
+  point that hold the height, the one whose centre is nearest it, the
+  lower angle on a tie", is the one My mosaic's `height` rule uses per
+  radar.
 - `CMAX`: of the scans covering the gate, the highest measured code (2 and
   up); none measured: 0 if any is below threshold, else 1.
 - `HYBRID`: each radar's blockage table (`engine/data/blockage.json`,
@@ -818,15 +846,24 @@ combine `rules` in the order a chooser lists them, with display names.
   client's view clip of one radar on screen, while this reach is applied by
   the engine when it combines, so a trimmed radar's area falls to its
   neighbours.
-- `rule`: `lowest` (the default when absent) or `strongest`
-  (below).
+- `rule`: `lowest` (the default when absent), `strongest`, or (S30)
+  `height` (below).
+- `heightM` and `above` (S30, with `height` only): the slice's height in
+  metres, 500 to 12,000 in steps of 500 (absent: 2,000), and what it is
+  measured from, `sea` (absent: sea) or `ground` ([Terrain](#terrain)),
+  exactly as `set_product` takes them for one radar.
 - It is answered with an `error`, and nothing changes, for an empty or
   too long list, an unknown id, a composite, the same radar twice, a
-  `reachKm` below `minReachKm` or not a number, or an unknown rule.
+  `reachKm` below `minReachKm` or not a number, an unknown rule, a
+  `heightM` or `above` that `set_product` would refuse, or either of them
+  sent with a rule other than `height`.
 - Otherwise it becomes `state.mosaic`: `sites` in the order sent, each
   with its canonical `id` and the reach in force (`rangeKm` for full,
-  otherwise to 0.1 km), and `rule`. The same radars again, in any order,
-  with the same reaches and rule, change nothing. The set is engine state,
+  otherwise to 0.1 km), and `rule`; with `height`, also `heightM` and
+  `above`, always sent then
+  (`{"sites":[…],"rule":"height","heightM":3000,"above":"sea"}`). The same
+  radars again, in any order, with the same reaches, rule, height and
+  `above`, change nothing; another height is another set. The set is engine state,
   shared by that engine's clients like the station, and a live engine keeps
   it across restarts (`$XDG_CACHE_HOME/omastorm-se/mosaic.json`, checked
   against the station table again at start). A client also remembers its
@@ -845,12 +882,17 @@ them as it draws `sweden`:
   and north edges. It is typically 600–1,000 px a side for three radars and
   at most about 1,600 × 2,600 for twelve spread over the Nordics.
 - `id` is `mymosaic-<T compact>-m<8 hex>`: the set (radars, reaches and
-  rule) names the last part, so each set has a timeline of its own. The
-  engine keeps the current set's frames and the previous set's.
+  rule, and with `height` the height and `above`) names the last part, so
+  each set has a timeline of its own. The engine keeps the current set's
+  frames and the previous set's.
 - `scanTime` is the nominal time T the frame is for (a multiple of 5
   minutes), `sweepEnd` the end of the latest scan used.
-- `product` is `REF`; `productName` is the rule's name (`Lowest beam`,
-  `Strongest`); `elevationDeg` is 0 and not meaningful to show.
+- `product` is `REF`, and `productName` the rule's name (`Lowest beam`,
+  `Strongest`); with `height` (S30), `product` is `CAPPI` and
+  `productName` names the height as a radar's does (`Height 3 km`,
+  `Height 1 km above ground`), so a client that hatches a `CAPPI` frame's
+  no-data texels ("no radar at this height", S29) does so here too.
+  `elevationDeg` is 0 and not meaningful to show.
 - `attribution` names the owner of every radar the frame drew on, joined by
   `; ` (`SMHI, CC BY 4.0; MET Norway, CC BY 4.0; DMI, CC BY 4.0`). The
   station's own `attribution` in `hello` only says that.
@@ -875,6 +917,22 @@ and the gate is one of its gates. Then, with no averaging:
   0.
 - `strongest` (Strongest): the highest measured code (2 and up) of any
   candidate; none measured: 0 if any candidate is below threshold.
+- `height` (S30): each radar's whole volume, not only its lowest scan.
+  For each candidate radar the texel's target is `H = heightM − altM`
+  above its antenna (with `above` `ground`, `heightM + T − altM`, `T` the
+  terrain of the texel, [Terrain](#terrain)), and the radar's scan is
+  chosen by the height rule of `CAPPI` ([Products](#products)): of its
+  scans whose gate at the texel's ground distance is one of their gates
+  and whose beam holds `H` (`|eH − e| ≤ 0.5°`), the one whose beam centre
+  is nearest `H`, the lower angle on a tie; its code at that gate and
+  bearing. A radar with no such scan, or whose chosen scan gives code 1
+  there, is not a candidate. Of the candidates, the one whose beam centre
+  is nearest `H` (to the metre), the nearer radar on a tie; its code, 0
+  included. So each radar's part is exactly its own `CAPPI` at that height,
+  and where two overlap the one that measures closer to the height wins.
+  None: code 1, "no radar at this height". Low slices have gaps between
+  radars (1 km is real only within about 75 km of an SMHI radar; they
+  stand 150–250 km apart); 2–3 km slices are nearly whole.
 - No candidate, or only no-data gates: code 1 (no data, G bit 4), as
   outside a composite's grid. No bias correction is applied.
 - A radar whose scan at T reaches less far than its full range (DMI
@@ -904,6 +962,37 @@ selected, and never kept warm (`OMASTORM_WARM` does not accept
 100 KB, a Norwegian one about 1 request and 0.4 MB (the file read whole), a
 Danish one 20–25 requests and about 240 KB, so Vara + Hurum + Sindal cost
 about 10 MB an hour while shown.
+
+The `height` rule (S30) reads each radar's every scan, through the tilt
+store: a Swedish volume is about 39 range requests and 740 KB, a Norwegian
+or Danish one 1 request and 0.3–1 MB (read whole), so Vara + Hurum +
+Sindal cost about 25 MB an hour while shown. Every height needs nearly
+every scan, so the whole volume is read once and every later height, and
+`above` either way, is made from the tilt store with no request. Because a
+volume costs 5–6 times a lowest scan, a `height` set builds back the newest
+**6** frame times (half an hour), not 12, when it has an SMHI radar (a set
+of ORD radars only, whose files are 1 request each, builds back 12); its
+timeline still grows as live
+frames arrive. The tilts are read back from the store for each frame, so
+the store must be on (`OMASTORM_TILTS_MB` above 0); with it off, a
+`height` set reports the station offline with that reason. A radar whose
+provider publishes one file per angle (FMI) takes part with its lowest scan
+alone, which holds a height only where that one beam does.
+
+## Terrain
+
+Additive since S30 (still version 2). Heights `above` `ground` measure from
+a terrain model the engine carries: `engine/data/terrain-nordic-2km.bin`,
+one mean terrain height per Web Mercator texel of 2,000 m (the composites'
+and My mosaic's lattice, counted from Mercator x = 0 and y = 0, so a My
+mosaic texel is exactly one terrain texel), over the box of every Nordic
+radar's reach, in steps of 10 m, sea and below-sea land as 0. Made once,
+offline, by `scripts/terrain-grid.py` from the Terrarium tiles `HYBRID`'s
+blockage tables use (zoom 8, about 300 m a pixel at 60° N, averaged over
+each texel); sources and licence in `data/README.md`. Outside the
+box the terrain is 0 (sea level). A point is looked up by the texel that
+contains it, nearest, with no interpolation: at 60° N a texel is about
+1 km across, finer than the beam is thick.
 
 ## Configuration
 
@@ -1013,3 +1102,28 @@ Additive since (S25, still version 2):
 - An older client lists `mymosaic` among the composites and draws its
   frames as a composite's; with no set chosen it shows the loading
   placeholder.
+
+Additive since (S30, still version 2):
+
+- `hello.mosaic.rules` gains `height`; `set_mosaic` takes `heightM` and
+  `above` with it, and `state.mosaic` echoes them for that rule only. The
+  `lowest` and `strongest` sets and their frame ids are unchanged.
+- `hello.products`' `CAPPI` entry gains `above: ["sea","ground"]`;
+  `set_product` takes an optional `above` with `CAPPI`, and
+  `state.product.above` is sent with `CAPPI` (`sea` when none was sent).
+  Heights above ground are `productName` `Height 1 km above ground`; the
+  frame id's product part is `cappi1000g`.
+- A My mosaic frame of the `height` rule has `product` `CAPPI`.
+- [Terrain](#terrain) is new. A frame above the ground (a radar's or My
+  mosaic's) adds `; terrain: Mapzen Terrain Tiles (AWS open data;
+  Kartverket, NLS Finland, SDFE, EU-DEM/Copernicus)` to its `attribution`,
+  which clients show verbatim.
+- A client may hatch a My mosaic height frame's no-data texels only inside
+  the chosen radars' reach circles (`state.mosaic` and `hello.sites`);
+  outside them no radar was chosen, and it draws nothing there.
+- A client facing an older engine finds no `height` rule and no `above`,
+  and offers neither. An older client sent a `height` set by another
+  client shows its frames as a composite's, named by `productName`, and
+  when it resends its remembered set, that set replaces the height one;
+  one that lists the rules from `hello` may offer `Height` and send it
+  without a height, which the engine takes as 2,000 m above sea level.

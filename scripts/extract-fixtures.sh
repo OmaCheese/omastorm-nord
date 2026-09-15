@@ -11,10 +11,15 @@
 # `--regenerate` is the other half of a refresh: after refresh-fixtures.sh
 # has put the worldwide downloads in data/raw/, it cuts them to the SMHI
 # network and rewrites the vendored copies and data/SHA256SUMS. The 1:10m
-# lines keep every feature with a vertex in the Nordic box of
-# `engine/build.rs` (3–33° E, 53–71.5° N; build.rs then clips vertex by
-# vertex), and cities5000 and admin1 keep Sweden, Norway, Finland, Åland,
-# Denmark and the Baltics. The 1:50m world set, the populated places and the
+# lines keep every feature with a vertex in one of the boxes of
+# `engine/build.rs` (Nordic 3–33° E, 53–71.5° N; since S32 Iberia 11° W–5° E,
+# 34–46° N and the Canaries 19.5–12.5° W, 25.5–31° N; build.rs then clips
+# vertex by vertex), and cities5000 and admin1 keep Sweden, Norway, Finland,
+# Åland, Denmark and the Baltics, and since S32 Spain, Portugal, Andorra and
+# Gibraltar. (S32 cut the fresh 2026-09-15 downloads for the new boxes and
+# countries and appended them: the Nordic lines of that download were
+# byte-identical to the vendored ones, the Nordic cities5000 rows stayed the
+# 2026-09-14 snapshot.) The 1:50m world set, the populated places and the
 # radar volumes (lowest-tilt extracts, scripts/trim-odim.py and
 # trim-level2.py, data/README.md) stay as they are. Worldwide input is detected
 # and cut; input already cut passes through unchanged, so a rerun is a no-op.
@@ -22,7 +27,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p data/raw
 
-countries='SE|NO|FI|AX|DK|EE|LV|LT'
+countries='SE|NO|FI|AX|DK|EE|LV|LT|ES|PT|AD|GI'
 regenerate() {
   local name
   for name in $(awk '{print $2}' data/SHA256SUMS); do
@@ -37,7 +42,9 @@ regenerate() {
   awk -F '\t' -v re="^($countries)[.]" '$1 ~ re' data/raw/admin1CodesASCII.txt >"$work/admin1CodesASCII.txt"
   for theme in coastline lakes admin_0_boundary_lines_land admin_1_states_provinces_lines; do
     jq -c '
-      def inside: .[0] >= 3 and .[0] <= 33 and .[1] >= 53 and .[1] <= 71.5;
+      def inside: (.[0] >= 3 and .[0] <= 33 and .[1] >= 53 and .[1] <= 71.5)
+        or (.[0] >= -11 and .[0] <= 5 and .[1] >= 34 and .[1] <= 46)
+        or (.[0] >= -19.5 and .[0] <= -12.5 and .[1] >= 25.5 and .[1] <= 31);
       .features |= map(select([.geometry.coordinates | .. | arrays | select(length >= 2 and (.[0] | type) == "number")] | any(inside)))
     ' "data/raw/ne_10m_${theme}.geojson" >"$work/ne_10m_${theme}.geojson"
   done

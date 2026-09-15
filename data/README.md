@@ -202,18 +202,25 @@ Natural Earth coastline, lakes, country boundary lines on land, and
 state/province lines at 1:10m and 1:50m, plus 1:10m populated places, from
 [natural-earth-vector](https://github.com/nvkelso/natural-earth-vector) master.
 Made with Natural Earth; [public domain](https://www.naturalearthdata.com/about/terms-of-use/).
-`engine/build.rs` embeds them as polylines (the 1:10m set clipped to the NEXRAD
-network envelope) and the engine strokes them into `ne` tiles at any zoom
+`engine/build.rs` embeds them as polylines (the 1:10m set clipped to the
+radars' envelopes: the Nordic box, 3–33° E, 53–71.5° N, and since S32 Iberia,
+11° W–5° E, 34–46° N, and the Canary Islands, 19.5–12.5° W, 25.5–31° N) and the engine strokes them into `ne` tiles at any zoom
 (`docs/protocol.md`, tiles). Roads and place labels at closer zooms come from
 OpenMapTiles vector tiles served by OpenFreeMap, © OpenStreetMap contributors
 (ODbL), fetched by the engine at run time and attributed in the UI.
 
 The location picker searches [GeoNames](https://www.geonames.org/)
-`cities5000` (populated places with population ≥ 5000) clipped to that
-same envelope, with admin-1 names from `admin1CodesASCII.txt`.
+`cities5000` (populated places with population ≥ 5000) clipped to those
+same envelopes and to the gazetteer's countries (Sweden, Norway, Finland,
+Åland, Denmark, Estonia, Latvia, Lithuania; since S32 Spain, Portugal,
+Andorra, Gibraltar), with admin-1 names from `admin1CodesASCII.txt`.
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Map labels do
-not use this table. The city-list checksum covers the official 2026-09-10
-snapshot (69,705 records).
+not use this table. The Nordic and Baltic rows are the official 2026-09-10
+snapshot (69,705 records worldwide, 1,074 kept); S32 appended the Spanish,
+Portuguese, Andorran and Gibraltar rows of the 2026-09-15 download (2,037),
+3,111 rows in all, and cut the 1:10m lines of the same day's
+natural-earth-vector master to the new boxes (its Nordic cut was
+byte-identical to the vendored one).
 
 ### Terrain (S30)
 

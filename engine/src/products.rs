@@ -511,10 +511,12 @@ const DK_ANGLES: [f64; 10] = [0.5, 0.7, 1.0, 1.5, 2.4, 4.8, 8.4, 10.0, 13.0, 15.
 const FI_ANGLES: [f64; 5] = [0.3, 0.7, 1.5, 3.0, 5.0];
 const FI_ANGLES_KORPPOO: [f64; 5] = [0.5, 0.7, 1.5, 3.0, 5.0];
 const FI_ANGLES_LUOSTO: [f64; 5] = [0.1, 0.7, 1.5, 3.0, 5.0];
-/// AEMET's long-range volume (S32, `esahr@20260915T1850@0.5_1.3_2.1@DBZH_TH`),
-/// the same at all 11 radars in ORD's listings of 2026-09-15; the Doppler
-/// volume at :x7 is not read (`ord::one_task`).
+/// AEMET's long-range volume (S32, `esahr@20260915T1850@0.5_1.3_2.1@DBZH_TH`)
+/// at nine radars; Valladolid and San Sebastián scan 0.5/1.4/2.3° (ORD's
+/// listings of 2026-09-15). The Doppler volume at :x7 is not read
+/// (`ord::one_task`).
 const ES_ANGLES: [f64; 3] = [0.5, 1.3, 2.1];
+const ES_ANGLES_NORTH: [f64; 3] = [0.5, 1.4, 2.3];
 
 /// A station's nominal angles, ascending: empty for a composite. FMI's
 /// radars publish a file per angle, which the ORD poller reads as one
@@ -525,7 +527,10 @@ pub fn nominal_angles(station: &Station) -> &'static [f64] {
         (_, ProviderId::Smhi, _) => &SMHI_ANGLES,
         (_, ProviderId::Ord, "NO") => &NO_ANGLES,
         (_, ProviderId::Ord, "DK") => &DK_ANGLES,
-        (_, ProviderId::Ord, "ES") => &ES_ANGLES,
+        (_, ProviderId::Ord, "ES") => match station.id.as_str() {
+            "eslid" | "essse" => &ES_ANGLES_NORTH,
+            _ => &ES_ANGLES,
+        },
         (_, ProviderId::Ord, "FI") => match station.id.as_str() {
             "fikor" => &FI_ANGLES_KORPPOO,
             "filuo" => &FI_ANGLES_LUOSTO,
@@ -2173,6 +2178,12 @@ mod tests {
                 "dksin-20260914",
                 crate::odim::Tilt::Lowest,
             ),
+            // S32: AEMET's three angles, float64, rstart in metres.
+            (
+                "ord_esahr_202609151900_tilts.h5",
+                "esahr-20260915",
+                crate::odim::Tilt::Lowest,
+            ),
         ] {
             let key: serde_json::Value = serde_json::from_str(
                 &std::fs::read_to_string(format!("{ROOT}golden/{golden}/products.json")).unwrap(),
@@ -2512,12 +2523,12 @@ mod tests {
             .collect();
         assert_eq!(
             radars.len(),
-            41,
-            "12 SE, 12 NO, 12 FI (S24a) and 5 DK radars"
+            52,
+            "12 SE, 12 NO, 12 FI (S24a), 5 DK and 11 ES (S32) radars"
         );
         let (finnish, radars): (Vec<&Station>, Vec<&Station>) =
             radars.into_iter().partition(|s| s.country == "FI");
-        assert_eq!((finnish.len(), radars.len()), (12, 29));
+        assert_eq!((finnish.len(), radars.len()), (12, 40));
         for station in finnish {
             assert_eq!(blockage(&station.id), None, "{}", station.id);
             assert_eq!(

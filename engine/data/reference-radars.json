@@ -1,7 +1,7 @@
 {
  "source": "https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/locations ; https://www.eumetnet.eu/wp-content/themes/aeron-child/observations-programme/current-activities/opera/database/OPERA_Database/OPERA_RADARS_DB.json",
  "retrieved": "2026-09-14",
- "notes": "Reference radars (S23): positions only, drawn as faint marks; not stations. 101 rows are the radars in EUMETNET Open Radar Data's locations list that engine/data/sites.json does not hold (matched by ODIM node code, the Swedish radars' nod included), at ORD's position; 35 of them are unnamed in ORD and take their name from EUMETNET OPERA's radar database. 29 rows are the operational radars (status 1) of the OPERA database for countries ORD does not list: GB 16, HU 5, PT 6, SI 2. The OPERA database states no licence; its rows are credited by source. Written by scripts/fetch-reference-radars.sh.",
+ "notes": "Reference radars (S23): positions only, drawn as faint marks; not stations. 90 rows are the radars in EUMETNET Open Radar Data's locations list that engine/data/sites.json does not hold (matched by ODIM node code, the Swedish radars' nod included), at ORD's position; 35 of them are unnamed in ORD and take their name from EUMETNET OPERA's radar database. 29 rows are the operational radars (status 1) of the OPERA database for countries ORD does not list: GB 16, HU 5, PT 6, SI 2. The OPERA database states no licence; its rows are credited by source. Written by scripts/fetch-reference-radars.sh; S32 took out Spain's 11 when they became stations (the script's own rule: radars sites.json holds are not reference radars).",
  "radars": [
   {
    "id": "behel",
@@ -261,105 +261,6 @@
    "country": "EE",
    "lat": 58.48231,
    "lon": 25.51866,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "esahr",
-   "name": "Alhaurin Grande",
-   "country": "ES",
-   "lat": 36.61343,
-   "lon": -4.65933,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "esatn",
-   "name": "Artenara",
-   "country": "ES",
-   "lat": 28.01879,
-   "lon": -15.61454,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "esbnv",
-   "name": "Buenavista Norte",
-   "country": "ES",
-   "lat": 28.31093,
-   "lon": -16.82384,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "esclg",
-   "name": "Castillo las Guardas",
-   "country": "ES",
-   "lat": 37.68868,
-   "lon": -6.33308,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "esgld",
-   "name": "Gelida",
-   "country": "ES",
-   "lat": 41.40818,
-   "lon": 1.88489,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "esnjr",
-   "name": "Nijar",
-   "country": "ES",
-   "lat": 36.83243,
-   "lon": -2.0821,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "espdg",
-   "name": "Perdiguera",
-   "country": "ES",
-   "lat": 41.73399,
-   "lon": -0.54594,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "essse",
-   "name": "SanSebastian",
-   "country": "ES",
-   "lat": 43.40333,
-   "lon": -2.84194,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "essft",
-   "name": "Sierra Fuentes",
-   "country": "ES",
-   "lat": 39.42883,
-   "lon": -6.28528,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "estjv",
-   "name": "Torrejon Velasco",
-   "country": "ES",
-   "lat": 40.17592,
-   "lon": -3.71368,
-   "source": "EUMETNET ORD",
-   "retrieved": "2026-09-14"
-  },
-  {
-   "id": "eslid",
-   "name": "Valladolid",
-   "country": "ES",
-   "lat": 41.99556,
-   "lon": -4.60278,
    "source": "EUMETNET ORD",
    "retrieved": "2026-09-14"
   },

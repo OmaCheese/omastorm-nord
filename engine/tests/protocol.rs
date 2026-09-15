@@ -124,11 +124,11 @@ fn fixture_transport_and_shared_commands() {
         refs.iter()
             .all(|r| sites.iter().all(|s| s["id"] != r["id"]))
     );
-    // The 12 SMHI radars, ORD's 29 of Norway, Finland and Denmark (S15),
-    // the national composite (protocol v2) and OPERA's Nordic composite
-    // (S16) and My mosaic (S25): every station says its kind, and the
-    // composites are the grids.
-    assert_eq!(sites.len(), 44);
+    // The 12 SMHI radars, ORD's 29 of Norway, Finland and Denmark (S15)
+    // and 11 of Spain (S32), the national composite (protocol v2) and
+    // OPERA's Nordic composite (S16) and My mosaic (S25): every station says
+    // its kind, and the composites are the grids.
+    assert_eq!(sites.len(), 55);
     assert!(
         sites
             .iter()

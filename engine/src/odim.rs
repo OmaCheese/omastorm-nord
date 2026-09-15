@@ -650,6 +650,28 @@ mod tests {
         assert!(golden.counts.measured > 50_000, "the fixture has echoes");
     }
 
+    /// AEMET (Alhaurín el Grande, S32): an ODIM 2.4 PVOL of float64 with gain
+    /// 1, `undetect` −32 and `nodata` 95.5, TH stored before DBZH, 360 rays of
+    /// 250 gates of 1 km, and `rstart` 200 written in metres: the first gate's
+    /// centre is 700 m out, not 200.5 km (the key decides the unit from the
+    /// pulse rate, independently of `rstart_km`).
+    #[test]
+    fn aemet_alhaurin_reads_rstart_in_metres_and_float_markers() {
+        let (sweep, site, golden) =
+            matches_golden("ord_esahr_202609151900.h5", "esahr-20260915", Tilt::Lowest);
+        assert_eq!(golden.odim_dataset, "/dataset1/data1");
+        assert_eq!((sweep.rays.len(), sweep.gates), (360, 250));
+        assert_eq!((sweep.first_gate_m, sweep.gate_spacing_m), (700, 1000));
+        assert_eq!(golden.ray_time_base, "2026-09-15T19:00:04Z");
+        assert_eq!(site.source_item("NOD"), Some("esahr"));
+        assert_eq!(site.source_item("PLC"), Some("Alhaurin Grande"));
+        assert!(golden.counts.measured > 5_000, "the fixture has echoes");
+        // The rule itself: ODIM's kilometres below 50, metres from there.
+        assert_eq!(rstart_km(0.5), 0.5);
+        assert_eq!(rstart_km(200.0), 0.2);
+        assert_eq!(rstart_km(125.0), 0.125);
+    }
+
     /// FMI (Korppoo): a single-sweep SCAN (ODIM 2.3) holding TH as data1 and
     /// DBZH as data2; `startazA`/`stopazA` but no ray times.
     #[test]

@@ -29,8 +29,8 @@ m=$(call matches)
 m=$(jq -c 'map(select(. != "sweden" and . != "nordic" and . != "mymosaic"))' <<< "$m")
 # My mosaic (S25) takes none of the four rows.
 [[ $m == '["vara","atvidaberg"'* || $m == '["vara","angelholm"'* ]] || fail "Empty query did not list the nearest stations after the composites: $m"
-# 44: SMHI's 12 radars, ORD's 29 (NO, FI, DK: S15), the national composite (protocol v2, S8), OPERA's Nordic one (S16) and My mosaic (S25).
-expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":44,"focused":true}' "$(call status)"
+# 55: SMHI's 12 radars, ORD's 29 (NO, FI, DK: S15) and 11 (ES: S32), the national composite (protocol v2, S8), OPERA's Nordic one (S16) and My mosaic (S25).
+expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":55,"focused":true}' "$(call status)"
 call open vara
 expect 'ID prefix ranks first' '"vara"' "$(call matches | cut -d, -f1 | tr -d '[]')"
 call open ostersund

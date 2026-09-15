@@ -17,8 +17,8 @@ ShellRoot {
         interval: 1000; running: true
         onTriggered: {
             check(!!engine.state, "No socket state received");
-            // The 12 SMHI radars, ORD's 29 (NO, FI, DK: S15), the national composite (protocol v2), OPERA's Nordic one (S16) and My mosaic (S25).
-            check(engine.sites.filter(s => s.kind === "polar").length === 41
+            // The 12 SMHI radars, ORD's 29 (NO, FI, DK: S15) and 11 (ES: S32), the national composite (protocol v2), OPERA's Nordic one (S16) and My mosaic (S25).
+            check(engine.sites.filter(s => s.kind === "polar").length === 52
                   && engine.sites.filter(s => s.kind === "grid").map(s => s.id).join() === "sweden,nordic,mymosaic", "No site table received");
             check(engine.texture.indexOf("file://") === 0, "No engine texture");
             check(engine.azimuthLut.indexOf("file://") === 0 && engine.azimuthLut !== engine.texture, "No engine azimuth lookup");

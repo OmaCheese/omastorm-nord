@@ -124,8 +124,12 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--cache", required=True)
     p.add_argument("--out", default="engine/data/blockage.json")
+    # S32: keep the radars --out already holds, byte for byte, and add or
+    # replace only the ones named (Spain's 11 beside S26's 29).
+    p.add_argument("--merge", action="store_true")
     p.add_argument("radars", nargs="+")
     args = p.parse_args()
+    held = json.load(open(args.out)) if args.merge and os.path.exists(args.out) else None
     sites = {s["id"]: s for s in json.load(open("engine/data/sites.json"))["sites"]}
     terrain = Terrain(args.cache)
     radars, report = {}, {}
@@ -149,6 +153,11 @@ def main():
         "retrieved": datetime.date.today().isoformat(),
         "radars": {rid: radars[rid] for rid in sorted(radars)},
     }
+    if held:
+        kept = {rid: t for rid, t in held["radars"].items() if rid not in radars}
+        doc["radars"] = {rid: t for rid, t in sorted({**kept, **radars}.items())}
+        if held["retrieved"] != doc["retrieved"]:
+            doc["retrieved"] = f"{held['retrieved']}; {', '.join(sorted(radars))}: {doc['retrieved']}"
     with open(args.out, "w") as fh:
         fh.write("{\n")
         for key in ("source", "rule", "retrieved"):

@@ -6,6 +6,12 @@ import "Keys.js" as KeyMap
 FocusScope {
     id: card
     required property var session
+    // Review S3: the session counts open popovers (the bar drops the card
+    // when it closes), to put a composite's product back to REF with none.
+    QtObject {
+        Component.onCompleted: card.session.popovers += 1
+        Component.onDestruction: card.session.popovers = Math.max(0, card.session.popovers - 1)
+    }
     property var theme: session.theme.snapshot
     property alias engine: connection
     readonly property var state: connection.state

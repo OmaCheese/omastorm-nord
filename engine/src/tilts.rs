@@ -429,26 +429,34 @@ impl Store {
     /// One stored tilt, by dataset index; `None` when it is not stored (or
     /// its file has gone, which forgets it). Marks it used.
     pub fn tilt(&self, station: &str, time_ms: i64, dataset: usize) -> io::Result<Option<Tilt>> {
-        let file: Option<String> = {
-            let conn = self.conn.lock().unwrap();
-            let file = conn
-                .query_row(
-                    "SELECT file FROM tilts WHERE station = ?1 AND time_ms = ?2 AND dataset = ?3",
-                    params![station, time_ms, dataset as i64],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(sql)?;
-            if file.is_some() {
-                conn.execute(
-                    "UPDATE tilts SET used_ms = ?4
-                     WHERE station = ?1 AND time_ms = ?2 AND dataset = ?3",
-                    params![station, time_ms, dataset as i64, now_ms()],
-                )
-                .map_err(sql)?;
-            }
-            file
-        };
+        // Marking a tilt that is not stored changes nothing.
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tilts SET used_ms = ?4
+                 WHERE station = ?1 AND time_ms = ?2 AND dataset = ?3",
+                params![station, time_ms, dataset as i64, now_ms()],
+            )
+            .map_err(sql)?;
+        self.read_tilt(station, time_ms, dataset)
+    }
+
+    /// `tilt` without marking it used: `tilts` marks a whole volume in one
+    /// statement (S24b review S2: one commit a tilt, 5–6 ms each in WAL with
+    /// `synchronous=FULL`, was ~2 s of a Nordic composite's frame).
+    fn read_tilt(&self, station: &str, time_ms: i64, dataset: usize) -> io::Result<Option<Tilt>> {
+        let file: Option<String> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT file FROM tilts WHERE station = ?1 AND time_ms = ?2 AND dataset = ?3",
+                params![station, time_ms, dataset as i64],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
         let Some(file) = file else { return Ok(None) };
         match fs::read(self.dir.join(&file)) {
             Ok(bytes) => decode_file(&bytes).map(Some),
@@ -471,14 +479,23 @@ impl Store {
         dead_code,
         reason = "the API S24a, S24b and S25 compose from (engine/README.md)"
     )]
-    /// Every stored tilt of a volume, by dataset, with its index.
+    /// Every stored tilt of a volume, by dataset, with its index; the whole
+    /// volume is marked used in one statement (review S2), not tilt by tilt.
     pub fn tilts(&self, station: &str, time_ms: i64) -> io::Result<Vec<(usize, Tilt)>> {
         let Some(volume) = self.volume(station, time_ms)? else {
             return Ok(Vec::new());
         };
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE tilts SET used_ms = ?3 WHERE station = ?1 AND time_ms = ?2",
+                params![station, time_ms, now_ms()],
+            )
+            .map_err(sql)?;
         let mut out = Vec::new();
         for stored in volume.tilts {
-            if let Some(tilt) = self.tilt(station, time_ms, stored.dataset)? {
+            if let Some(tilt) = self.read_tilt(station, time_ms, stored.dataset)? {
                 out.push((stored.dataset, tilt));
             }
         }
@@ -972,6 +989,20 @@ mod tests {
             }
             let used = store.usage(Some(station)).unwrap();
             assert_eq!(used.tilts, tilts.len() as u64);
+            // Review S2: a whole volume read marks all its tilts at once.
+            let back = store.tilts(station, 1000).unwrap();
+            assert_eq!(back.len(), tilts.len(), "{fixture}: every tilt back");
+            let marks: Vec<i64> = store
+                .conn
+                .lock()
+                .unwrap()
+                .prepare("SELECT used_ms FROM tilts WHERE station = ?1 AND time_ms = 1000")
+                .unwrap()
+                .query_map(params![station], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert!(marks.windows(2).all(|w| w[0] == w[1]), "{marks:?}");
             eprintln!(
                 "{station}: {} bytes stored: {}",
                 used.bytes,

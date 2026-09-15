@@ -591,6 +591,11 @@ Item {
     // site's (radians) and reach (metres), at most 12. Empty: hatched
     // everywhere, as before.
     property var hatchSites: mosaicCircles
+    // S24b: a provider composite's product (sweden, nordic), made by the
+    // engine from all its radars. Its Height is not hatched: 41 radars'
+    // circles do not fit the shader's 12, and its box has no radar in the
+    // corners; nor are My mosaic's circles its business.
+    readonly property bool compositeProduct: grid && sites.some(s => s.id === siteId && s.kind === "grid" && s.provider !== "mosaic")
     readonly property var hatchCircles: !placement || !scan || scan.product !== "CAPPI" || !hatchSites ? []
         : hatchSites.slice(0, 12).map(c => Qt.vector4d(c.lat * Math.PI / 180, (mercatorX(c.lon) - siteMx) * 2 * Math.PI, c.km * 1000, 0))
     function circleAt(i) { return i < hatchCircles.length ? hatchCircles[i] : Qt.vector4d(0, 0, 0, 0); }
@@ -723,7 +728,7 @@ Item {
         property real siteLatDeg: map.siteLat
         property int treatment: map.treatment === "PIXELS" ? 0 : map.treatment === "GLYPHS" ? 1 : 2
         // S29: a height slice's no-data texels hatched, and the reach.
-        property int hatchNodata: map.scan && map.scan.product === "CAPPI" ? 1 : 0
+        property int hatchNodata: map.scan && map.scan.product === "CAPPI" && !map.compositeProduct ? 1 : 0
         // S24a: a storm height's "at least" texels (G bit 8) hatched over
         // their colour.
         property int hatchAtLeast: map.scan && map.scan.product === "ETOP" ? 1 : 0

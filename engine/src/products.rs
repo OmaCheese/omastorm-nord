@@ -1142,14 +1142,19 @@ pub fn vil_code(column: &[(u8, f64)]) -> u8 {
     if readings().all(|&(code, _)| code == 0) {
         return 0;
     }
-    let z = |code: u8| {
-        if code == 0 {
-            0.0
-        } else {
-            let dbz = ((f64::from(code) - 66.0) / 2.0).min(VIL_CAP_DBZ);
-            10f64.powf(dbz / 10.0)
-        }
-    };
+    // Z per code, computed once (S24b: a Nordic mosaic makes 41 radars'
+    // VIL a frame); the same values as computing each one here.
+    static Z: LazyLock<[f64; 256]> = LazyLock::new(|| {
+        std::array::from_fn(|code| {
+            if code == 0 {
+                0.0
+            } else {
+                let dbz = ((code as f64 - 66.0) / 2.0).min(VIL_CAP_DBZ);
+                10f64.powf(dbz / 10.0)
+            }
+        })
+    });
+    let z = |code: u8| Z[usize::from(code)];
     let mut total = 0.0;
     let mut below: Option<(f64, f64)> = None;
     for &(code, height) in readings() {

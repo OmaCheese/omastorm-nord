@@ -7,6 +7,10 @@
 //! - `CAPPI` ("Height", S29) is a horizontal slice at a chosen height above
 //!   sea level (500 m to 12 km), with no data where no beam holds that
 //!   height; `CAPPI1` and `CAPPI2` are its old names for 1 and 2 km (`choose`).
+//!   Since S30 a height may be above the ground instead (`Above::Ground`,
+//!   `Want::CappiGround`): the terrain under each gate (`terrain.rs`) plus
+//!   the height. Its rule, `nearest_beam`, is also My mosaic's `height`
+//!   rule per radar (`mosaic.rs`): one rule, not two copies.
 //!   `CMAX` is the column maximum, `HYBRID` ("Clear view") the lowest
 //!   angle the terrain does not block, per azimuth. These are drawn on the
 //!   lowest scan's rays and gates (`compose`), so the texture, the azimuth
@@ -66,6 +70,10 @@ pub const BEAM_HALF_DEG: f64 = 0.5;
 pub struct Info {
     pub id: &'static str,
     pub name: &'static str,
+    /// What a height can be measured from (S30, `CAPPI` only); not sent
+    /// when empty.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub above: &'static [&'static str],
 }
 
 /// `hello.products`: the vocabulary, in the order a chooser lists it.
@@ -73,20 +81,49 @@ pub const VOCABULARY: [Info; 4] = [
     Info {
         id: REF,
         name: "Lowest scan",
+        above: &[],
     },
     Info {
         id: HYBRID,
         name: "Clear view",
+        above: &[],
     },
     Info {
         id: CAPPI,
         name: "Height",
+        above: &["sea", "ground"],
     },
     Info {
         id: CMAX,
         name: "Column max",
+        above: &[],
     },
 ];
+
+/// What a height is measured from (S30): sea level, or the ground under
+/// each point (`terrain.rs`).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Above {
+    #[default]
+    Sea,
+    Ground,
+}
+
+impl Above {
+    pub fn id(self) -> &'static str {
+        match self {
+            Above::Sea => "sea",
+            Above::Ground => "ground",
+        }
+    }
+
+    pub fn parse(id: &str) -> Option<Above> {
+        [Above::Sea, Above::Ground]
+            .into_iter()
+            .find(|a| a.id() == id)
+    }
+}
 
 /// `state.product`, and what a `set_product` asks for.
 #[derive(Serialize, PartialEq, Clone, Debug)]
@@ -98,6 +135,10 @@ pub struct Choice {
     /// sent, for any other product.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height_m: Option<u32>,
+    /// What `CAPPI`'s height is above (S30); `None`, and not sent, for any
+    /// other product.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub above: Option<Above>,
 }
 
 impl Default for Choice {
@@ -107,6 +148,7 @@ impl Default for Choice {
             id: REF.to_owned(),
             elevation_index: 0,
             height_m: None,
+            above: None,
         }
     }
 }
@@ -114,15 +156,30 @@ impl Default for Choice {
 /// What a `set_product` asks for, as `state.product` will hold it: the
 /// aliases `CAPPI1` and `CAPPI2` become `CAPPI` at 1,000 and 2,000 m (a
 /// `heightM` sent with them is ignored), and `CAPPI` without a height takes
-/// `HEIGHT_DEFAULT_M`. An id neither in the vocabulary nor an alias, or a
-/// height out of range, off the 500 m steps or sent with another product, is
-/// the error its sender hears. Whether the station can make the choice is
-/// `want_for`'s question.
+/// `HEIGHT_DEFAULT_M`; `above` (S30) is sea level unless `ground` is sent
+/// with `CAPPI` (the aliases are above sea level, whatever is sent). An id
+/// neither in the vocabulary nor an alias, a height out of range, off the
+/// 500 m steps or sent with another product, or an `above` that is neither
+/// word or is sent with another product, is the error its sender hears.
+/// Whether the station can make the choice is `want_for`'s question.
 pub fn choose(
     product: &str,
     elevation_index: u32,
     height_m: Option<u32>,
+    above: Option<&str>,
 ) -> Result<Choice, String> {
+    let from = match (product, above) {
+        (CAPPI, Some(word)) => Some(Above::parse(word).ok_or_else(|| {
+            format!("above {word} is not what a height is measured from: sea or ground.")
+        })?),
+        (CAPPI | CAPPI1 | CAPPI2, _) => Some(Above::Sea),
+        (_, Some(word)) => {
+            return Err(format!(
+                "above {word} goes with CAPPI only, not {product}."
+            ));
+        }
+        _ => None,
+    };
     let height = match product {
         CAPPI1 => Some(1_000),
         CAPPI2 => Some(2_000),
@@ -152,6 +209,7 @@ pub fn choose(
         id: if height.is_some() { CAPPI } else { product }.to_owned(),
         elevation_index,
         height_m: height,
+        above: from,
     })
 }
 
@@ -161,6 +219,15 @@ fn km_label(m: u32) -> String {
         format!("{} km", m / 1000)
     } else {
         format!("{:.1} km", f64::from(m) / 1000.0)
+    }
+}
+
+/// A height's `productName` (S29, S30): `Height 3.5 km`, or `Height 1 km
+/// above ground`; My mosaic's `height` frames are named the same way.
+pub fn height_name(m: u32, above: Above) -> String {
+    match above {
+        Above::Sea => format!("Height {}", km_label(m)),
+        Above::Ground => format!("Height {} above ground", km_label(m)),
     }
 }
 
@@ -183,10 +250,22 @@ pub enum Want {
     /// beams are matched against; `.1` the chosen height above sea level in
     /// metres, which names the product.
     Cappi(f64, u32),
+    /// A horizontal slice above the ground (S30): at each gate the target
+    /// is `.0` plus the terrain there, metres above the antenna (`.0` is the
+    /// height less the antenna's altitude); `.1` the chosen height above
+    /// the ground, which names the product; `.2` where the antenna stands.
+    CappiGround(f64, u32, At),
     /// The column maximum.
     ColMax,
     /// Per azimuth, the lowest angle clear of the terrain.
     Hybrid(&'static Blockage),
+}
+
+/// Where a radar's antenna stands, for the terrain under its gates.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct At {
+    pub lat: f64,
+    pub lon: f64,
 }
 
 impl Want {
@@ -222,7 +301,8 @@ impl Want {
     pub fn product(&self) -> (&'static str, String) {
         match self {
             Want::Lowest | Want::Angle(_) => (REF, "Reflectivity".to_owned()),
-            Want::Cappi(_, asl) => (CAPPI, format!("Height {}", km_label(*asl))),
+            Want::Cappi(_, asl) => (CAPPI, height_name(*asl, Above::Sea)),
+            Want::CappiGround(_, agl, _) => (CAPPI, height_name(*agl, Above::Ground)),
             Want::ColMax => (CMAX, "Column max".to_owned()),
             Want::Hybrid(_) => (HYBRID, "Clear view".to_owned()),
         }
@@ -233,12 +313,14 @@ impl Want {
     /// for the angle 4.0°, `cappi3500` for a height of 3,500 m above sea level
     /// (every height in metres, `cappi500` to `cappi12000`: S20's `cappi1`
     /// and `cappi2` rings, made by another rule, never meet a height's and are
-    /// pruned as products no longer chosen), and so on.
+    /// pruned as products no longer chosen), `cappi1000g` for 1,000 m above
+    /// the ground (S30), and so on.
     pub fn variant(&self) -> String {
         match self {
             Want::Lowest => "e0".to_owned(),
             Want::Angle(deg) => format!("a{}", (deg * 10.0).round() as i64),
             Want::Cappi(_, asl) => format!("cappi{asl}"),
+            Want::CappiGround(_, agl, _) => format!("cappi{agl}g"),
             Want::ColMax => "cmax".to_owned(),
             Want::Hybrid(_) => "clear".to_owned(),
         }
@@ -265,7 +347,10 @@ pub fn variant_of(frame_id: &str) -> &str {
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let hex8 = |s: &str| s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit());
     let product = matches!(last, "cmax" | "clear")
-        || last.strip_prefix("cappi").is_some_and(digits)
+        || last.strip_prefix("cappi").is_some_and(|h| {
+            // S30: above the ground ends in `g`.
+            digits(h) || h.strip_suffix('g').is_some_and(digits)
+        })
         || last.strip_prefix('a').is_some_and(digits)
         // S25: a My mosaic set (`mosaic::Set::variant`).
         || last.strip_prefix('m').is_some_and(hex8);
@@ -351,18 +436,30 @@ pub fn site_entry(station: Station) -> crate::protocol::SiteEntry {
 }
 
 /// What `choice` makes on `station`; `None` when the station cannot make it
-/// (a grid station makes nothing to choose).
+/// (a grid station makes nothing to choose). A height above the ground
+/// (S30) is measured from the terrain under each gate of this station.
 pub fn want_for(station: &Station, choice: &Choice) -> Option<Want> {
     let (products, _) = for_station(station);
     if !products.contains(&choice.id.as_str()) {
         return None;
     }
-    Want::of(
+    let want = Want::of(
         choice,
         nominal_angles(station),
         blockage(&station.id),
         station.alt_m,
-    )
+    )?;
+    Some(match (want, choice.above) {
+        (Want::Cappi(base, agl), Some(Above::Ground)) => Want::CappiGround(
+            base,
+            agl,
+            At {
+                lat: station.lat,
+                lon: station.lon,
+            },
+        ),
+        (want, _) => want,
+    })
 }
 
 /// The angle a `REF` choice names on `station`, in degrees; `None` for any
@@ -511,9 +608,40 @@ fn grounds(infos: &[TiltInfo], lowest: usize) -> Vec<f64> {
 
 /// The elevation, in radians, at which the antenna sees the point at ground
 /// distance `ground_m` and `height_m` above the antenna, on the 4/3 earth.
-fn elevation_to(ground_m: f64, height_m: f64) -> f64 {
+pub fn elevation_to(ground_m: f64, height_m: f64) -> f64 {
     let (theta, r) = (ground_m / EARTH_M, EARTH_M + height_m);
     (r * theta.cos() - EARTH_M).atan2(r * theta.sin())
+}
+
+/// The height rule (S29; S30 uses it per radar in My mosaic too): of the
+/// scans covering a point, given as (index, angle in degrees, beam centre
+/// above the antenna there in metres), those whose beam holds `target`
+/// metres above the antenna, which the antenna sees at `seen` radians
+/// (`elevation_to`), within `BEAM_HALF_DEG` of the scan's angle; of those,
+/// the one whose beam centre is nearest `target`, the lower angle on a tie.
+/// With how far that centre is from `target`, metres. `None`: no beam
+/// holds it, "no radar at this height".
+pub fn nearest_beam(
+    seen: f64,
+    target: f64,
+    beams: impl IntoIterator<Item = (usize, f64, f64)>,
+) -> Option<(usize, f64)> {
+    let half = BEAM_HALF_DEG.to_radians();
+    let mut best: Option<(usize, f64, f64)> = None;
+    for (k, deg, height) in beams {
+        if (seen - deg.to_radians()).abs() > half {
+            continue;
+        }
+        let d = (height - target).abs();
+        let better = match best {
+            None => true,
+            Some((_, held_deg, held_d)) => d < held_d || (d == held_d && deg < held_deg),
+        };
+        if better {
+            best = Some((k, deg, d));
+        }
+    }
+    best.map(|(k, _, d)| (k, d))
 }
 
 /// Per scan, per output gate, where it covers the gate (`docs/protocol.md`,
@@ -586,26 +714,11 @@ fn cappi_pick(
     g: usize,
     height: f64,
 ) -> Option<usize> {
-    let seen = elevation_to(ground_m, height);
-    let half = BEAM_HALF_DEG.to_radians();
-    let mut best: Option<(usize, f64)> = None;
-    for (k, per_gate) in hits.iter().enumerate() {
-        let Some(hit) = per_gate[g] else { continue };
-        if (seen - infos[k].elangle.to_radians()).abs() > half {
-            continue;
-        }
-        let d = (hit.height - height).abs();
-        let better = match best {
-            None => true,
-            Some((held, held_d)) => {
-                d < held_d || (d == held_d && infos[k].elangle < infos[held].elangle)
-            }
-        };
-        if better {
-            best = Some((k, d));
-        }
-    }
-    best.map(|(k, _)| k)
+    let covering = hits
+        .iter()
+        .enumerate()
+        .filter_map(|(k, per_gate)| per_gate[g].map(|hit| (k, infos[k].elangle, hit.height)));
+    nearest_beam(elevation_to(ground_m, height), height, covering).map(|(k, _)| k)
 }
 
 /// The clear view's scan for one azimuth degree: the lowest at or above
@@ -641,6 +754,24 @@ pub fn needed(want: Want, infos: &[TiltInfo]) -> Vec<usize> {
             for (g, &s) in grounds(infos, lowest).iter().enumerate() {
                 if let Some(k) = cappi_pick(&hits, infos, s, g, height) {
                     picked[k] = true;
+                }
+            }
+        }
+        Want::CappiGround(base, _, _) => {
+            // The ground under a gate is 0 to the grid's highest, and the
+            // angle a height is seen at grows with it: every scan covering
+            // the gate whose beam holds some height in that span, a
+            // superset of what `compose` picks at any azimuth.
+            let top = base + crate::terrain::max_m();
+            let half = BEAM_HALF_DEG.to_radians();
+            let hits = hits(infos, lowest);
+            for (g, &s) in grounds(infos, lowest).iter().enumerate() {
+                let (low, high) = (elevation_to(s, base) - half, elevation_to(s, top) + half);
+                for (k, per_gate) in hits.iter().enumerate() {
+                    let e = infos[k].elangle.to_radians();
+                    if per_gate[g].is_some() && e >= low && e <= high {
+                        picked[k] = true;
+                    }
                 }
             }
         }
@@ -715,8 +846,9 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
             None => 1,
         })
     };
+    let ground = grounds(&infos, 0);
     let per_gate_pick: Vec<Option<usize>> = match want {
-        Want::Cappi(height, _) => grounds(&infos, 0)
+        Want::Cappi(height, _) => ground
             .iter()
             .enumerate()
             .map(|(g, &s)| cappi_pick(&hits, &infos, s, g, height))
@@ -733,9 +865,24 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
             }
             _ => None,
         };
+        // Above the ground (S30): the target at each gate of this ray is the
+        // terrain under it plus the height.
+        let ground_pick: Vec<Option<usize>> = match want {
+            Want::CappiGround(base, _, at) => ground
+                .iter()
+                .enumerate()
+                .map(|(g, &s)| {
+                    let (lat, lon) =
+                        crate::terrain::destination(at.lat, at.lon, f64::from(out.azimuth_deg), s);
+                    cappi_pick(&hits, &infos, s, g, base + crate::terrain::at(lat, lon))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let codes: Vec<u8> = (0..gates)
             .map(|g| match want {
                 Want::Cappi(..) => per_gate_pick[g].and_then(|k| value(k, i, g)).unwrap_or(1),
+                Want::CappiGround(..) => ground_pick[g].and_then(|k| value(k, i, g)).unwrap_or(1),
                 Want::Hybrid(_) => hybrid.and_then(|k| value(k, i, g)).unwrap_or(1),
                 Want::ColMax => {
                     let (mut top, mut below) = (None::<u8>, false);
@@ -917,11 +1064,13 @@ mod tests {
             id: id.into(),
             elevation_index: index,
             height_m: None,
+            above: None,
         };
         let height = |m| Choice {
             id: CAPPI.into(),
             elevation_index: 0,
             height_m: Some(m),
+            above: Some(Above::Sea),
         };
         assert_eq!(
             Want::of(&Choice::default(), &elevations, None, 0.0),
@@ -1037,13 +1186,14 @@ mod tests {
 
     #[test]
     fn choosing_a_height() {
-        let ok = |p: &str, i, h| choose(p, i, h).unwrap();
+        let ok = |p: &str, i, h| choose(p, i, h, None).unwrap();
         assert_eq!(
             ok("CAPPI", 0, Some(3500)),
             Choice {
                 id: "CAPPI".into(),
                 elevation_index: 0,
-                height_m: Some(3500)
+                height_m: Some(3500),
+                above: Some(Above::Sea),
             }
         );
         assert_eq!(ok("CAPPI", 0, None).height_m, Some(2000), "the default");
@@ -1072,17 +1222,17 @@ mod tests {
             ("CMAX", Some(2000), "CAPPI only"),
             ("VIL", None, "Unknown product VIL"),
         ] {
-            let e = choose(p, 0, h).unwrap_err();
+            let e = choose(p, 0, h, None).unwrap_err();
             assert!(e.contains(says), "{e}");
         }
         let every: Vec<u32> = (0..=30_000)
-            .filter(|&m| choose("CAPPI", 0, Some(m)).is_ok())
+            .filter(|&m| choose("CAPPI", 0, Some(m), None).is_ok())
             .collect();
         assert_eq!(every, (1..=24).map(|n| n * 500).collect::<Vec<u32>>());
         // `state.product` sends heightM with CAPPI only.
         assert_eq!(
             serde_json::to_value(ok("CAPPI", 0, Some(3000))).unwrap(),
-            serde_json::json!({"id":"CAPPI","elevationIndex":0,"heightM":3000})
+            serde_json::json!({"id":"CAPPI","elevationIndex":0,"heightM":3000,"above":"sea"})
         );
         assert_eq!(
             serde_json::to_value(Choice::default()).unwrap(),
@@ -1335,6 +1485,7 @@ mod tests {
             id: id.into(),
             elevation_index: index,
             height_m: None,
+            above: None,
         };
         let smhi = polar(ProviderId::Smhi, "SE");
         assert_eq!(want_for(&smhi, &choice("CMAX", 0)), Some(Want::ColMax));
@@ -1359,6 +1510,7 @@ mod tests {
             id: id.into(),
             elevation_index: index,
             height_m: None,
+            above: None,
         };
         let (smhi, norway, finland) = (
             polar(ProviderId::Smhi, "SE"),
@@ -1384,7 +1536,14 @@ mod tests {
             id: CAPPI.into(),
             elevation_index: 0,
             height_m: Some(3500),
+            above: Some(Above::Sea),
         };
+        // And a height above the ground stays above the ground (S30).
+        let over = Choice {
+            above: Some(Above::Ground),
+            ..tall.clone()
+        };
+        assert_eq!(carry(&over, None, &norway), over);
         assert_eq!(carry(&tall, None, &norway), tall);
         // FMI makes neither: the lowest scan.
         assert_eq!(carry(&tall, None, &finland), Choice::default());
@@ -1395,6 +1554,185 @@ mod tests {
         // A composite keeps the choice for the next radar.
         assert_eq!(carry(&choice("REF", 4), Some(2.5), &grid), choice("REF", 4));
         assert_eq!(carry(&Choice::default(), None, &smhi), Choice::default());
+    }
+
+    #[test]
+    fn choosing_what_a_height_is_above() {
+        let ok = |h, above| choose(CAPPI, 0, h, above).unwrap();
+        assert_eq!(ok(Some(1000), Some("ground")).above, Some(Above::Ground));
+        assert_eq!(ok(Some(1000), None).above, Some(Above::Sea), "the default");
+        assert_eq!(
+            choose(CAPPI1, 0, None, Some("ground")).unwrap(),
+            ok(Some(1000), Some("sea")),
+            "an alias is above sea level"
+        );
+        assert_eq!(choose(CMAX, 0, None, None).unwrap().above, None);
+        for (p, above, says) in [
+            (CAPPI, "space", "sea or ground"),
+            (CMAX, "sea", "CAPPI only"),
+            (REF, "ground", "CAPPI only"),
+        ] {
+            let e = choose(p, 0, None, Some(above)).unwrap_err();
+            assert!(e.contains(says), "{e}");
+        }
+        assert_eq!(
+            serde_json::to_value(ok(Some(3000), Some("ground"))).unwrap(),
+            serde_json::json!({"id":"CAPPI","elevationIndex":0,"heightM":3000,"above":"ground"})
+        );
+        // hello.products: CAPPI says what a height can be above; the rest
+        // are as they were.
+        let hello = serde_json::to_value(VOCABULARY).unwrap();
+        assert_eq!(
+            hello[2],
+            serde_json::json!({"id":"CAPPI","name":"Height","above":["sea","ground"]})
+        );
+        assert_eq!(
+            hello[0],
+            serde_json::json!({"id":"REF","name":"Lowest scan"})
+        );
+        // A station's ground under its gates: its own place.
+        let station = Station {
+            alt_m: 300.0,
+            lat: 60.0,
+            lon: 9.0,
+            ..polar(ProviderId::Ord, "NO")
+        };
+        let ground = want_for(&station, &ok(Some(1000), Some("ground"))).unwrap();
+        assert_eq!(
+            ground,
+            Want::CappiGround(700.0, 1000, At { lat: 60.0, lon: 9.0 })
+        );
+        assert_eq!(ground.variant(), "cappi1000g");
+        assert_eq!(ground.product(), (CAPPI, "Height 1 km above ground".into()));
+        let sea = want_for(&station, &ok(Some(1000), Some("sea"))).unwrap();
+        assert_eq!(sea, Want::Cappi(700.0, 1000));
+        assert_ne!(sea.variant(), ground.variant());
+        assert_eq!(
+            variant_of("nohur-20260914T093000Z-cappi1000g"),
+            "cappi1000g"
+        );
+        assert_eq!(variant_of("x-cappi1000q"), "e0");
+        assert_eq!(variant_of("x-cappig"), "e0");
+    }
+
+    #[test]
+    fn the_nearest_beam_rule() {
+        let seen = 1.0f64.to_radians();
+        // 0.6° holds (0.4° off), 1.6° does not (0.6° off); of those that
+        // hold, the centre nearest 1,000 m.
+        assert_eq!(
+            nearest_beam(
+                seen,
+                1000.0,
+                [
+                    (0, 0.6, 900.0),
+                    (1, 1.0, 1030.0),
+                    (2, 1.4, 1010.0),
+                    (3, 1.6, 1000.0)
+                ]
+            ),
+            Some((2, 10.0))
+        );
+        assert_eq!(
+            nearest_beam(seen, 1000.0, [(5, 1.2, 1010.0), (4, 0.8, 990.0)]),
+            Some((4, 10.0)),
+            "a tie: the lower angle"
+        );
+        assert_eq!(nearest_beam(seen, 1000.0, [(0, 2.0, 1000.0)]), None);
+        assert_eq!(nearest_beam(seen, 1000.0, []), None);
+    }
+
+    /// A height above the ground (S30) against the protocol's rule written
+    /// out here, point by point: the terrain under each gate plus the
+    /// height, then the nearest beam that holds it. Near Jotunheimen, where
+    /// the ground is 0.5 to 2 km up, the slice differs from the one above
+    /// sea level; over the sea it is the same.
+    #[test]
+    fn a_height_above_ground_follows_the_terrain() {
+        let at = At {
+            lat: 61.3,
+            lon: 8.2,
+        };
+        let (alt, agl) = (600.0, 1000u32);
+        let base = f64::from(agl) - alt;
+        let markers = [
+            (0.5, 10u8),
+            (1.0, 20),
+            (1.5, 30),
+            (2.5, 40),
+            (4.0, 50),
+            (8.0, 60),
+            (14.0, 70),
+        ];
+        let tilts = || -> Vec<Tilt> {
+            markers
+                .iter()
+                .map(|&(e, c)| scan(e, 360, 480, 500, move |_, _| c))
+                .collect()
+        };
+        let want = Want::CappiGround(base, agl, at);
+        let out = compose(want, tilts()).unwrap();
+        let sea = compose(Want::Cappi(base, agl), tilts()).unwrap();
+        let e0 = 0.5f64.to_radians();
+        let half = 0.5f64.to_radians();
+        let (mut checked, mut differ, mut level) = (0, 0, 0);
+        for i in (0..360).step_by(5) {
+            for g in (0..480).step_by(3) {
+                let r = 250.0 + 500.0 * g as f64;
+                let s = EARTH_M * (r * e0.cos()).atan2(EARTH_M + r * e0.sin());
+                let az = f64::from(out.rays[i].azimuth_deg);
+                let (lat, lon) = crate::terrain::destination(at.lat, at.lon, az, s);
+                let terrain = crate::terrain::at(lat, lon);
+                let target = base + terrain;
+                let th = s / EARTH_M;
+                let seen =
+                    ((EARTH_M + target) * th.cos() - EARTH_M).atan2((EARTH_M + target) * th.sin());
+                let mut best: Option<(u8, f64)> = None;
+                for &(deg, code) in &markers {
+                    let e = f64::to_radians(deg);
+                    let c = (e + th).cos();
+                    let slant = EARTH_M * th.sin() / c;
+                    let gate = ((slant - 250.0) / 500.0).round();
+                    if c <= 1e-9 || !(0.0..480.0).contains(&gate) || (seen - e).abs() > half {
+                        continue;
+                    }
+                    let miss = (EARTH_M * e.cos() / c - EARTH_M - target).abs();
+                    if best.is_none_or(|(_, m)| miss < m) {
+                        best = Some((code, miss));
+                    }
+                }
+                let expect = best.map_or(1, |(c, _)| c);
+                assert_eq!(
+                    out.rays[i].codes[g], expect,
+                    "ray {i} gate {g}: {terrain} m of ground"
+                );
+                checked += 1;
+                differ += usize::from(out.rays[i].codes[g] != sea.rays[i].codes[g]);
+                if terrain == 0.0 {
+                    level += 1;
+                    assert_eq!(out.rays[i].codes[g], sea.rays[i].codes[g], "sea level");
+                }
+            }
+        }
+        assert!(
+            differ * 5 > checked && level > 100,
+            "{differ} of {checked} differ from above sea level; {level} over the sea"
+        );
+        // The scans `needed` names are all `compose` uses: the same slice.
+        let infos: Vec<TiltInfo> = tilts().iter().map(Tilt::info).collect();
+        let keep = needed(want, &infos);
+        let subset: Vec<Tilt> = tilts()
+            .into_iter()
+            .enumerate()
+            .filter(|(k, _)| keep.contains(k))
+            .map(|(_, t)| t)
+            .collect();
+        let again = compose(want, subset).unwrap();
+        assert!(again.rays.iter().zip(&out.rays).all(|(a, b)| a.codes == b.codes));
+        assert!(
+            keep.len() >= needed(Want::Cappi(base, agl), &infos).len(),
+            "at least what the same height above sea level reads"
+        );
     }
 
     /// The multi-angle fixtures against their answer keys
@@ -1599,6 +1937,7 @@ mod tests {
                 id: HYBRID.into(),
                 elevation_index: 0,
                 height_m: None,
+                above: None,
             };
             assert_eq!(want_for(station, &choice), blockage(id).map(Want::Hybrid));
         }

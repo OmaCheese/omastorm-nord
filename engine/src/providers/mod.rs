@@ -128,16 +128,24 @@ pub async fn poll(
     }
 }
 
-/// One radar's lowest scan for My mosaic (S25): its provider's poller,
-/// through the tilt store, `depth` volumes deep, reporting to the mosaic.
-/// `known` holds the nominal times the mosaic already has. A composite, or
-/// the mosaic itself, has no lowest scan and polls nothing.
-pub async fn poll_lowest(station: Station, events: Sender<Event>, known: Vec<i64>, depth: usize) {
+/// One radar of My mosaic (S25): its provider's poller, through the tilt
+/// store, `depth` volumes deep, reporting to the mosaic. `want` is the
+/// lowest scan (S25), or every scan for a height set (S30: `Want::ColMax`
+/// reads the whole volume into the store). `known` holds the nominal times
+/// the mosaic already has. A composite, or the mosaic itself, has no scan
+/// and polls nothing.
+pub async fn poll_lowest(
+    station: Station,
+    events: Sender<Event>,
+    known: Vec<i64>,
+    depth: usize,
+    want: crate::products::Want,
+) {
     match station.provider {
         ProviderId::Smhi if station.kind == SiteKind::Polar => {
-            crate::smhi_live::poll_lowest(station.id, events, known, depth).await;
+            crate::smhi_live::poll_lowest(station.id, events, known, depth, want).await;
         }
-        ProviderId::Ord => ord::poll_lowest(station, events, known, depth).await,
+        ProviderId::Ord => ord::poll_lowest(station, events, known, depth, want).await,
         _ => eprintln!("{}: no lowest scan to poll for a mosaic", station.id),
     }
 }

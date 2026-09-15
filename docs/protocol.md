@@ -1187,8 +1187,14 @@ reason).
   newest **12** (an hour).
 - `OMASTORM_GRID_BACKFILL` (1–12, the engine's environment) lowers both
   depths, for an engine with less to spend.
-- A product is polled only while its composite is selected and showing it;
-  none is ever kept warm. A composite kept warm (`OMASTORM_WARM=sweden`)
+- A product is polled only while its composite is selected and showing it,
+  and while some client is connected: when the engine's last client
+  disconnects while a composite shows a product, the engine goes back to
+  the composite (`state.product` `REF` index 0; the product's frames stay
+  in the catalog, and the choice is kept for the next radar), so a closed
+  tab polls no radar all night. The desktop plugin, whose bar keeps one
+  connection open, sends `set_product` `REF` itself when its popover and
+  window are both closed. None is ever kept warm. A composite kept warm (`OMASTORM_WARM=sweden`)
   is, like any selected station, not polled by its warm poller while it is
   selected, so while one of its products is shown its `REF` ring pauses; it
   backfills the gap when `REF` is shown again or the station is left. The

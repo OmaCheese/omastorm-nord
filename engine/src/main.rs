@@ -1065,6 +1065,37 @@ impl Shared {
         }
         (true, None)
     }
+    /// A composite's product (S24b) is polled only while some client shows
+    /// it (review M1): with no client left, the selected grid station goes
+    /// back to its composite (`REF`), its product frames stay catalogued and
+    /// the choice stays aside for the next radar, so a closed tab does not
+    /// fetch 41 radars' volumes all night. True when anything changed.
+    fn release_unwatched_product(&mut self) -> bool {
+        if !self.clients.is_empty() || self.state.source != Source::Live {
+            return false;
+        }
+        let Some(station) = self
+            .sites
+            .iter()
+            .find(|s| s.id == self.state.site.id)
+            .cloned()
+        else {
+            return false;
+        };
+        if station.kind != SiteKind::Grid || self.want().is_lowest() {
+            return false;
+        }
+        if self.aside.is_none() {
+            self.aside = Some((self.state.product.clone(), None));
+        }
+        if let Err(message) = self.open_catalog(&station, Want::Lowest) {
+            eprintln!("{} Live {}: {message}", iso(now_ms()), station.id);
+        }
+        self.state.product = products::Choice::default();
+        self.state.connection.status = ConnectionStatus::Loading;
+        self.restart_live("no client shows the product; back to the composite", false);
+        true
+    }
     /// Keep-warm stations (`OMASTORM_WARM`): each one not selected has a
     /// poller of its own that fills its catalog, so opening it finds its
     /// history; the selected station's own poller covers it while selected.
@@ -2048,11 +2079,14 @@ fn client(
             }
             receive(&shared, &tx, &tiles_tx, &bytes);
         }
-        shared
-            .lock()
-            .unwrap()
-            .clients
-            .retain(|(client_id, _)| *client_id != id);
+        {
+            let mut shared = shared.lock().unwrap();
+            shared.clients.retain(|(client_id, _)| *client_id != id);
+            // Review M1: the last client gone, a composite's product stops.
+            if shared.release_unwatched_product() {
+                shared.broadcast();
+            }
+        }
         // `tx` drops here; with the clone in `clients` gone, the writer's
         // queue closes and it shuts the socket down.
     });
@@ -2364,6 +2398,10 @@ fn serve(dir: PathBuf) -> io::Result<()> {
             let mut shared = cleanup_shared.lock().unwrap();
             if shared.state.source == Source::Live {
                 shared.broadcast();
+                // Review M1: a broadcast may have dropped the last client.
+                if shared.release_unwatched_product() {
+                    shared.broadcast();
+                }
                 shared.keep_warm();
                 if !shared.state.site.id.is_empty()
                     && should_restart_live(
@@ -2580,6 +2618,90 @@ mod tests {
             scan_time: format!("2026-09-07T00:{minute:02}:00Z"),
             start_ms: 1_788_998_400_000 + minute * 60_000,
             record: None,
+        }
+    }
+    /// A live engine's shared state with no client, under a scratch dir;
+    /// the runtime is for `restart_live`'s spawn (entered by the caller,
+    /// never driven).
+    fn live_shared(name: &str) -> (Shared, tokio::runtime::Runtime) {
+        let root = std::env::temp_dir().join(format!("omastorm-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("runtime");
+        fs::create_dir_all(&dir).unwrap();
+        let (events, _) = mpsc::channel(16);
+        let osm = protocol::Osm {
+            status: protocol::OsmStatus::Unavailable,
+            source: String::new(),
+            version: String::new(),
+            attribution: String::new(),
+        };
+        let frame = fixture_frame();
+        let shared = Shared {
+            state: initial_state(frame.clone(), osm, Source::Live, ConnectionStatus::Loading),
+            tiles: tiles::Store::open(&dir, "test").unwrap(),
+            clients: Vec::new(),
+            next_client: 0,
+            template: frame,
+            sites: site_table().sites,
+            dir,
+            catalog: Arc::new(catalog::Catalog::open(root.join("frames")).unwrap()),
+            live: None,
+            warm: Vec::new(),
+            warm_pollers: HashMap::new(),
+            product_deg: None,
+            aside: None,
+            last_live_restart: Instant::now(),
+            events,
+            frame_ms: None,
+            timeline: Timeline::new(Vec::new()),
+            pending: None,
+            wake: Arc::new(Notify::new()),
+            last_broadcast: String::new(),
+            logged_condition: None,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        (shared, runtime)
+    }
+    /// Review M1: a composite's product stops, back to the composite, when
+    /// the engine's last client has gone; a radar's product and My mosaic
+    /// are left alone.
+    #[test]
+    fn a_composites_product_stops_when_no_client_is_left() {
+        let (mut shared, runtime) = live_shared("unwatched");
+        let _guard = runtime.enter();
+        shared.state.site.id = "nordic".into();
+        let cmax = products::choose(products::CMAX, 0, None, None).unwrap();
+        shared.state.product = cmax.clone();
+        assert_eq!(shared.variant(), "cmax");
+        let (tx, _client) = mpsc::channel::<String>(4);
+        shared.clients.push((1, tx));
+        assert!(
+            !shared.release_unwatched_product(),
+            "a client still shows it"
+        );
+        assert_eq!(shared.state.product, cmax);
+        shared.clients.clear();
+        assert!(shared.release_unwatched_product());
+        assert_eq!(shared.state.product, products::Choice::default());
+        assert_eq!(
+            shared.aside,
+            Some((cmax.clone(), None)),
+            "kept for the next radar"
+        );
+        assert_eq!(shared.variant(), "e0");
+        assert!(shared.live.is_some(), "the composite's own poller runs");
+        assert_eq!(shared.state.frame.id, "nordic-loading");
+        assert!(!shared.release_unwatched_product(), "once");
+        shared.state.site.id = "vara".into();
+        shared.state.product = cmax.clone();
+        assert!(!shared.release_unwatched_product(), "a radar's product");
+        shared.state.site.id = "mymosaic".into();
+        assert!(!shared.release_unwatched_product(), "My mosaic");
+        if let Some(task) = shared.live.take() {
+            task.abort();
         }
     }
     #[test]

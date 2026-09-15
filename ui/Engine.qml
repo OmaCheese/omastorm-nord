@@ -30,6 +30,19 @@ QtObject {
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-se/"
     /// `state.timeline`, or none (a harness state may leave it out).
     readonly property var timeline: state && state.timeline ? state.timeline : []
+    /// `state.loading` (S31): how far the load this client waits for has
+    /// come, or null (nothing loads, or an engine older than S31, whose
+    /// `connection.status` still says `loading`).
+    readonly property var loading: state && state.source === "live" && state.loading
+        && typeof state.loading.label === "string" && isFinite(state.loading.percent) ? state.loading : null
+    /// S31: while a composite's product has no frame (the placeholder), the
+    /// composite's own newest frame the engine names to draw in its place.
+    readonly property var under: {
+        var u = loading && state && !state.frame.scanTime ? loading.under : null;
+        if (!u || !u.scanTime || !validTexturePath(u.texture)) return null;
+        if (u.kind === "grid") return u.azimuthLut === "" && u.grid ? u : null;
+        return u.kind === "polar" && validTexturePath(u.azimuthLut) ? u : null;
+    }
 
     // The frame on screen (docs/protocol.md, timeline textures). While this
     // client plays its own loop, or has just stepped or scrubbed and waits
@@ -48,6 +61,8 @@ QtObject {
         // under the loop's rule (loopCodes) so pausing never switches kind.
         var own = timeline.find(t => t.id === state.frame.id && t.texture === state.frame.texture);
         if (own && own.codes && loopCodes && state.frame.kind === "grid") return Object.assign({}, state.frame, {codes: own.codes});
+        // S31: the composite under its loading product, not the placeholder.
+        if (under) return under;
         return state.frame;
     }
     readonly property bool playing: looping || (!!state && !!state.playing)

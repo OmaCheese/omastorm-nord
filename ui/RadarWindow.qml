@@ -1110,11 +1110,21 @@ Item {
                         spacing: 8
                         LabelText {
                             id: stripStamp
-                            Layout.fillWidth: true
+                            Layout.fillWidth: !engine.loading
                             visible: !!app.scan && !!app.scan.scanTime
                             text: app.scan ? app.stamp(app.scan.scanTime) : ""
                             font.pixelSize: 10
                             opacity: .65
+                            horizontalAlignment: Text.AlignLeft
+                            elide: Text.ElideRight
+                        }
+                        // S31: what is loading and how far (state.loading).
+                        LabelText {
+                            Layout.fillWidth: true
+                            visible: !!engine.loading
+                            text: engine.loading ? engine.loading.percent + " % · " + engine.loading.label : ""
+                            font.pixelSize: 10
+                            color: app.theme.accent
                             horizontalAlignment: Text.AlignLeft
                             elide: Text.ElideRight
                         }
@@ -1130,6 +1140,20 @@ Item {
                         id: strip
                         Layout.fillWidth: true
                         implicitHeight: 14
+                        // S31: the load's progress, a thin bar under the ticks.
+                        Rectangle {
+                            visible: !!engine.loading
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                            anchors.bottomMargin: -4
+                            height: 2
+                            color: Qt.alpha(app.theme.accent, .18)
+                            Rectangle {
+                                height: parent.height
+                                width: engine.loading ? Math.round(parent.width * Math.max(0, Math.min(100, engine.loading.percent)) / 100) : 0
+                                color: app.theme.accent
+                                Behavior on width { NumberAnimation { duration: 300 } }
+                            }
+                        }
                         Repeater {
                             model: app.slots
                             Rectangle {

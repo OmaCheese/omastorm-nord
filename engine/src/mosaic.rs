@@ -174,6 +174,38 @@ pub const DUE_MS: i64 = 8 * 60 * 1000;
 /// ...and built then once no scan has arrived for this long, so a backfill
 /// still delivering is not cut short.
 pub const QUIET_MS: i64 = 30 * 1000;
+/// S31: how long a radar its poller called silent stays silent to the next
+/// fill (a product switch, a reselect), until a scan of it comes: its poller
+/// says so again only after its first listing, up to a minute into a fill.
+pub const SILENT_MEMORY_MS: i64 = 60 * 60 * 1000;
+/// S31: radars called silent, with when, engine-wide across fills.
+static SILENT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// S31: note radar `id` silent (its poller said so) or heard from again.
+fn remember_silent(id: &str, silent: bool, now: i64) {
+    let mut known = SILENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if silent {
+        known.insert(id.to_owned(), now);
+    } else {
+        known.remove(id);
+    }
+}
+
+/// S31: minutes since radar `id` was called silent, within `SILENT_MEMORY_MS`.
+fn remembered_silent(id: &str, now: i64) -> Option<i64> {
+    let known = SILENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    known
+        .get(id)
+        .map(|at| now - at)
+        .filter(|age| (0..SILENT_MEMORY_MS).contains(age))
+        .map(|age| age / 60_000)
+}
+
 /// A scan for T that comes after T was built builds T once more, while T
 /// is one of the newest two frame times and younger than this.
 pub const LATE_MS: i64 = 12 * 60 * 1000;
@@ -2801,6 +2833,20 @@ async fn run(
     let now = now_ms();
     let depth = layout.backfill();
     let mut schedule = Schedule::new(ranges, &cached).with_depth(depth);
+    // S31: radars an earlier fill heard were silent are not waited for now;
+    // their pollers would say so again only after their first listing.
+    for (i, radar) in layout.radars.iter().enumerate() {
+        if let Some(minutes) = remembered_silent(&radar.station.id, now) {
+            schedule.set_silent(i, true);
+            log_for(
+                &site,
+                format_args!(
+                    "{}: silent (said {minutes} min ago); not waited for",
+                    radar.station.id
+                ),
+            );
+        }
+    }
     // The tilt store first: every stored lowest scan (for a height set,
     // every whole volume) the frames still to build can use, with no
     // request.
@@ -2872,6 +2918,27 @@ async fn run(
             cached.len()
         ),
     );
+    // S31: the fill's progress for `state.loading`, at most once a second
+    // (a stage change at once), until the window is built; the first report
+    // before any poller runs, so a frame the tilt store makes at once
+    // follows a count.
+    let load_name = match &layout.job {
+        Job::Mine => format!("My mosaic, {}", layout.product().1),
+        Job::Grid { .. } => format!("{} {}", layout.name(), layout.product().1),
+    };
+    let variant = layout.variant();
+    let first = schedule.fill(now).map(|f| f.progress(&load_name));
+    let mut filling = first.is_some();
+    let event = Event::Progress {
+        site: site.clone(),
+        variant: variant.clone(),
+        progress: first.clone(),
+    };
+    if events.send(event).await.is_err() {
+        return;
+    }
+    let mut reported: Option<Option<crate::loading::Progress>> = Some(first);
+    let mut reported_at: Option<Instant> = Some(Instant::now());
     if schedule.caught_up(now)
         && events
             .send(Event::Current { site: site.clone() })
@@ -2906,16 +2973,6 @@ async fn run(
         })
         .collect();
     drop(tx);
-    // S31: the fill's progress for `state.loading`, at most once a second
-    // (a stage change at once), until the window is built.
-    let load_name = match &layout.job {
-        Job::Mine => format!("My mosaic, {}", layout.product().1),
-        Job::Grid { .. } => format!("{} {}", layout.name(), layout.product().1),
-    };
-    let variant = layout.variant();
-    let mut filling = true;
-    let mut reported: Option<Option<crate::loading::Progress>> = None;
-    let mut reported_at: Option<Instant> = None;
     loop {
         match timeout(Duration::from_secs(1), rx.recv()).await {
             Ok(None) => return log_for(&site, "every radar's poller ended"),
@@ -2944,6 +3001,7 @@ async fn run(
                         // radar again (not its hours-old last volume).
                         if t >= schedule.floor(now) {
                             schedule.set_silent(i, false);
+                            remember_silent(&site, false, now);
                         }
                         if height && schedule.has(i, t) {
                             // A height set's volume comes as its product and
@@ -3005,6 +3063,7 @@ async fn run(
                         if let Some(i) = index(&radar) {
                             schedule.set_silent(i, true);
                         }
+                        remember_silent(&radar, true, now);
                     }
                     _ => {}
                 }
@@ -3623,6 +3682,22 @@ mod tests {
         assert!(!order.ready(now).contains(&t), "waiting for the far ring");
         order.add(0, t - CADENCE_MS, have(120, 475, t - CADENCE_MS), now, true);
         assert!(order.ready(now).contains(&t), "the far ring is in");
+    }
+
+    #[test]
+    fn a_silent_radar_is_remembered_by_the_next_fill_until_it_is_heard() {
+        let now = 1_800_000_000_000;
+        let id = "s31-test-silent-radar";
+        assert_eq!(remembered_silent(id, now), None);
+        remember_silent(id, true, now);
+        assert_eq!(remembered_silent(id, now + 12 * 60_000), Some(12));
+        assert_eq!(
+            remembered_silent(id, now + SILENT_MEMORY_MS),
+            None,
+            "forgotten after an hour"
+        );
+        remember_silent(id, false, now + 60_000);
+        assert_eq!(remembered_silent(id, now + 2 * 60_000), None, "a scan came");
     }
 
     #[test]

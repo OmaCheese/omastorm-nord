@@ -157,6 +157,11 @@ pub const SPEC: Spec = Spec {
     ranges: PLAN,
 };
 
+/// Development only (S32): a base URL that replaces `CACHE`, so an offline
+/// replay can serve saved files and listings from a local server. Unset in
+/// every real run.
+pub const BASE_ENV: &str = "OMASTORM_ORD_BASE";
+
 /// AEMET's radars (Spain, S32) publish their long-range volume every 10
 /// minutes (measured: the median gap of each of the 11, 2026-09-15), landing
 /// about 5 minutes after the nominal time.
@@ -920,7 +925,12 @@ impl Config {
 
     pub fn ord() -> Self {
         Config {
-            base: CACHE.to_owned(),
+            // Development only (S32): `OMASTORM_ORD_BASE` points the poller
+            // at a local copy of the cache, for offline replays.
+            base: std::env::var(BASE_ENV)
+                .ok()
+                .filter(|b| !b.is_empty())
+                .unwrap_or_else(|| CACHE.to_owned()),
             poll: POLL,
             max_back_off: MAX_BACK_OFF,
             backfill_delay: BACKFILL_DELAY,

@@ -173,9 +173,48 @@ the chosen radars) and S24b (the vertical products on `sweden`/`nordic`):
   `, after its frame was built` when it came too late for its frame: the
   data for judging `DUE_MS` against the providers.
 
+**At a height (S30).** The rule `Rule::Height` (`set_mosaic` `rule`
+`height`, with `heightM` and `above`) slices the chosen radars at one height,
+above sea level or above the ground:
+
+- **Whole volumes, through the tilt store.** Its pollers run with
+  `Want::ColMax` (every scan of each volume; at 0.5–6 km every SMHI scan holds
+  the height somewhere within 240 km, so "only the scans a height needs" is
+  the whole volume anyway), `HEIGHT_BACKFILL + 1` (7) deep instead of 13. The
+  events only say a volume is in; `build_and_send` reads each radar's scans
+  back from the store (`volume_of`) on the blocking pool while it builds, so
+  no decoded volume is held between frames. A stored volume counts at start
+  only when every scan of it is stored (`stored_whole`). A height or `above`
+  change is a new set: its frames come from the store with no range request.
+- **One height rule.** `combine_height` asks, per radar and texel,
+  `products::nearest_beam`, the same function a radar's `CAPPI` uses: of the
+  scans whose gate at the texel's ground distance is one of theirs and whose
+  beam holds the target (`|eH − e| ≤ 0.5°`), the centre nearest it, the
+  lower angle on a tie. A radar whose pick is no data there drops out; of
+  the rest the centre nearest the target to the metre wins, the nearer radar
+  on a tie (`height_key`). Above sea level the pick depends on the distance
+  alone and is tabled once per radar per frame; above the ground the target
+  is `heightM + terrain − altM` per texel, the terrain read from the grid
+  texel that is the mosaic's texel (`Layout::lattice`).
+- Frames are `product` `CAPPI`, named `Height 3 km` or `Height 1 km above
+  ground`, so clients hatch their holes ("no radar at this height").
+
+**Terrain (S30).** `src/terrain.rs` embeds `data/terrain-nordic-2km.bin`
+(1976 × 2556 texels, one mean height per 2 km Mercator texel in 10 m steps,
+row-delta zlib, 1.0 MB; highest texel 2,230 m), inflated on first use.
+`scripts/terrain-grid.py` makes it from Terrarium z8 tiles (sources and
+licence in `data/README.md`). A radar's `CAPPI` above the ground
+(`Want::CappiGround`) looks up the terrain under each output gate along its
+ray on the 6,371 km sphere; `products::needed` reads every scan that could
+hold a height from 0 to the grid's highest ground above the base, a superset
+of what `compose` picks.
+
 Costs: a Vara + Hurum + Sindal layout is 601 × 691 texels; release builds
 place it in 16 ms and combine a frame in 6 ms; twelve radars across the
-Nordics (1576 × 1915) take 78 ms and 25 ms (`cargo test --release mosaic`).
+Nordics (1576 × 1915) take 78 ms and 25 ms (`cargo test --release mosaic`);
+the same twelve with ten angles each slice at 2 km in 98 ms above sea level
+and 192 ms above the ground (S30). A height set's Vara volume is about 39
+range requests, a Norwegian or Danish one 1 request (read whole).
 A radar also kept warm (`OMASTORM_WARM`) is polled twice while the mosaic
 shows (its listings; its volumes come from the tilt store once either
 poller has read them). `OMASTORM_WARM` refuses `mymosaic` itself.

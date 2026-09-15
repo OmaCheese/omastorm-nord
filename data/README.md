@@ -193,6 +193,33 @@ same envelope, with admin-1 names from `admin1CodesASCII.txt`.
 not use this table. The city-list checksum covers the official 2026-09-10
 snapshot (69,705 records).
 
+### Terrain (S30)
+
+`engine/data/terrain-nordic-2km.bin`, the ground that heights "above
+ground" are measured from (`docs/protocol.md`, Terrain), is made by
+`scripts/terrain-grid.py` from Mapzen's **Terrain Tiles** (Terrarium PNG
+encoding, zoom 8), open data on AWS
+(<https://registry.opendata.aws/terrain-tiles/>,
+`s3.amazonaws.com/elevation-tiles-prod`), the same tiles
+`scripts/blockage-tables.py` reads for Clear view. The tiles are a blend of
+several public elevation models; their sources and the credit each asks
+for are listed in
+[joerd's attribution.md](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)
+(for the Nordic countries SRTM, GMTED2010, ETOPO1 and EU-DEM, "produced using
+Copernicus data and information funded by the European Union", and the
+national models it names). Use of the grid follows those terms: credit
+"Terrain Tiles (Mapzen / AWS open data), with SRTM, GMTED2010, ETOPO1,
+EU-DEM and the national models listed by joerd".
+
+Made on 2026-09-15: the box of every station-table radar's 250 km circle on
+the Web Mercator lattice of 2,000 m (1976 × 2556 texels, lattice column 16,
+north row 6034), each texel the mean of the zoom-8 pixels whose centres fall
+in it, sea and land below sea level as 0, in steps of 10 m (highest 2,230 m).
+729 tiles within reach of a radar were read (282 already in the blockage
+tables' cache, 447 fetched, 31.0 MB); the file is 1,025,185 bytes. To remake
+it: `uv run --no-project --with numpy --with pillow python
+scripts/terrain-grid.py --cache <dir>`.
+
 ## Fetching
 
 The engine embeds the Natural Earth geography and the GeoNames gazetteer at

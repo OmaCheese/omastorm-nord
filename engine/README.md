@@ -123,6 +123,35 @@ frame catalog above is unchanged; the store sits beside it:
   of a station at a time is the stored tilt with the smallest angle, present
   for every product read since S26 made it free.
 
+### Vertical products (S24a)
+
+`products.rs` makes two products from a radar's whole volume, on the lowest
+scan's rays and gates like `CMAX` (`docs/protocol.md`, storm height and rain
+mass): **Storm height** (`ETOP`, `echo_top_code`), the height above sea level
+of the highest beam holding 18 dBZ, with an "at least" code (odd, G bit 8 in
+the texture, `mark_texture`) where no beam above it in the column says
+otherwise; and **Rain mass** (`VIL`, `vil_code`), Marshall–Palmer water over
+the gaps between beam centres, reflectivity capped at 56 dBZ. Each brings
+its own units, palette, bounds, `scale` and `offset` (`Want::legend`;
+`main.rs` `legend_of` puts them in the frame and the loading placeholder).
+Far from a radar only low beams reach a column, so a storm height there is
+often "at least": on 2026-09-15 45% of Hurum's drawn texels were.
+
+**FMI's volumes.** ORD's cache holds FMI's scans as one `SCAN` file per angle
+(five per nominal time). For any product but the lowest scan the ORD poller
+lists every angle's file per time (`ord::choose_sets`; the newest time waits
+until it has as many angles as the time before) and `fetch_set` reads them
+whole, one request each, into one volume (`products::scans_of`,
+`products::assemble`). The tilt store keeps the five scans as one volume
+under the source `<day>/FI/<nod>/SCAN/<nod>@<time>` (`ord::set_source`) with
+the full angle table, so every other product of that time is free; the
+backfill's store phase makes a per-angle station's product only from such a
+set. The lowest scan still reads its one file. A product switch on an FMI
+radar backfills 12 volumes (`ord::SET_BACKFILL`). Measured on 2026-09-15:
+Korppoo 5 requests and 604–636 KB a frame; for comparison Vara 39 requests
+and 737 KB, Hurum 1 request and 679–814 KB, Sindal 1 request and 0.98–1.23 MB;
+the second product of each came from the store with no request.
+
 ### My mosaic
 
 `src/mosaic.rs` (S25) makes the grid station `mymosaic` from the lowest scan

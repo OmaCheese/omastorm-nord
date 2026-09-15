@@ -721,7 +721,7 @@ pub struct Sections {
     held: Option<Held>,
     building: Option<String>,
     line: Option<Line>,
-    /// The key and line the section was last cut for.
+    /// The frame the section was last cut for (`None`: cut it again).
     cut_for: Option<String>,
     /// A build that found nothing for its key, and why.
     failed: Option<(String, String)>,
@@ -958,14 +958,20 @@ impl Sections {
         }
         if let Some(held) = &mut self.held {
             held.used = Instant::now();
+            // Another frame at the same time (a product switch: the same
+            // radars and volumes) keeps the grid; what is cut names it.
+            if held.job.frame_id != job.frame_id {
+                held.job.frame_id = job.frame_id;
+                held.job.scan_time = job.scan_time;
+            }
             for w in self.waiting.drain(..) {
                 let profile = Profile::of(&held.grid, &held.job, w.lat, w.lon);
                 let _ = w.reply.try_send(crate::line(&Message::Profile(&profile)));
             }
             if let Some(line) = &self.line
-                && self.cut_for.as_deref() != Some(held.job.key.as_str())
+                && self.cut_for.as_deref() != Some(held.job.frame_id.as_str())
             {
-                self.cut_for = Some(held.job.key.clone());
+                self.cut_for = Some(held.job.frame_id.clone());
                 *state = Some(cut_section(held, line, dir, template));
                 changed = true;
             }
@@ -1542,7 +1548,16 @@ mod tests {
         let (wlat, wlon) = crate::terrain::destination(lat, lon, 270.0, 150_000.0);
         let (elat, elon) = crate::terrain::destination(lat, lon, 90.0, 150_000.0);
         let started = Instant::now();
-        let cut = grid.cut(Point { lat: wlat, lon: wlon }, Point { lat: elat, lon: elon });
+        let cut = grid.cut(
+            Point {
+                lat: wlat,
+                lon: wlon,
+            },
+            Point {
+                lat: elat,
+                lon: elon,
+            },
+        );
         let cut_ms = started.elapsed().as_secs_f64() * 1000.0;
         let profile = Profile::of(&grid, &job, lat, lon);
         let summary = serde_json::json!({
@@ -1574,5 +1589,70 @@ mod tests {
             std::fs::write(out.join("bench-profile.json"), reply).unwrap();
         }
         assert!(built.seconds < 3.0, "fill {:.2} s", built.seconds);
+    }
+
+    /// Another frame at the same time (a product switch on the same station:
+    /// same radars, same volumes) keeps the grid and cuts the section again,
+    /// naming the new frame; a profile names it too.
+    #[test]
+    fn a_new_frame_at_the_same_time_is_cut_again_from_the_same_grid() {
+        let dir =
+            std::env::temp_dir().join(format!("omastorm-sections-same-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let template: crate::protocol::Frame =
+            serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
+        let (_, _, sites) = tower();
+        let job = |frame: &str| {
+            Job::new(
+                &sites[1],
+                &Set::default(),
+                &sites,
+                frame,
+                "2026-09-15T12:00:00Z",
+                T,
+            )
+            .unwrap()
+        };
+        let mut sections = Sections::default();
+        let mut state = None;
+        let line = (
+            Point {
+                lat: 59.25,
+                lon: 13.6,
+            },
+            Point {
+                lat: 59.25,
+                lon: 14.8,
+            },
+        );
+        sections.set_line(Some(line), 7, &mut state, &template);
+        let asked = sections
+            .pass(Ok(Some(job("twrb-cmax"))), &dir, &template, &mut state)
+            .0
+            .unwrap();
+        sections.built(asked.clone(), built(&asked));
+        sections.pass(Ok(Some(job("twrb-cmax"))), &dir, &template, &mut state);
+        let first = state.clone().unwrap();
+        assert_eq!(
+            (first.status, first.frame_id.as_str()),
+            (Status::Ready, "twrb-cmax")
+        );
+        let (again, changed) = sections.pass(Ok(Some(job("twrb-e0"))), &dir, &template, &mut state);
+        assert!(again.is_none(), "the same grid, no build");
+        assert!(sections.holds());
+        assert!(changed);
+        let second = state.clone().unwrap();
+        assert_eq!(
+            (second.status, second.frame_id.as_str()),
+            (Status::Ready, "twrb-e0")
+        );
+        assert_ne!(second.texture, first.texture, "a new cut, a new name");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        sections.ask(9, tx, 59.25, 14.2);
+        sections.pass(Ok(Some(job("twrb-e0"))), &dir, &template, &mut state);
+        let reply: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(reply["frameId"], "twrb-e0");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

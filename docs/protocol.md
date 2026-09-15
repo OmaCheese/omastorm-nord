@@ -745,7 +745,7 @@ with the beam centre `h = R cos(e) / cos(e + s/R) − R` above the antenna.
   whose beam holds the height, the one whose `h` is nearest `H`, the lower
   angle on a tie; its value. None: code 1, no data, drawn as "no radar at
   this height", never code 0 ("no rain"). So a low height ends where even
-  the lowest beam's lower edge passes above it (1 km at Vara: ~115 km), a
+  the lowest beam's lower edge passes above it (1 km at Vara: ~120 km), a
   height above the highest angle's upper edge is empty over the radar, and
   between two far-apart high angles it has gaps. The texel is code 1 with G
   bit 4, like any `nodata`; a client that knows the frame is `CAPPI` may

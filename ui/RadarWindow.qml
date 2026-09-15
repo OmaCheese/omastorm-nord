@@ -1397,9 +1397,11 @@ Item {
                             Layout.fillWidth: true
                             Layout.preferredHeight: 24
                             spacing: 4
-                            LabelText { text: app.reachKm > 0 ? Math.round(app.reachKm) + " KM" : "FULL"; color: app.theme.accent; Layout.fillWidth: true }
-                            MenuStep { label: "−"; enabled: app.reachKm === 0 || app.reachKm > 25; onActivated: app.stepReach(-1) }
-                            MenuStep { label: "+"; enabled: app.reachKm > 0; onActivated: app.stepReach(1) }
+                            // The reach in force: one past this frame's data
+                            // (200 km remembered, 148 km of 8° data) is full.
+                            LabelText { text: map.reachShownKm > 0 ? Math.round(map.reachShownKm) + " KM" : "FULL, " + Math.round(map.coverageKm) + " KM"; color: app.theme.accent; Layout.fillWidth: true }
+                            MenuStep { label: "−"; enabled: map.reachShownKm === 0 || map.reachShownKm > 25; onActivated: app.stepReach(-1) }
+                            MenuStep { label: "+"; enabled: map.reachShownKm > 0; onActivated: app.stepReach(1) }
                             MenuStep { label: "FULL"; enabled: app.reachKm > 0; onActivated: reachStore.set(app.siteId, 0) }
                         }
                     }

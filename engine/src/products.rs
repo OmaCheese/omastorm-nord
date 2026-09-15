@@ -230,15 +230,14 @@ impl Want {
 
     /// The last part of a frame id, and the catalog's key for the product:
     /// `e0` for the lowest scan (the id every frame had before S20), `a40`
-    /// for the angle 4.0°, `cappi3` for a whole number of km above sea level
-    /// (so S20's `cappi1` and `cappi2` rings stay 1 and 2 km) and
-    /// `cappi3500` for any other height in metres (500 m to 12 km, so the two
-    /// never meet), and so on.
+    /// for the angle 4.0°, `cappi3500` for a height of 3,500 m above sea level
+    /// (every height in metres, `cappi500` to `cappi12000`: S20's `cappi1`
+    /// and `cappi2` rings, made by another rule, never meet a height's and are
+    /// pruned as products no longer chosen), and so on.
     pub fn variant(&self) -> String {
         match self {
             Want::Lowest => "e0".to_owned(),
             Want::Angle(deg) => format!("a{}", (deg * 10.0).round() as i64),
-            Want::Cappi(_, asl) if asl.is_multiple_of(1000) => format!("cappi{}", asl / 1000),
             Want::Cappi(_, asl) => format!("cappi{asl}"),
             Want::ColMax => "cmax".to_owned(),
             Want::Hybrid(_) => "clear".to_owned(),
@@ -967,8 +966,18 @@ mod tests {
             (Want::Lowest, "e0", "REF", "Reflectivity"),
             (Want::Angle(4.0), "a40", "REF", "Reflectivity"),
             (Want::Angle(0.7), "a7", "REF", "Reflectivity"),
-            (Want::Cappi(1000.0, 1000), "cappi1", "CAPPI", "Height 1 km"),
-            (Want::Cappi(1780.0, 2000), "cappi2", "CAPPI", "Height 2 km"),
+            (
+                Want::Cappi(1000.0, 1000),
+                "cappi1000",
+                "CAPPI",
+                "Height 1 km",
+            ),
+            (
+                Want::Cappi(1780.0, 2000),
+                "cappi2000",
+                "CAPPI",
+                "Height 2 km",
+            ),
             (
                 Want::Cappi(3280.0, 3500),
                 "cappi3500",
@@ -976,7 +985,12 @@ mod tests {
                 "Height 3.5 km",
             ),
             (Want::Cappi(0.0, 500), "cappi500", "CAPPI", "Height 0.5 km"),
-            (Want::Cappi(0.0, 12000), "cappi12", "CAPPI", "Height 12 km"),
+            (
+                Want::Cappi(0.0, 12000),
+                "cappi12000",
+                "CAPPI",
+                "Height 12 km",
+            ),
             (Want::ColMax, "cmax", "CMAX", "Column max"),
         ] {
             let (product, product_name) = want.product();
@@ -1428,7 +1442,13 @@ mod tests {
                     "clear" => Want::Hybrid(table),
                     angle => Want::Angle(angle[1..].parse::<f64>().unwrap() / 10.0),
                 };
-                assert_eq!(want.variant(), *variant);
+                // The S20 answer keys' names; a height's variant is in metres (S29).
+                let named = match variant.as_str() {
+                    "cappi1" => "cappi1000",
+                    "cappi2" => "cappi2000",
+                    other => other,
+                };
+                assert_eq!(want.variant(), named);
                 let file = std::fs::File::open(format!("{ROOT}data/raw/{fixture}")).unwrap();
                 let crate::smhi_live::Scan::Product(sweep, ..) =
                     decode_volume(file, want, lowest).unwrap()

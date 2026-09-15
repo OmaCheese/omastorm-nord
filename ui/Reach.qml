@@ -32,12 +32,20 @@ QtObject {
         else delete next[id];
         kms = next;
         if (!path) return;
-        var text = JSON.stringify(next);
+        pending = JSON.stringify(next);
+        if (!writer.running) flush();
+    }
+    // The next write, held while one still runs (Quickshell ignores a new
+    // command on a running Process); the writer's exit sends it.
+    property string pending: ""
+    function flush() {
+        if (!pending) return;
         var slash = path.lastIndexOf("/");
         var dir = slash >= 0 ? path.slice(0, slash) : ".";
         writer.command = ["sh", "-c",
             "mkdir -p -- \"$1\" && printf '%s\\n' \"$3\" > \"$2\" && mv -f -- \"$2\" \"$4\"",
-            "omastorm-reach", dir, path + ".tmp", text, path];
+            "omastorm-reach", dir, path + ".tmp", pending, path];
+        pending = "";
         writer.running = true;
     }
     property FileView file: FileView {
@@ -46,6 +54,8 @@ QtObject {
         printErrors: false
         onFileChanged: reload()
         onLoaded: {
+            // Our own write still on its way: kms is already newer.
+            if (root.pending || root.writer.running) return;
             try {
                 var value = JSON.parse(text());
                 root.kms = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -58,6 +68,7 @@ QtObject {
         command: ["true"]
         onExited: function (exitCode) {
             root.error = exitCode === 0 ? "" : "Could not write reach.json";
+            if (root.pending) root.flush();
         }
     }
 }

@@ -522,14 +522,34 @@ impl Store {
         fs::create_dir_all(self.dir.join(&sub))?;
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(sql)?;
-        let held: Option<String> = tx
+        let held: Option<(String, Option<String>)> = tx
             .query_row(
-                "SELECT source FROM volumes WHERE station = ?1 AND time_ms = ?2",
+                "SELECT source, angles FROM volumes WHERE station = ?1 AND time_ms = ?2",
                 params![station, time_ms],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .map_err(sql)?;
+        // S24a review #1: a read of fewer scans from another source (an FMI
+        // lowest-scan file, one scan) never replaces a held volume of more
+        // (that time's five-file set): the save is dropped instead.
+        if let Some((held_source, held_angles)) = &held
+            && held_source != source
+        {
+            let held_scans = held_angles
+                .as_deref()
+                .and_then(angles_of)
+                .map_or(0, |a| a.len());
+            if held_scans > angles.map_or(0, <[TiltInfo]>::len) {
+                drop(tx);
+                drop(conn);
+                log(format_args!(
+                    "{station}: kept {held_source} ({held_scans} scans) over {source}"
+                ));
+                return Ok(());
+            }
+        }
+        let held = held.map(|(held_source, _)| held_source);
         let mut stale = Vec::new();
         if held.as_deref().is_some_and(|held| held != source) {
             let mut stmt = tx

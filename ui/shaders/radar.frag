@@ -54,6 +54,10 @@ layout(std140, binding = 0) uniform buf {
     int circleCount;
     vec4 circle0; vec4 circle1; vec4 circle2; vec4 circle3; vec4 circle4; vec4 circle5;
     vec4 circle6; vec4 circle7; vec4 circle8; vec4 circle9; vec4 circle10; vec4 circle11;
+    // S24a: 1 when the frame is a storm height (`ETOP`): a texel with G bit
+    // 8 is "at least" this high (the highest beam reaching it still holds
+    // 18 dBZ), drawn in its colour under the same faint hatch. 0 otherwise.
+    int hatchAtLeast;
 };
 // The sweep: one row per radial in ascending azimuth, one texel per gate.
 // For a grid frame, the Web Mercator texture instead, row 0 north.
@@ -245,6 +249,10 @@ vec4 shade(vec4 code, vec2 pixel) {
     }
     int b=value-1;
     if (b >= bands) return vec4(0);
+    // A storm height that is only a lower bound (S24a, G bit 8, spelled
+    // without bitwise operators): its colour under the faint hatch.
+    if (hatchAtLeast == 1 && status / 8 - 2 * (status / 16) == 1 && mod(floor(pixel.x) + floor(pixel.y), 6.0) < 1.0)
+        return vec4(hatchColor.rgb * hatchColor.a, hatchColor.a) * qt_Opacity;
     // Treatments grade coverage by quartile of the palette, whatever its length.
     int group=(b*4)/bands;
     float alpha=1.0;

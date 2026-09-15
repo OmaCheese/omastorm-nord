@@ -36,6 +36,7 @@
   }
  ],
  "placementDeg": 0.5,
+ "altM": 363.0,
  "blockageTenths": [
   0,
   0,
@@ -481,6 +482,35 @@
     "undetect": 118835,
     "nodata": 0,
     "measured": 10765
+   }
+  },
+  "etop": {
+   "what": "storm height: highest beam >= 18 dBZ, beam centre + altM 363.0 m, 0.2 km, +1 at least",
+   "file": "etop.u8.gz",
+   "rays": 720,
+   "gates": 960,
+   "firstGateM": 125,
+   "gateSpacingM": 250,
+   "u8Sha256": "9ad7db24eb1ff27f5be4b70b1436e271e7cb588837e05971f969156bbde37685",
+   "counts": {
+    "undetect": 677568,
+    "nodata": 0,
+    "measured": 13632
+   },
+   "atLeast": 4360
+  },
+  "vil": {
+   "what": "rain mass: Marshall-Palmer VIL, dBZ capped at 56, 0.5 kg/m2",
+   "file": "vil.u8.gz",
+   "rays": 720,
+   "gates": 960,
+   "firstGateM": 125,
+   "gateSpacingM": 250,
+   "u8Sha256": "54c6af6ffc4d949e6e2628c71e511702289cc0f96c350f16cf277f239bba94a0",
+   "counts": {
+    "undetect": 529944,
+    "nodata": 0,
+    "measured": 161256
    }
   }
  },

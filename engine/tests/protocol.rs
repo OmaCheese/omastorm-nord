@@ -224,13 +224,15 @@ fn fixture_transport_and_shared_commands() {
     assert_eq!(e["command"], "select_site");
     assert!(e["message"].as_str().unwrap().contains("XXXX"));
     // S20: the product vocabulary and what each station offers. The
-    // composites offer nothing, FMI's one-angle files the lowest scan
-    // alone; state.product starts on the lowest scan. An archived volume
-    // shows its lowest scan only, so set_product is refused to its sender.
+    // composites offer nothing; FMI's one-angle files, read as one volume
+    // since S24a, everything but the clear view; state.product starts on
+    // the lowest scan. An archived volume shows its lowest scan only, so
+    // set_product is refused to its sender.
     assert_eq!(
         hello["products"],
         json!([{"id":"REF","name":"Lowest scan"},{"id":"HYBRID","name":"Clear view"},
-               {"id":"CAPPI","name":"Height","above":["sea","ground"]},{"id":"CMAX","name":"Column max"}])
+               {"id":"CAPPI","name":"Height","above":["sea","ground"]},{"id":"CMAX","name":"Column max"},
+               {"id":"ETOP","name":"Storm height","units":"km"},{"id":"VIL","name":"Rain mass","units":"kg/m²"}])
     );
     let offer = |id: &str| sites.iter().find(|s| s["id"] == id).unwrap().clone();
     assert_eq!(offer("vara")["elevations"].as_array().unwrap().len(), 10);
@@ -240,21 +242,32 @@ fn fixture_transport_and_shared_commands() {
     );
     assert_eq!(
         offer("vara")["products"],
-        json!(["REF", "HYBRID", "CAPPI", "CMAX"])
+        json!(["REF", "HYBRID", "CAPPI", "CMAX", "ETOP", "VIL"])
     );
     for grid in ["sweden", "nordic", "mymosaic"] {
         assert_eq!(offer(grid)["products"], json!([]));
         assert_eq!(offer(grid)["elevations"], json!([]));
     }
-    assert!(
-        sites
-            .iter()
-            .filter(|s| s["country"] == "FI")
-            .all(|s| s["products"] == json!(["REF"]) && s["elevations"] == json!([]))
-    );
+    let finnish: Vec<&Value> = sites.iter().filter(|s| s["country"] == "FI").collect();
+    assert_eq!(finnish.len(), 12);
+    for site in finnish {
+        assert_eq!(
+            site["products"],
+            json!(["REF", "CAPPI", "CMAX", "ETOP", "VIL"]),
+            "{}",
+            site["id"]
+        );
+        assert_eq!(site["elevations"].as_array().unwrap().len(), 5);
+        assert_eq!(site["elevations"][4]["deg"], 5.0);
+    }
+    assert_eq!(offer("fikor")["elevations"][0]["deg"], 0.5);
     assert_eq!(initial["product"], json!({"id":"REF","elevationIndex":0}));
     for (command, word) in [
-        (json!({"type":"set_product","product":"VIL"}), "VIL"),
+        (json!({"type":"set_product","product":"SNOW"}), "SNOW"),
+        // S24a: the storm height and the rain mass are products; an
+        // archived volume still shows its lowest scan only.
+        (json!({"type":"set_product","product":"VIL"}), "archived"),
+        (json!({"type":"set_product","product":"ETOP"}), "archived"),
         (json!({"type":"set_product","product":"CMAX"}), "archived"),
         // S29: a height is checked before the station is.
         (

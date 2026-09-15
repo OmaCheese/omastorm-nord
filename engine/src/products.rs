@@ -54,6 +54,10 @@ pub const CAPPI: &str = "CAPPI";
 pub const CAPPI1: &str = "CAPPI1";
 pub const CAPPI2: &str = "CAPPI2";
 pub const CMAX: &str = "CMAX";
+/// "Storm height" (S24a): the echo top at 18 dBZ, km above sea level.
+pub const ETOP: &str = "ETOP";
+/// "Rain mass" (S24a): vertically integrated liquid, kg/m².
+pub const VIL: &str = "VIL";
 
 /// `CAPPI`'s heights above sea level, in metres (S29).
 pub const HEIGHT_MIN_M: u32 = 500;
@@ -74,31 +78,104 @@ pub struct Info {
     /// when empty.
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     pub above: &'static [&'static str],
+    /// The frames' units when they are not dBZ (S24a: `ETOP`, `VIL`); not
+    /// sent when empty.
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub units: &'static str,
 }
 
 /// `hello.products`: the vocabulary, in the order a chooser lists it.
-pub const VOCABULARY: [Info; 4] = [
+pub const VOCABULARY: [Info; 6] = [
     Info {
         id: REF,
         name: "Lowest scan",
         above: &[],
+        units: "",
     },
     Info {
         id: HYBRID,
         name: "Clear view",
         above: &[],
+        units: "",
     },
     Info {
         id: CAPPI,
         name: "Height",
         above: &["sea", "ground"],
+        units: "",
     },
     Info {
         id: CMAX,
         name: "Column max",
         above: &[],
+        units: "",
+    },
+    Info {
+        id: ETOP,
+        name: "Storm height",
+        above: &[],
+        units: ETOP_LEGEND.units,
+    },
+    Info {
+        id: VIL,
+        name: "Rain mass",
+        above: &[],
+        units: VIL_LEGEND.units,
     },
 ];
+
+// ---------------------------------------------------------------------------
+// Storm height and rain mass (S24a)
+// ---------------------------------------------------------------------------
+
+/// A product's own units, palette and bounds (`frame.units`, `palette`,
+/// `bounds`), for a product not in dBZ.
+#[derive(Debug, PartialEq)]
+pub struct Legend {
+    pub units: &'static str,
+    pub palette: &'static [&'static str],
+    pub bounds: &'static [i32],
+}
+
+/// The echo that makes a storm's height: 18 dBZ, as a code
+/// (`round(18 × 2 + 66)`).
+pub const ETOP_DBZ: f64 = 18.0;
+const ETOP_CODE: u8 = (ETOP_DBZ * 2.0 + 66.0) as u8;
+/// `ETOP`'s encoding: value = (code − offset) / scale km, so 0.1 km a code;
+/// tops are rounded to 0.2 km (even codes), and an "at least" top is one
+/// code more (odd), within the same 0.2 km (`docs/protocol.md`).
+pub const ETOP_SCALE: f32 = 10.0;
+pub const ETOP_OFFSET: f32 = 2.0;
+/// `VIL`'s encoding: value = (code − offset) / scale kg/m², 0.5 a code.
+pub const VIL_SCALE: f32 = 2.0;
+pub const VIL_OFFSET: f32 = 2.0;
+/// Marshall–Palmer liquid water: M = 3.44e-6 · Z^(4/7) kg/m³.
+const VIL_COEFFICIENT: f64 = 3.44e-6;
+/// Reflectivity is capped here before VIL (hail would count as water).
+pub const VIL_CAP_DBZ: f64 = 56.0;
+/// The texture's G bit for an "at least" storm height (`docs/protocol.md`,
+/// sweep texture).
+pub const AT_LEAST: u8 = 8;
+
+/// `ETOP`: km, a band a kilometre from 2 to 10 km, then 12, 15 and above.
+pub const ETOP_LEGEND: Legend = Legend {
+    units: "km",
+    palette: &[
+        "#2c3e73", "#2f5f98", "#2d80b0", "#3aa0b8", "#5bbcad", "#8fd19b", "#c7dd7f", "#f1d36b",
+        "#f3a95a", "#eb7a52", "#d9505c", "#b73a7a",
+    ],
+    bounds: &[0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 26],
+};
+
+/// `VIL`: kg/m², bands to 70 and above.
+pub const VIL_LEGEND: Legend = Legend {
+    units: "kg/m²",
+    palette: &[
+        "#3b4a5a", "#2f6f5e", "#3a8f55", "#5aa846", "#8cbc3c", "#c3cc3b", "#ecc943", "#f0a23d",
+        "#ea7a3a", "#dc4f3c", "#c23a58", "#a33487", "#d6a4e6",
+    ],
+    bounds: &[0, 1, 2, 4, 7, 10, 15, 20, 25, 30, 40, 50, 70, 127],
+};
 
 /// What a height is measured from (S30): sea level, or the ground under
 /// each point (`terrain.rs`).
@@ -257,6 +334,11 @@ pub enum Want {
     ColMax,
     /// Per azimuth, the lowest angle clear of the terrain.
     Hybrid(&'static Blockage),
+    /// The storm height (S24a): the echo top at 18 dBZ; `.0` the antenna's
+    /// height above sea level in metres, which the beam heights are added to.
+    EchoTop(f64),
+    /// The rain mass (S24a): vertically integrated liquid.
+    Vil,
 }
 
 /// Where a radar's antenna stands, for the terrain under its gates.
@@ -287,6 +369,18 @@ impl Want {
             }
             CMAX => Some(Want::ColMax),
             HYBRID => blockage.map(Want::Hybrid),
+            ETOP => Some(Want::EchoTop(alt_m)),
+            VIL => Some(Want::Vil),
+            _ => None,
+        }
+    }
+
+    /// The product's own units, palette and bounds when they are not the
+    /// reflectivity's (S24a); `None` for every product in dBZ.
+    pub fn legend(&self) -> Option<&'static Legend> {
+        match self {
+            Want::EchoTop(_) => Some(&ETOP_LEGEND),
+            Want::Vil => Some(&VIL_LEGEND),
             _ => None,
         }
     }
@@ -303,6 +397,8 @@ impl Want {
             Want::CappiGround(_, agl, _) => (CAPPI, height_name(*agl, Above::Ground)),
             Want::ColMax => (CMAX, "Column max".to_owned()),
             Want::Hybrid(_) => (HYBRID, "Clear view".to_owned()),
+            Want::EchoTop(_) => (ETOP, "Storm height".to_owned()),
+            Want::Vil => (VIL, "Rain mass".to_owned()),
         }
     }
 
@@ -321,6 +417,8 @@ impl Want {
             Want::CappiGround(_, agl, _) => format!("cappi{agl}g"),
             Want::ColMax => "cmax".to_owned(),
             Want::Hybrid(_) => "clear".to_owned(),
+            Want::EchoTop(_) => "etop".to_owned(),
+            Want::Vil => "vil".to_owned(),
         }
     }
 
@@ -344,7 +442,7 @@ pub fn variant_of(frame_id: &str) -> &str {
     let last = frame_id.rsplit('-').next().unwrap_or_default();
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let hex8 = |s: &str| s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit());
-    let product = matches!(last, "cmax" | "clear")
+    let product = matches!(last, "cmax" | "clear" | "etop" | "vil")
         || last.strip_prefix("cappi").is_some_and(|h| {
             // S30: above the ground ends in `g`.
             digits(h) || h.strip_suffix('g').is_some_and(digits)
@@ -379,16 +477,27 @@ const NO_ANGLES: [f64; 12] = [
 ];
 /// DMI's ten (`dksin@20260914T0940@0.49_0.66_…_15.01`), to 0.1°.
 const DK_ANGLES: [f64; 10] = [0.5, 0.7, 1.0, 1.5, 2.4, 4.8, 8.4, 10.0, 13.0, 15.0];
+/// FMI's five (S24a): one `SCAN` file per angle in ORD's cache, the same
+/// set at every radar but the lowest (ORD's listings of 2026-09-15, 91
+/// times each): 0.3° at ten radars, 0.5° at Korppoo, 0.1° at Luosto.
+const FI_ANGLES: [f64; 5] = [0.3, 0.7, 1.5, 3.0, 5.0];
+const FI_ANGLES_KORPPOO: [f64; 5] = [0.5, 0.7, 1.5, 3.0, 5.0];
+const FI_ANGLES_LUOSTO: [f64; 5] = [0.1, 0.7, 1.5, 3.0, 5.0];
 
-/// A station's nominal angles, ascending: empty for a composite, and for
-/// a radar whose provider publishes one file per angle (FMI in ORD's
-/// cache), whose products would need a file per angle per frame.
+/// A station's nominal angles, ascending: empty for a composite. FMI's
+/// radars publish a file per angle, which the ORD poller reads as one
+/// volume for any product but the lowest scan (S24a).
 pub fn nominal_angles(station: &Station) -> &'static [f64] {
     match (station.kind, station.provider, station.country.as_str()) {
         (SiteKind::Grid, ..) => &[],
         (_, ProviderId::Smhi, _) => &SMHI_ANGLES,
         (_, ProviderId::Ord, "NO") => &NO_ANGLES,
         (_, ProviderId::Ord, "DK") => &DK_ANGLES,
+        (_, ProviderId::Ord, "FI") => match station.id.as_str() {
+            "fikor" => &FI_ANGLES_KORPPOO,
+            "filuo" => &FI_ANGLES_LUOSTO,
+            _ => &FI_ANGLES,
+        },
         _ => &[],
     }
 }
@@ -774,7 +883,8 @@ pub fn needed(want: Want, infos: &[TiltInfo]) -> Vec<usize> {
                 }
             }
         }
-        Want::ColMax => {
+        // S24a: the storm height and the rain mass read the whole column.
+        Want::ColMax | Want::EchoTop(_) | Want::Vil => {
             let hits = hits(infos, lowest);
             for (k, per_gate) in hits.iter().enumerate() {
                 if per_gate.iter().any(Option::is_some) {
@@ -856,7 +966,33 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
     };
     let elevation = placement_deg(tilts[0].elangle) as f32;
     let mut rays = Vec::with_capacity(base.rays.len());
+    // One gate's column (S24a): the covering scans ascending by angle, each
+    // as (code, beam centre above the antenna).
+    let mut column: Vec<(u8, f64)> = Vec::with_capacity(tilts.len());
     for (i, out) in base.rays.iter().enumerate() {
+        if let Want::EchoTop(_) | Want::Vil = want {
+            let codes: Vec<u8> = (0..gates)
+                .map(|g| {
+                    column.clear();
+                    for (k, per_gate) in hits.iter().enumerate() {
+                        if let (Some(hit), Some(code)) = (per_gate[g], value(k, i, g)) {
+                            column.push((code, hit.height));
+                        }
+                    }
+                    match want {
+                        Want::EchoTop(alt_m) => echo_top_code(&column, alt_m),
+                        _ => vil_code(&column),
+                    }
+                })
+                .collect();
+            rays.push(Ray {
+                azimuth_deg: out.azimuth_deg,
+                elevation_deg: elevation,
+                time_ms: out.time_ms,
+                codes,
+            });
+            continue;
+        }
         let hybrid = match want {
             Want::Hybrid(table) => {
                 let degree = (f64::from(out.azimuth_deg).floor() as i64).rem_euclid(360) as usize;
@@ -897,6 +1033,7 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
                     top.unwrap_or(if below { 0 } else { 1 })
                 }
                 Want::Lowest | Want::Angle(_) => unreachable!("returned above"),
+                Want::EchoTop(_) | Want::Vil => unreachable!("composed above"),
             })
             .collect();
         rays.push(Ray {
@@ -917,10 +1054,118 @@ pub fn compose(want: Want, mut tilts: Vec<Tilt>) -> Result<Sweep, String> {
         gates: base.gates,
         first_gate_m: base.first_gate_m,
         gate_spacing_m: base.gate_spacing_m,
-        scale: base.scale,
-        offset: base.offset,
+        // S24a: the storm height and the rain mass have their own coding.
+        scale: match want {
+            Want::EchoTop(_) => ETOP_SCALE,
+            Want::Vil => VIL_SCALE,
+            _ => base.scale,
+        },
+        offset: match want {
+            Want::EchoTop(_) => ETOP_OFFSET,
+            Want::Vil => VIL_OFFSET,
+            _ => base.offset,
+        },
         code1_status: OUTSIDE_COVERAGE,
     })
+}
+
+/// `ETOP`'s code at one output gate (`docs/protocol.md`, storm height):
+/// `column` holds the scans covering it, ascending by angle, as (code, beam
+/// centre above the antenna in metres); `alt_m` is the antenna's height
+/// above sea level. The highest scan with 18 dBZ or more gives the top,
+/// `2 + 2 × round(5 T)` for `T` km above sea level, one more when no scan
+/// above it holds anything but no data ("at least"). 0: readings, none of
+/// 18 dBZ; 1: no reading.
+pub fn echo_top_code(column: &[(u8, f64)], alt_m: f64) -> u8 {
+    let Some(top) = column.iter().rposition(|&(code, _)| code >= ETOP_CODE) else {
+        return if column.iter().any(|&(code, _)| code != 1) {
+            0
+        } else {
+            1
+        };
+    };
+    let km = (column[top].1 + alt_m) / 1000.0;
+    let code = (2 + 2 * (5.0 * km).round() as i64).clamp(2, 254) as u8;
+    let at_least = column[top + 1..].iter().all(|&(code, _)| code == 1);
+    code + u8::from(at_least)
+}
+
+/// `VIL`'s code at one output gate (`docs/protocol.md`, rain mass), the same
+/// `column`: Marshall–Palmer water over each gap between consecutive beam
+/// centres with a reading, reflectivity capped at `VIL_CAP_DBZ`, in kg/m²,
+/// as `2 + round(2 × VIL)`. 0: every reading below threshold; 1: none.
+pub fn vil_code(column: &[(u8, f64)]) -> u8 {
+    let readings = || column.iter().filter(|&&(code, _)| code != 1);
+    if readings().next().is_none() {
+        return 1;
+    }
+    if readings().all(|&(code, _)| code == 0) {
+        return 0;
+    }
+    let z = |code: u8| {
+        if code == 0 {
+            0.0
+        } else {
+            let dbz = ((f64::from(code) - 66.0) / 2.0).min(VIL_CAP_DBZ);
+            10f64.powf(dbz / 10.0)
+        }
+    };
+    let mut total = 0.0;
+    let mut below: Option<(f64, f64)> = None;
+    for &(code, height) in readings() {
+        let here = z(code);
+        if let Some((z0, h0)) = below {
+            total += VIL_COEFFICIENT * ((z0 + here) / 2.0).powf(4.0 / 7.0) * (height - h0);
+        }
+        below = Some((here, height));
+    }
+    (2 + (2.0 * total).round() as i64).min(255) as u8
+}
+
+/// Mark the "at least" storm heights in a sweep texture (`Sweep::texture`'s
+/// RGBA pixels): G bit 8 on every odd measured code of an `ETOP` frame
+/// (`docs/protocol.md`, sweep texture). Any other product: unchanged.
+pub fn mark_texture(product: &str, pixels: &mut [u8]) {
+    if product != ETOP {
+        return;
+    }
+    for texel in pixels.chunks_exact_mut(4) {
+        if texel[0] > 0 && texel[2] >= 2 && texel[2] % 2 == 1 {
+            texel[1] |= AT_LEAST;
+        }
+    }
+}
+
+/// Every scan of one file, each with its angle (S24a: an FMI `SCAN` file
+/// holds one): FMI's volumes are several files (`assemble`).
+pub fn scans_of<R: std::io::Read + std::io::Seek + Send + 'static>(
+    reader: R,
+) -> Result<Vec<Tilt>, String> {
+    crate::odim::decode_tilts(reader, |infos| (0..infos.len()).collect())
+        .map_err(|e| e.to_string())
+}
+
+/// What `want` makes of one volume assembled from several files' scans
+/// (S24a, FMI), as `decode_volume` makes it of one file: the product, and
+/// the lowest scan it read riding along for the `-e0` ring (S26). `tilts`
+/// in any order; `compose` sorts them by angle.
+pub fn assemble(want: Want, tilts: Vec<Tilt>) -> Result<crate::smhi_live::Scan, String> {
+    use crate::smhi_live::Scan;
+    if want.is_lowest() {
+        return tilts
+            .into_iter()
+            .min_by(|a, b| a.elangle.total_cmp(&b.elangle))
+            .map(|t| Scan::Polar(t.sweep))
+            .ok_or_else(|| "the volume holds no reflectivity scans".to_owned());
+    }
+    let free = match want {
+        Want::Angle(_) => None,
+        _ => tilts
+            .iter()
+            .min_by(|a, b| a.elangle.total_cmp(&b.elangle))
+            .map(|t| Box::new(copy_sweep(&t.sweep))),
+    };
+    compose(want, tilts).map(|sweep| Scan::Product(sweep, want, free))
 }
 
 /// What `want` makes of one ODIM volume: the lowest scan as the provider has
@@ -1057,7 +1302,7 @@ mod tests {
     #[test]
     fn the_vocabulary_and_choices() {
         let ids: Vec<&str> = VOCABULARY.iter().map(|p| p.id).collect();
-        assert_eq!(ids, ["REF", "HYBRID", "CAPPI", "CMAX"]);
+        assert_eq!(ids, ["REF", "HYBRID", "CAPPI", "CMAX", "ETOP", "VIL"]);
         let elevations = [0.5, 1.0, 1.5];
         let choice = |id: &str, index| Choice {
             id: id.into(),
@@ -1107,7 +1352,25 @@ mod tests {
             None,
             "no blockage table"
         );
-        assert_eq!(Want::of(&choice("VIL", 0), &elevations, None, 0.0), None);
+        assert_eq!(Want::of(&choice("SNOW", 0), &elevations, None, 0.0), None);
+        // S24a: the storm height carries the antenna's height; the rain
+        // mass needs none. Both bring their own legend.
+        assert_eq!(
+            Want::of(&choice("ETOP", 0), &elevations, None, 164.0),
+            Some(Want::EchoTop(164.0))
+        );
+        assert_eq!(
+            Want::of(&choice("VIL", 0), &elevations, None, 164.0),
+            Some(Want::Vil)
+        );
+        assert_eq!(Want::EchoTop(164.0).legend().unwrap().units, "km");
+        assert_eq!(Want::Vil.legend().unwrap().units, "kg/m²");
+        assert_eq!(Want::ColMax.legend(), None);
+        for legend in [&ETOP_LEGEND, &VIL_LEGEND] {
+            assert_eq!(legend.bounds.len(), legend.palette.len() + 1);
+            assert!(legend.bounds.windows(2).all(|w| w[0] < w[1]));
+        }
+        assert_eq!(ETOP_CODE, 102, "18 dBZ");
         assert_eq!(
             Want::of(&choice("CAPPI1", 0), &elevations, None, 0.0),
             None,
@@ -1219,7 +1482,8 @@ mod tests {
             ("CAPPI", Some(0), "heightM 0"),
             ("CAPPI", Some(12_500), "heightM 12500"),
             ("CMAX", Some(2000), "CAPPI only"),
-            ("VIL", None, "Unknown product VIL"),
+            ("SNOW", None, "Unknown product SNOW"),
+            ("VIL", Some(2000), "CAPPI only"),
         ] {
             let e = choose(p, 0, h, None).unwrap_err();
             assert!(e.contains(says), "{e}");
@@ -1456,7 +1720,7 @@ mod tests {
         let (products, elevations) = for_station(&polar(ProviderId::Smhi, "SE"));
         assert_eq!(
             products,
-            ["REF", "CAPPI", "CMAX"],
+            ["REF", "CAPPI", "CMAX", "ETOP", "VIL"],
             "no blockage table: no HYBRID"
         );
         assert_eq!(elevations.len(), 10);
@@ -1470,11 +1734,20 @@ mod tests {
         );
         assert_eq!(for_station(&polar(ProviderId::Ord, "NO")).1.len(), 12);
         assert_eq!(for_station(&polar(ProviderId::Ord, "DK")).1[1].deg, 0.7);
-        // FMI: one file per angle, so the lowest scan alone.
-        assert_eq!(
-            for_station(&polar(ProviderId::Ord, "FI")),
-            (vec!["REF"], vec![])
-        );
+        // FMI (S24a): one file per angle, read as one volume, so every
+        // product but the clear view (no blockage table); the lowest angle
+        // is the radar's own.
+        let (fi, fi_angles) = for_station(&polar(ProviderId::Ord, "FI"));
+        assert_eq!(fi, ["REF", "CAPPI", "CMAX", "ETOP", "VIL"]);
+        let degrees = |e: &[Elevation]| e.iter().map(|e| e.deg).collect::<Vec<f64>>();
+        assert_eq!(degrees(&fi_angles), [0.3, 0.7, 1.5, 3.0, 5.0]);
+        for (id, lowest) in [("fikor", 0.5), ("filuo", 0.1), ("fivih", 0.3)] {
+            let station = Station {
+                id: id.into(),
+                ..polar(ProviderId::Ord, "FI")
+            };
+            assert_eq!(degrees(&for_station(&station).1)[0], lowest, "{id}");
+        }
         let grid = Station {
             kind: SiteKind::Grid,
             ..polar(ProviderId::Smhi, "SE")
@@ -1492,7 +1765,12 @@ mod tests {
         assert_eq!(want_for(&smhi, &choice("HYBRID", 0)), None);
         assert_eq!(
             want_for(&polar(ProviderId::Ord, "FI"), &choice("CMAX", 0)),
-            None
+            Some(Want::ColMax)
+        );
+        assert_eq!(
+            want_for(&polar(ProviderId::Ord, "FI"), &choice("HYBRID", 0)),
+            None,
+            "no blockage table for FMI's radars"
         );
         assert_eq!(
             want_for(&grid, &choice("REF", 0)),
@@ -1544,12 +1822,16 @@ mod tests {
         };
         assert_eq!(carry(&over, None, &norway), over);
         assert_eq!(carry(&tall, None, &norway), tall);
-        // FMI makes neither: the lowest scan.
-        assert_eq!(carry(&tall, None, &finland), Choice::default());
+        // FMI makes both since S24a (its five angles as one volume); 2.5°
+        // is nearest its 3.0° (index 3).
+        assert_eq!(carry(&tall, None, &finland), tall);
         assert_eq!(
             carry(&choice("REF", 4), Some(2.5), &finland),
-            Choice::default()
+            choice("REF", 3)
         );
+        assert_eq!(carry(&choice("ETOP", 0), None, &finland), choice("ETOP", 0));
+        // A product a radar cannot make falls back to the lowest scan.
+        assert_eq!(carry(&choice("HYBRID", 0), None, &finland), Choice::default());
         // A composite keeps the choice for the next radar.
         assert_eq!(carry(&choice("REF", 4), Some(2.5), &grid), choice("REF", 4));
         assert_eq!(carry(&Choice::default(), None, &smhi), Choice::default());
@@ -1786,13 +2068,17 @@ mod tests {
                 tenths: tenths.try_into().unwrap(),
             }));
             let products = key["products"].as_object().unwrap();
-            assert_eq!(products.len(), 6, "{golden}");
+            assert_eq!(products.len(), 8, "{golden}");
+            // S24a: the key's antenna height is the file's own `/where`.
+            let alt_m = key["altM"].as_f64().unwrap();
             for (variant, product) in products {
                 let want = match variant.as_str() {
                     "cappi1" => Want::Cappi(1000.0, 1000),
                     "cappi2" => Want::Cappi(2000.0, 2000),
                     "cmax" => Want::ColMax,
                     "clear" => Want::Hybrid(table),
+                    "etop" => Want::EchoTop(alt_m),
+                    "vil" => Want::Vil,
                     angle => Want::Angle(angle[1..].parse::<f64>().unwrap() / 10.0),
                 };
                 // The S20 answer keys' names; a height's variant is in metres (S29).
@@ -1850,6 +2136,128 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// FMI's five one-angle files of one nominal time (S24a), each decoded
+    /// by `scans_of` and assembled into one volume, against their answer key
+    /// (`golden/produce-products.py --parts`): the column maximum, storm
+    /// height and rain mass, byte for byte, in any file order; the lowest
+    /// scan rides along as the lowest file's own sweep.
+    #[test]
+    fn an_assembled_volume_matches_its_answer_key() {
+        use crate::smhi_live::Scan;
+        use std::io::Read;
+        const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../");
+        let key: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(format!("{ROOT}golden/fikor-20260915/products.json")).unwrap(),
+        )
+        .unwrap();
+        let files: Vec<String> = key["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| format!("{ROOT}data/raw/{}", p["fixture"].as_str().unwrap()))
+            .collect();
+        assert_eq!(files.len(), 5);
+        let open = |path: &String| std::fs::File::open(path).unwrap();
+        let scans = |order: &[usize]| -> Vec<Tilt> {
+            order
+                .iter()
+                .flat_map(|&i| scans_of(open(&files[i])).unwrap())
+                .collect()
+        };
+        let alt_m = key["altM"].as_f64().unwrap();
+        let products = key["products"].as_object().unwrap();
+        assert_eq!(products.len(), 3);
+        for (variant, product) in products {
+            let want = match variant.as_str() {
+                "cmax" => Want::ColMax,
+                "etop" => Want::EchoTop(alt_m),
+                "vil" => Want::Vil,
+                other => panic!("{other}"),
+            };
+            let mut expected = Vec::new();
+            let gz = format!("{ROOT}golden/fikor-20260915/{}", product["file"].as_str().unwrap());
+            flate2::read::GzDecoder::new(std::fs::File::open(gz).unwrap())
+                .read_to_end(&mut expected)
+                .unwrap();
+            for order in [[0, 1, 2, 3, 4], [4, 2, 0, 3, 1]] {
+                let Scan::Product(sweep, _, Some(free)) = assemble(want, scans(&order)).unwrap()
+                else {
+                    panic!("{variant}: not a product with its lowest scan")
+                };
+                assert_eq!(
+                    (sweep.rays.len(), sweep.gates),
+                    (360, 500),
+                    "{variant}: the lowest scan's grid"
+                );
+                let codes: Vec<u8> = sweep.rays.iter().flat_map(|r| r.codes.clone()).collect();
+                let differ = codes.iter().zip(&expected).filter(|(a, b)| a != b).count();
+                assert_eq!(
+                    (codes.len(), differ),
+                    (expected.len(), 0),
+                    "{variant} {order:?}"
+                );
+                let lowest = crate::odim::decode_lowest(open(&files[0]), crate::odim::Tilt::Lowest)
+                    .unwrap();
+                assert!(free.rays.iter().zip(&lowest.rays).all(|(a, b)| a.codes == b.codes));
+            }
+        }
+        let at_least = key["products"]["etop"]["atLeast"].as_u64().unwrap();
+        assert!(at_least > 0, "the fixture has 'at least' tops");
+        // Their texels carry G bit 8; exact tops and other products none.
+        let Scan::Product(sweep, ..) = assemble(Want::EchoTop(alt_m), scans(&[0, 1, 2, 3, 4])).unwrap()
+        else {
+            panic!()
+        };
+        let mut pixels = sweep.texture(ETOP_LEGEND.bounds, ETOP_LEGEND.palette.len());
+        mark_texture(ETOP, &mut pixels);
+        let flagged = pixels.chunks_exact(4).filter(|t| t[1] & AT_LEAST != 0).count();
+        assert_eq!(flagged as u64, at_least);
+        let mut other = sweep.texture(ETOP_LEGEND.bounds, ETOP_LEGEND.palette.len());
+        mark_texture(CMAX, &mut other);
+        assert!(other.chunks_exact(4).all(|t| t[1] & AT_LEAST == 0));
+    }
+
+    /// The storm height and the rain mass of one column, by hand
+    /// (`docs/protocol.md`, storm height and rain mass).
+    #[test]
+    fn a_columns_storm_height_and_rain_mass() {
+        let dbz = |d: f64| (d * 2.0 + 66.0) as u8;
+        // 30 dBZ at 1 and 4 km, 10 dBZ at 7 km: the top is the 4 km beam,
+        // 4.164 km above sea level -> 4.2 km, code 44; not "at least".
+        let column = [(dbz(30.0), 1000.0), (dbz(30.0), 4000.0), (dbz(10.0), 7000.0)];
+        assert_eq!(echo_top_code(&column, 164.0), 44);
+        // The same with no data above: the top beam still holds 18 dBZ.
+        let open_top = [(dbz(30.0), 1000.0), (dbz(30.0), 4000.0), (1, 7000.0)];
+        assert_eq!(echo_top_code(&open_top, 164.0), 45, "at least 4.2 km");
+        assert_eq!(echo_top_code(&[(dbz(30.0), 4000.0)], 0.0), 43, "one scan: at least");
+        // 17.5 dBZ nowhere reaches 18; no readings at all is no data.
+        assert_eq!(echo_top_code(&[(dbz(17.5), 1000.0), (0, 2000.0)], 0.0), 0);
+        assert_eq!(echo_top_code(&[(1, 1000.0)], 0.0), 1);
+        assert_eq!(echo_top_code(&[], 0.0), 1);
+        assert_eq!(echo_top_code(&[(dbz(60.0), 90_000.0)], 0.0), 255, "capped, at least");
+        // VIL: 40 dBZ from 1 to 3 km (Z = 10^4): 3.44e-6 · 10^(16/7) · 2000
+        // = 1.328 kg/m², code 2 + round(2.656) = 5.
+        let steady = [(dbz(40.0), 1000.0), (dbz(40.0), 3000.0)];
+        let expect = 3.44e-6 * 10f64.powf(16.0 / 7.0) * 2000.0;
+        assert!((expect - 1.328).abs() < 0.001, "{expect}");
+        assert_eq!(vil_code(&steady), 5);
+        // Nodata is skipped (the gap spans it); below threshold is Z = 0.
+        let gap = [(dbz(40.0), 1000.0), (1, 2000.0), (dbz(40.0), 3000.0)];
+        assert_eq!(vil_code(&gap), 5);
+        let half = [(dbz(40.0), 1000.0), (0, 3000.0)];
+        let expect = 3.44e-6 * (1e4f64 / 2.0).powf(4.0 / 7.0) * 2000.0;
+        assert_eq!(vil_code(&half), 2 + (2.0 * expect).round() as u8);
+        // Hail is capped at 56 dBZ: 70 dBZ counts as 56.
+        assert_eq!(
+            vil_code(&[(dbz(70.0), 0.0), (dbz(70.0), 10_000.0)]),
+            vil_code(&[(dbz(56.0), 0.0), (dbz(56.0), 10_000.0)])
+        );
+        assert_eq!(vil_code(&[(dbz(40.0), 1000.0)]), 2, "one reading: no gap");
+        assert_eq!(vil_code(&[(0, 1000.0), (0, 2000.0), (1, 3000.0)]), 0);
+        assert_eq!(vil_code(&[(1, 1000.0)]), 1);
+        assert_eq!(vil_code(&[(dbz(56.0), 0.0), (dbz(56.0), 40_000.0)]), 255, "capped");
     }
 
     /// CAPPI, CMAX and HYBRID carry the lowest scan they read (S26): the
@@ -1936,13 +2344,29 @@ mod tests {
             .iter()
             .filter(|s| s.kind == SiteKind::Polar && !nominal_angles(s).is_empty())
             .collect();
-        assert_eq!(radars.len(), 29, "12 SE, 12 NO and 5 DK radars");
+        assert_eq!(
+            radars.len(),
+            41,
+            "12 SE, 12 NO, 12 FI (S24a) and 5 DK radars"
+        );
+        let (finnish, radars): (Vec<&Station>, Vec<&Station>) =
+            radars.into_iter().partition(|s| s.country == "FI");
+        assert_eq!((finnish.len(), radars.len()), (12, 29));
+        for station in finnish {
+            assert_eq!(blockage(&station.id), None, "{}", station.id);
+            assert_eq!(
+                for_station(station).0,
+                ["REF", "CAPPI", "CMAX", "ETOP", "VIL"],
+                "{}",
+                station.id
+            );
+        }
         for station in radars {
             let id = station.id.as_str();
             assert!(blockage(id).is_some(), "{id}");
             assert_eq!(
                 for_station(station).0,
-                ["REF", "HYBRID", "CAPPI", "CMAX"],
+                ["REF", "HYBRID", "CAPPI", "CMAX", "ETOP", "VIL"],
                 "{id}"
             );
             let choice = Choice {

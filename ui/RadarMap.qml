@@ -115,6 +115,9 @@ Item {
             else if (r.what === "height") parts.push("circle " + km(r.km) + ": the lowest beam at " + (r.heightM / 1000) + " km" + (r.sea ? " above sea" : " up"));
         }
         if (drawable && scan && scan.product === "CAPPI") parts.push("hatched: no radar at this height");
+        // S24a: a storm height is a lower bound where the highest beam that
+        // reaches it still holds 18 dBZ (G bit 8, hatched over its colour).
+        if (drawable && scan && scan.product === "ETOP") parts.push("hatched: at least this high");
         return parts.join(" · ");
     }
     property string tileRoot: ""     // file URL of the runtime directory, for tile paths
@@ -125,7 +128,9 @@ Item {
     // so the frame's scale and offset place the floor in code units; a frame
     // without them (the loading placeholder) has no floor.
     property var weakFloor: null
-    readonly property int weakBelow: scan && weakFloor !== null && scan.scale > 0 ? Math.max(0, Math.min(256, Math.ceil(weakFloor * scan.scale + scan.offset))) : 0
+    // The floor is in dBZ (S24a): a frame in other units (Storm height,
+    // Rain mass) has none.
+    readonly property int weakBelow: scan && weakFloor !== null && scan.scale > 0 && scan.units === "dBZ" ? Math.max(0, Math.min(256, Math.ceil(weakFloor * scan.scale + scan.offset))) : 0
     property int labelSize: 12
     property real radarOpacity: 1    // the radar layer alone; the basemap keeps its strength
     property bool locked: false      // the accent frame on the active marker and tag (DESIGN.md, markers)
@@ -716,6 +721,9 @@ Item {
         property int treatment: map.treatment === "PIXELS" ? 0 : map.treatment === "GLYPHS" ? 1 : 2
         // S29: a height slice's no-data texels hatched, and the reach.
         property int hatchNodata: map.scan && map.scan.product === "CAPPI" ? 1 : 0
+        // S24a: a storm height's "at least" texels (G bit 8) hatched over
+        // their colour.
+        property int hatchAtLeast: map.scan && map.scan.product === "ETOP" ? 1 : 0
         property real reachM: map.reachShownKm * 1000
         property color hatchInk: map.theme ? map.theme.foreground : "white"
         property vector4d hatchColor: Qt.vector4d(hatchInk.r, hatchInk.g, hatchInk.b, .45)

@@ -67,6 +67,9 @@ pub const BACKFILL: usize = 60;
 /// clients buffer. A file is one request (`plan_for`), so deeper than
 /// SMHI's `PRODUCT_BACKFILL` (S26).
 pub const PRODUCT_BACKFILL: usize = 24;
+/// The same for a per-angle station (S24a, FMI): five files a volume, so an
+/// hour, like SMHI's `PRODUCT_BACKFILL`.
+pub const SET_BACKFILL: usize = 12;
 /// Between listing polls. Files land 1.5–6 minutes after their nominal time.
 const POLL: Duration = Duration::from_secs(60);
 const MAX_BACK_OFF: Duration = Duration::from_secs(600);
@@ -193,6 +196,66 @@ pub struct Listed {
     pub lowest_deg: f64,
     /// The object's size, when the listing gave it (`<Size>`).
     pub size: Option<u64>,
+    /// S24a: the files of its nominal time, one per angle, ascending, when
+    /// a per-angle station (FMI's `SCAN`) is read for a product other than
+    /// the lowest scan (`choose_sets`); empty otherwise.
+    pub parts: Vec<Listed>,
+}
+
+/// Whether a station's files hold one scan each (FMI's `SCAN`, S24a): any
+/// product but the lowest scan then reads every file of a nominal time as
+/// one volume.
+pub fn per_angle(source: &str) -> bool {
+    source.ends_with("/SCAN")
+}
+
+/// The tilt store's source for one nominal time of a per-angle station's
+/// files, read as one volume (S24a): the key without its angle and
+/// quantities, `2026/09/15/FI/fikor/SCAN/fikor@20260915T0000`.
+pub fn set_source(key: &str) -> String {
+    let mut parts = key.splitn(3, '@');
+    match (parts.next(), parts.next()) {
+        (Some(path), Some(time)) => format!("{path}@{time}"),
+        _ => key.to_owned(),
+    }
+}
+
+/// Whether a stored volume's source names such a set rather than one file.
+pub fn is_set_source(source: &str) -> bool {
+    source.matches('@').count() == 1
+}
+
+/// Per nominal time, every angle's file (S24a, a per-angle station read for
+/// a product): the best quantity per angle, ascending by angle in `parts`,
+/// the lowest as the entry itself; oldest first. The newest time is left
+/// out while it has fewer angles than the time before, or its lowest file
+/// is not as good (`choose`'s rule): the rest of it is still arriving.
+pub fn choose_sets(listed: &[Listed]) -> Vec<Listed> {
+    let mut times: BTreeMap<i64, BTreeMap<i64, Listed>> = BTreeMap::new();
+    for file in listed {
+        let angles = times.entry(file.valid_ms).or_default();
+        let tenths = (file.lowest_deg * 10.0).round() as i64;
+        match angles.get(&tenths) {
+            Some(held) if held.rank <= file.rank => {}
+            _ => {
+                angles.insert(tenths, file.clone());
+            }
+        }
+    }
+    let mut chosen: Vec<Listed> = times
+        .into_values()
+        .filter_map(|angles| {
+            let parts: Vec<Listed> = angles.into_values().collect();
+            let lowest = parts.first()?.clone();
+            Some(Listed { parts, ..lowest })
+        })
+        .collect();
+    if let [.., earlier, newest] = &chosen[..]
+        && (newest.parts.len() < earlier.parts.len() || !newest.complete_after(earlier))
+    {
+        chosen.pop();
+    }
+    chosen
 }
 
 impl Listed {
@@ -224,6 +287,7 @@ impl Listed {
             rank,
             lowest_deg,
             size: None,
+            parts: Vec::new(),
         })
     }
 
@@ -587,6 +651,97 @@ async fn from_store(slot: Option<crate::tilts::Slot>, want: Want) -> Option<Scan
         .ok()?
 }
 
+/// Read one nominal time of a per-angle station's files as one volume
+/// (S24a, FMI): composed from the tilt store when it holds the set, else
+/// every file read whole (`plan_for`: one request each) under the provider's
+/// fetch permit and kept in the store as one volume (`set_source`, the full
+/// angle table, datasets ascending by angle), so every other product of that
+/// time then costs no request.
+async fn fetch_set(
+    http: &Http,
+    cfg: &Config,
+    site: &str,
+    set: &Listed,
+) -> Result<(Scan, String), FileError> {
+    let want = cfg.want;
+    let source = set_source(&set.key);
+    let files = set.parts.len();
+    let name = format!(
+        "{} ({files} files){}",
+        source.rsplit('/').next().unwrap_or(&source),
+        crate::products::provenance_tag(want)
+    );
+    let slot = cfg.store.clone().map(|store| crate::tilts::Slot {
+        store,
+        station: site.to_owned(),
+        time_ms: set.valid_ms,
+        source: source.clone(),
+    });
+    if let Some(scan) = from_store(slot.clone(), want).await {
+        return Ok((scan, format!("ORD {name}: {}", crate::tilts::FROM_STORE)));
+    }
+    let permit = FETCHER
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| FileError::Decode(e.to_string()))?;
+    let failure = Arc::new(Mutex::new(None));
+    let reads: Vec<(HttpRanges, RangePlan)> = set
+        .parts
+        .iter()
+        .map(|part| {
+            let source = HttpRanges {
+                http: http.clone(),
+                url: format!("{}/{}", cfg.base, part.key),
+                runtime: Handle::current(),
+                failure: failure.clone(),
+            };
+            (source, plan_for(part.size, want))
+        })
+        .collect();
+    let joined = spawn_blocking(move || -> Result<(Scan, u32, u64, u64), String> {
+        let _permit = permit;
+        let (mut requests, mut bytes, mut total) = (0u32, 0u64, 0u64);
+        let mut tilts: Vec<crate::products::Tilt> = Vec::new();
+        for (source, plan) in reads {
+            let reader = RangeReader::open_planned(Box::new(source), plan, Duration::from_secs(1))
+                .map_err(|e| e.to_string())?;
+            let traffic = reader.traffic();
+            let scans = crate::products::scans_of(reader);
+            requests += traffic.requests();
+            bytes += traffic.bytes();
+            total += traffic.total();
+            tilts.extend(scans?);
+        }
+        // Ascending by angle (stable): the store's dataset order.
+        tilts.sort_by(|a, b| a.elangle.total_cmp(&b.elangle));
+        if let Some(slot) = &slot {
+            let table: Vec<crate::products::TiltInfo> =
+                tilts.iter().map(crate::products::Tilt::info).collect();
+            let refs: Vec<(usize, &crate::products::Tilt)> = tilts.iter().enumerate().collect();
+            if let Err(e) =
+                slot.store
+                    .save(&slot.station, slot.time_ms, &slot.source, Some(&table), &refs)
+            {
+                live_log(&slot.station, format_args!("{}: not stored: {e}", slot.source));
+            }
+        }
+        crate::products::assemble(want, tilts).map(|scan| (scan, requests, bytes, total))
+    })
+    .await;
+    match joined {
+        Ok(Ok((scan, requests, bytes, total))) => Ok((
+            scan,
+            format!("ORD {name}: {requests} range requests, {bytes} of {total} bytes"),
+        )),
+        Ok(Err(e)) => Err(match failure.lock().unwrap().take() {
+            Some(fail @ (Fail::Status(..) | Fail::Transport(_))) => FileError::Net(fail),
+            _ => FileError::Decode(format!("{name}: {e}")),
+        }),
+        Err(e) => Err(FileError::Decode(format!("the decoder failed: {e}"))),
+    }
+}
+
 /// Read and decode one file with ranged requests, holding the provider's
 /// fetch permit. Returns the scan and its provenance. A file the tilt store
 /// holds is composed from it, with no request (S27).
@@ -596,6 +751,9 @@ async fn fetch_file(
     site: &str,
     file: &Listed,
 ) -> Result<(Scan, String), FileError> {
+    if !file.parts.is_empty() {
+        return fetch_set(http, cfg, site, file).await;
+    }
     let (base, decode, want) = (cfg.base.as_str(), cfg.decode, cfg.want);
     let slot = slot(cfg, site, file);
     if let Some(scan) = from_store(slot.clone(), want).await {
@@ -686,8 +844,9 @@ impl Config {
 
 /// The lowest tilt's reflectivity (`odim.rs`), whichever dataset holds it;
 /// for another product the angles it needs (`products.rs`). A volume file
-/// (MET Norway's, DMI's) holds every angle; FMI's hold one each, so FMI's
-/// stations offer the lowest scan only (`products::for_station`).
+/// (MET Norway's, DMI's) holds every angle; FMI's hold one each, and for
+/// any product but the lowest scan the poller reads a nominal time's files
+/// as one volume instead (S24a, `fetch_set`), past this function.
 /// Since S27 through the tilt store (`tilts::decode`).
 fn decode(
     reader: RangeReader,
@@ -749,6 +908,9 @@ use crate::smhi_live::send;
 pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cached: Vec<i64>) {
     let site = station.id.clone();
     let source = station.source.clone();
+    // S24a: a per-angle station (FMI) read for a product other than the
+    // lowest scan reads every file of a nominal time as one volume.
+    let sets = per_angle(&source) && !cfg.want.is_lowest();
     let Some(nod) = source.split('/').nth(1).map(str::to_owned) else {
         let reason = format!("{site} names no ORD cache path (sourceId {source:?})");
         send(&events, Event::Offline { site, reason }).await;
@@ -786,7 +948,11 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
                 if let Some(ms) = listed.iter().map(|f| f.valid_ms).max() {
                     latest_ms = Some(latest_ms.map_or(ms, |held| held.max(ms)));
                 }
-                let chosen = choose(&listed);
+                let chosen = if sets {
+                    choose_sets(&listed)
+                } else {
+                    choose(&listed)
+                };
                 let next = chosen
                     .last()
                     .filter(|f| newest.as_ref().is_none_or(|n| f.valid_ms > n.valid_ms))
@@ -885,6 +1051,7 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
                 chosen,
                 live.valid_ms,
                 known.clone(),
+                sets,
             ))));
         }
 
@@ -929,6 +1096,7 @@ async fn backfill(
     chosen: Vec<Listed>,
     live_ms: i64,
     mut known: Vec<i64>,
+    sets: bool,
 ) {
     sleep(cfg.backfill_delay).await;
     let mut stored = 0;
@@ -946,7 +1114,10 @@ async fn backfill(
             .filter(|(t, _)| *t < live_ms && live_ms - *t < HORIZON_MS)
             .take(cfg.depth.unwrap_or(BACKFILL).saturating_sub(1));
         for (valid_ms, key) in loop_ {
-            if covered(valid_ms, &known) {
+            // S24a: a per-angle station's product comes only from a stored
+            // set of its files, never from one file's volume (its lowest
+            // scan alone).
+            if covered(valid_ms, &known) || (sets && !is_set_source(&key)) {
                 continue;
             }
             let file = Listed {
@@ -955,6 +1126,7 @@ async fn backfill(
                 rank: 0,
                 lowest_deg: 0.0,
                 size: None,
+                parts: Vec::new(),
             };
             let Some(sweep) = from_store(slot(&cfg, &site, &file), cfg.want).await else {
                 continue;
@@ -976,8 +1148,10 @@ async fn backfill(
         chosen,
         live_ms,
         &known,
-        cfg.depth
-            .unwrap_or_else(|| cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL)),
+        cfg.depth.unwrap_or_else(|| {
+            let product = if sets { SET_BACKFILL } else { PRODUCT_BACKFILL };
+            cfg.want.backfill(BACKFILL, product)
+        }),
     );
     targets.retain(|f| !done.contains(&f.valid_ms));
     let wanted = targets.len();
@@ -1524,6 +1698,21 @@ mod tests {
 
     /// `run_as` through a tilt store, the bucket serving `body` for a key.
     fn run_full(
+        setup: Setup,
+        keys: Vec<String>,
+        fail: Option<u16>,
+        now_ms: fn() -> i64,
+        cached: Vec<i64>,
+        until: impl Fn(&[Event]) -> bool,
+        linger: Duration,
+    ) -> (Vec<Event>, Vec<String>) {
+        run_station(station(), setup, keys, fail, now_ms, cached, until, linger)
+    }
+
+    /// `run_full` for any station (S24a: an FMI radar's per-angle files).
+    #[allow(clippy::too_many_arguments)]
+    fn run_station(
+        station: Station,
         (want, decode, store, body): Setup,
         keys: Vec<String>,
         fail: Option<u16>,
@@ -1551,7 +1740,7 @@ mod tests {
                 depth: None,
             };
             let (tx, mut rx) = mpsc::channel(16);
-            let poller = tokio::spawn(poll_with(cfg, station(), tx, cached));
+            let poller = tokio::spawn(poll_with(cfg, station, tx, cached));
             let mut events = Vec::new();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
             while !until(&events) {

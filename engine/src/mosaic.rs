@@ -128,11 +128,14 @@ pub const SWEDEN_BOX: LonLatBox = LonLatBox {
 };
 
 /// The radars a composite's products are made from (S24b): `sweden` from
-/// SMHI's twelve, `nordic` (OPERA's) from every radar in the table whose
-/// reach touches its box (S32: not Spain's).
+/// SMHI's twelve, an OPERA box from every radar in the table whose reach
+/// touches its box (S32's rule; S33: the box is the station's own cut, so
+/// `nordic` has its 41 and `iberia` Spain's nine on the peninsula, never the
+/// Canaries).
 pub fn grid_radars(station: &Station, sites: &[Station]) -> Vec<Station> {
+    let area = crate::providers::opera::cut(&station.id).map(|c| c.area);
     let reaches = |s: &Station| {
-        grid_box(station).is_none_or(|b| {
+        area.is_some_and(|b| {
             let dlat = s.range_km / 111.2;
             let dlon = s.range_km / (111.2 * s.lat.to_radians().cos().max(0.05));
             s.lat + dlat >= b.south
@@ -156,9 +159,13 @@ pub fn grid_radars(station: &Station, sites: &[Station]) -> Vec<Station> {
 
 /// The box a composite's products are drawn over: its composite's own; also
 /// whether the composite offers them (`products::for_station`, review N3).
+/// S33: an OPERA box offers them where its `Cut` says so (`nordic`; not
+/// `iberia`, which shows only the composite).
 pub(crate) fn grid_box(station: &Station) -> Option<LonLatBox> {
     match (station.kind, station.provider) {
-        (SiteKind::Grid, ProviderId::Opera) => Some(crate::providers::opera::NORDIC),
+        (SiteKind::Grid, ProviderId::Opera) => crate::providers::opera::cut(&station.id)
+            .filter(|c| c.products)
+            .map(|c| c.area),
         (SiteKind::Grid, ProviderId::Smhi) => Some(SWEDEN_BOX),
         _ => None,
     }

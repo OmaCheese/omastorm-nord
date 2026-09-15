@@ -444,6 +444,11 @@ URL for development. Requests use a ten-second timeout and at most four
 concurrent fetches. Transport errors, 429s, and 5xx responses trigger a
 30-second backoff; cached tiles still serve.
 
+`OMASTORM_OPERA_BASE` (development only, S33) points the OPERA provider at a
+stand-in for the Open Radar Data 24-hour cache (a local bucket for tests and
+offline replays); unset, as in use, it reads the real cache. S32's
+`OMASTORM_ORD_BASE` does the same for ORD's radars.
+
 Vector tiles persist under
 `$XDG_CACHE_HOME/omastorm-se/vt/<source>/<version>/<z>/<x>/<y>.pbf`.
 The two newest data versions are retained. Above 512 MB, eviction removes the

@@ -104,14 +104,19 @@ function match(site, query) {
 // distance and bearing from the centre (none for a composite, which has no
 // antenna), its tag (the country code, or COMPOSITE), whether it starts a
 // new group, and the matched letter positions for the two columns.
+// S33: a provider's composite whose middle is farther than this from the
+// centre (iberia seen from Sweden) does not lead the list: it ranks as a
+// group of its own at its distance, after the nearer radars.
+var NEAR_COMPOSITE_KM = 1500;
 function rank(sites, query, lat, lon, limit, metric) {
     var all = [], nearest = {};
     for (var site of sites) {
         var m = match(site, query);
         if (!m) continue;
         var km = distanceKm(lat, lon, site.lat, site.lon), grid = isGrid(site);
-        var group = grid ? "" : site.country || "?";
-        if (!grid && !(nearest[group] <= km)) nearest[group] = km;
+        var far = grid && site.provider !== "mosaic" && km > NEAR_COMPOSITE_KM;
+        var group = far ? "~" + site.id : grid ? "" : site.country || "?";
+        if ((!grid || far) && !(nearest[group] <= km)) nearest[group] = km;
         all.push({ site: site, tier: m.tier, km: km, group: group, tag: grid ? "COMPOSITE" : site.country || "",
                    where: grid ? "" : where(km, bearingDeg(lat, lon, site.lat, site.lon), metric),
                    idHits: m.idHits, placeHits: m.placeHits, place: place(site) });

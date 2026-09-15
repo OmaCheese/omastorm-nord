@@ -92,6 +92,26 @@ only the 11 chunks under the Nordic box (3–33° E, 53–71.5° N).
   and pyproj (PROJ), not the engine's reader or projection, by
   `golden/nordic-20260914/produce.py`, which records its own command line.
 
+## OPERA fixture (Iberian composite, S33)
+
+The same composite at **2026-09-15 17:00 UTC**, cut for the `iberia` box
+(10.5° W–4.5° E, 35–44.5° N; DEC-17), which needs 5 of the 30 chunks: row 3
+column 0, rows 4–5 columns 0–1.
+
+- Original: `OPERA@20260915T1700@0@DBZH.h5` from the same cache, 2,064,454
+  bytes, sha256 `1de02fc749d547cf48f1d24c1b6aa6a331738f55d8ec81af91989458edc988c9`,
+  downloaded 2026-09-15 (one of ten composites fetched whole for S33; the
+  cache keeps about a day).
+- **Vendored: all five needed chunks verbatim**, `opera_iberia_202609151700.h5`,
+  70,385 bytes (`data/SHA256SUMS`), made by
+  `uv run --no-project --with h5py python scripts/crop-opera.py ORIGINAL.h5 data/fixtures/opera_iberia_202609151700.h5 --keep 3,0 4,0 4,1 5,0 5,1 4,2`
+  (h5py 3.16, HDF5 2.0.0), plus the unneeded chunk row 4 column 2 that a
+  test proves is never fetched. Iberia was nearly dry all day; 17:00Z has
+  the most echo in the box of the ten (23 measured texels, all of them in
+  the answer key's samples).
+- Golden files under `golden/iberia-20260915/`: `produce.py` is the Nordic
+  one with the Iberian box and spot checks (h5py 3.16, pyproj/PROJ).
+
 ## Norwegian, Finnish and Danish fixtures (S15)
 
 One file per country from EUMETNET Open Radar Data's public 24-hour S3

@@ -559,6 +559,14 @@ fn great_circle_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let h = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
     2.0 * 6371.0 * h.clamp(0.0, 1.0).sqrt().asin()
 }
+/// Beyond this many times the nearest radar's `rangeKm`, a centre in an
+/// OPERA box that takes the hand-off goes to its composite (S33, review
+/// SF4: Galicia's coast, the sea off Portugal).
+const HANDOFF_BEYOND_RANGE: f64 = 1.3;
+/// S23's reference radars: the ones in an OPERA box are seen only through
+/// its composite (S33: Portugal's), which then takes the hand-off near them.
+static REFERENCE_RADARS: std::sync::LazyLock<Vec<reference::ReferenceSite>> =
+    std::sync::LazyLock::new(reference::sites);
 /// The station following should hand off to when the view centre settles
 /// at `lat`, `lon`: the nearest table station, when it is not `current` and
 /// beats it by the hysteresis rule. `None` keeps the current station, so a
@@ -567,23 +575,58 @@ fn great_circle_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 ///
 /// The composite covers the whole view already, so it is never a target,
 /// and while it is selected nothing is handed off to (`docs/protocol.md`,
-/// `view_center`).
+/// `view_center`). S33: except an OPERA box that takes the hand-off
+/// (`iberia`, where Portugal's radars show only through the composite):
+/// with the centre inside it, it is the target where the composite alone
+/// shows the radars there (review SF4): nearer one of the box's reference
+/// radars than to any table radar, or beyond `HANDOFF_BEYOND_RANGE` × the
+/// nearest radar's range; a place in Spain still follows a Spanish radar
+/// (S32). Selected, it holds while the centre stays in its box and lets go
+/// once it leaves (review SF3).
 fn handoff<'a>(sites: &'a [Station], current: &str, lat: f64, lon: f64) -> Option<&'a Station> {
-    if sites
+    let holds = |c: &providers::opera::Cut, la: f64, lo: f64| {
+        (c.area.south..=c.area.north).contains(&la) && (c.area.west..=c.area.east).contains(&lo)
+    };
+    if let Some(held) = sites
         .iter()
-        .any(|s| s.id == current && s.kind == SiteKind::Grid)
+        .find(|s| s.id == current && s.kind == SiteKind::Grid)
     {
-        return None;
+        match providers::opera::cut(&held.id) {
+            Some(c) if c.handoff && !holds(c, lat, lon) => {}
+            _ => return None,
+        }
     }
     let distance = |s: &Station| great_circle_km(lat, lon, s.lat, s.lon);
     let nearest = sites
         .iter()
         .filter(|s| s.kind == SiteKind::Polar)
-        .min_by(|a, b| distance(a).total_cmp(&distance(b)))?;
+        .min_by(|a, b| distance(a).total_cmp(&distance(b)));
+    let composite = sites
+        .iter()
+        .filter(|s| s.kind == SiteKind::Grid)
+        .find_map(|s| {
+            providers::opera::cut(&s.id)
+                .filter(|c| c.handoff && holds(c, lat, lon))
+                .map(|c| (s, c))
+        });
+    if let Some((composite, c)) = composite {
+        let radar_km = nearest.map_or(f64::INFINITY, distance);
+        let beyond = nearest.is_none_or(|n| radar_km > HANDOFF_BEYOND_RANGE * n.range_km);
+        let only_there = REFERENCE_RADARS
+            .iter()
+            .any(|r| holds(c, r.lat, r.lon) && great_circle_km(lat, lon, r.lat, r.lon) < radar_km);
+        if beyond || only_there {
+            return Some(composite);
+        }
+    }
+    let nearest = nearest?;
     if nearest.id == current {
         return None;
     }
-    match sites.iter().find(|s| s.id == current) {
+    match sites
+        .iter()
+        .find(|s| s.id == current && s.kind == SiteKind::Polar)
+    {
         Some(held)
             if distance(nearest) >= HANDOFF_RATIO * distance(held)
                 || distance(held) - distance(nearest) < HANDOFF_MARGIN_KM =>
@@ -1018,12 +1061,16 @@ impl Shared {
         let station = match station {
             Some(s) if self.state.source == Source::Live && offers(&s) => s,
             Some(s) if s.kind == SiteKind::Grid => {
+                // S33: an OPERA box without products (`iberia`) shows its
+                // composite only.
+                let why = if s.provider == providers::ProviderId::Mosaic {
+                    "its set's rule says what it shows"
+                } else {
+                    "it shows the composite only"
+                };
                 return (
                     false,
-                    Some(format!(
-                        "{} has no products to choose; its set's rule says what it shows.",
-                        s.name
-                    )),
+                    Some(format!("{} has no products to choose; {why}.", s.name)),
                 );
             }
             Some(_) if self.state.source == Source::Archived => {
@@ -3484,8 +3531,8 @@ mod handoff_tests {
         let sites = site_table().sites;
         // SMHI's 12 radars and ORD's 29 (NO, FI, DK: S15) and 11 (ES: S32)
         // from sites.json, then the composites: SMHI's (S8) and OPERA's
-        // Nordic crop (S16), and My mosaic (S25).
-        assert_eq!(sites.len(), 55);
+        // Nordic and Iberian crops (S16, S33), and My mosaic (S25).
+        assert_eq!(sites.len(), 56);
         assert_eq!(
             sites.iter().filter(|s| s.kind == SiteKind::Polar).count(),
             52
@@ -3496,7 +3543,7 @@ mod handoff_tests {
                 .filter(|s| s.kind == SiteKind::Grid)
                 .map(|s| &s.id[..])
                 .collect::<Vec<_>>(),
-            ["sweden", "nordic", "mymosaic"]
+            ["sweden", "nordic", "iberia", "mymosaic"]
         );
         // My mosaic is never a target, and nothing is handed off to from it.
         assert!(handoff(&sites, "mymosaic", 57.71, 11.97).is_none());
@@ -3505,7 +3552,7 @@ mod handoff_tests {
         // selected nothing is handed off to.
         assert!(handoff(&sites, "nordic", 59.33, 18.07).is_none());
         assert!(handoff(&sites, "", 62.25, 18.0).is_some_and(|s| s.kind == SiteKind::Polar));
-        for s in &sites {
+        for s in sites.iter().filter(|s| s.id != "iberia") {
             // The Nordic box, or (S32) Spain's: the peninsula and the Canaries.
             let nordic = (53.0..=71.5).contains(&s.lat) && (3.0..=33.0).contains(&s.lon);
             let iberia = (34.0..=46.0).contains(&s.lat) && (-11.0..=5.0).contains(&s.lon)
@@ -3536,6 +3583,45 @@ mod handoff_tests {
         );
         assert!(handoff(&sites, "nordic", 40.42, -3.70).is_none());
         assert!(handoff(&sites, "sweden", 40.42, -3.70).is_none());
+        // S33 (review SF4): iberia takes the hand-off only where the
+        // composite alone shows the radars: nearer one of Portugal's
+        // reference radars than any table radar (Porto, Lisbon, Faro), or
+        // beyond 1.3 × the nearest radar's range (Galicia's coast).
+        let place =
+            |current: &str, lat, lon| handoff(&sites, current, lat, lon).map(|s| s.id.clone());
+        assert_eq!(place("", 41.15, -8.61).as_deref(), Some("iberia"), "Porto");
+        assert_eq!(place("", 38.72, -9.14).as_deref(), Some("iberia"), "Lisbon");
+        assert_eq!(place("", 37.02, -7.93).as_deref(), Some("iberia"), "Faro");
+        // Valencia: 252 km from Perdiguera, inside 1.3 × 250 km.
+        assert_eq!(
+            place("", 39.47, -0.38).as_deref(),
+            Some("espdg"),
+            "Valencia"
+        );
+        // A Coruña and Vigo: 346 and 341 km from Valladolid, beyond 1.3 ×
+        // 240 km (and nearer Arouca): the composite.
+        assert_eq!(
+            place("", 43.37, -8.40).as_deref(),
+            Some("iberia"),
+            "A Coruña"
+        );
+        assert_eq!(place("", 42.24, -8.72).as_deref(), Some("iberia"), "Vigo");
+        // Menorca and Ibiza: 262 and 280 km from Gelida, inside 1.3 × 250 km.
+        assert_eq!(place("", 39.89, 4.26).as_deref(), Some("esgld"), "Menorca");
+        assert_eq!(place("", 38.91, 1.43).as_deref(), Some("esgld"), "Ibiza");
+        // Huelva, by Portugal's border: Castillo de las Guardas is nearer
+        // than Loulé.
+        assert_eq!(place("", 37.26, -6.95).as_deref(), Some("esclg"), "Huelva");
+        // From a Spanish radar too: Madrid's to Lisbon.
+        assert_eq!(place("estjv", 38.72, -9.14).as_deref(), Some("iberia"));
+        // Review SF3: following holds iberia inside its box (Porto, Madrid)
+        // and leaves it outside: Porto -> iberia -> Vara -> vara.
+        assert!(place("iberia", 41.15, -8.61).is_none());
+        assert!(place("iberia", 40.42, -3.70).is_none());
+        assert_eq!(place("iberia", 58.26, 12.95).as_deref(), Some("vara"));
+        // nordic and sweden still hold anywhere.
+        assert!(place("nordic", 41.15, -8.61).is_none());
+        assert!(place("sweden", 58.26, 12.95).is_none());
         // Following from Gothenburg settles on Vara; from Stockholm, Bålsta.
         let nearest = |lat, lon| handoff(&sites, "", lat, lon).map(|s| s.id.clone());
         assert_eq!(nearest(57.71, 11.97).as_deref(), Some("vara"));

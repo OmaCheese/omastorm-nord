@@ -2263,6 +2263,49 @@ mod tests {
     /// Another product backfills an hour (S26: a product volume costs ~39
     /// requests), and every read that decoded the lowest scan on the way
     /// sends it too, as a second event, from the same volume.
+    /// S31: before it fetches, the backfill says how many earlier frames it
+    /// will bring (for `state.loading`), and when it has ended; every
+    /// planned frame comes between the two.
+    #[test]
+    fn backfill_reports_its_plan_and_end() {
+        let seen = runtime().block_on(async {
+            let (base, _served) = serve(smhi("vara", VARA, VARA_DAY)).await;
+            let (tx, mut rx) = mpsc::channel(16);
+            let cfg = Config {
+                want: Want::ColMax,
+                decode: stub_product,
+                ..config(base)
+            };
+            let poller = tokio::spawn(poll_with(cfg, "vara".into(), tx, Vec::new()));
+            let mut seen: Vec<String> = Vec::new();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while seen.last().is_none_or(|s| s != "history end") {
+                match tokio::time::timeout_at(deadline, rx.recv()).await {
+                    Ok(Some(event)) => seen.push(describe(&event)),
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            poller.abort();
+            seen
+        });
+        // The live path's three volumes (each with its free lowest scan),
+        // then the plan: the hour's other nine product frames...
+        let plan = seen
+            .iter()
+            .position(|s| s.starts_with("plan "))
+            .expect("a plan");
+        assert_eq!(plan, 6, "{seen:?}");
+        assert_eq!(seen[plan], format!("plan {}", PRODUCT_BACKFILL - 3));
+        assert_eq!(seen[plan + 1], "backfill 2026-09-13 16:35Z");
+        // ...which all come, with their lowest scans, before the end.
+        let end = seen
+            .iter()
+            .position(|s| s == "history end")
+            .expect("an end");
+        assert_eq!(end - plan - 1, 2 * (PRODUCT_BACKFILL - 3), "{seen:?}");
+        assert_eq!(seen[end - 1], "backfill 2026-09-13 15:55Z");
+    }
+
     #[test]
     fn a_product_backfills_an_hour_and_sends_its_lowest_scans_too() {
         let (events, served) = run_as(

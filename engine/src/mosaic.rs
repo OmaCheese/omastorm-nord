@@ -2401,6 +2401,13 @@ fn assemble_grid(
 /// only once sent (review #8), and a time with no scan at all is never
 /// built (review #1). A height frame (S30) reads its volumes back from the
 /// tilt store here, and holds them only while it is built.
+/// Whether a composite's frame from `have` of its radars is left unbuilt
+/// (review S5): a history frame (not the newest) under a third of them.
+/// My mosaic's, and the newest frame, are always built.
+fn too_sparse(layout: &Layout, have: usize, newest: bool) -> bool {
+    matches!(layout.job, Job::Grid { .. }) && !newest && have * 3 < layout.radars.len()
+}
+
 async fn build_and_send(
     layout: &Arc<Layout>,
     schedule: &mut Schedule,
@@ -2413,6 +2420,21 @@ async fn build_and_send(
     }
     let again = schedule.is_late(t);
     let newest = schedule.newest_built().is_none_or(|n| t >= n);
+    let have = owned.iter().filter(|o| o.is_some()).count();
+    if too_sparse(layout, have, newest) {
+        // Review S5: it would stay in the loop for good (only the newest two
+        // frame times are built again); marked done, so nothing reads it.
+        log_for(
+            layout.station_id(),
+            format_args!(
+                "{} not built: {have} of {} radars, under a third, for a history frame",
+                utc(t, "%Y-%m-%dT%H:%MZ"),
+                layout.radars.len()
+            ),
+        );
+        schedule.mark_built(t);
+        return true;
+    }
     let shared = layout.clone();
     let started = Instant::now();
     let site = layout.station_id().to_owned();
@@ -4479,6 +4501,32 @@ mod tests {
             );
             assert!(built.is_some());
         }
+    }
+
+    /// Review S5: a composite's history frame from under a third of its
+    /// radars is left out; its newest frame, and My mosaic's, never.
+    #[test]
+    fn a_composites_sparse_history_frame_is_left_out() {
+        let sites = table();
+        let nordic = sites.iter().find(|s| s.id == "nordic").unwrap();
+        let layout = Layout::grid(nordic, Want::LowestBeam, &sites).unwrap();
+        assert_eq!(layout.radars.len(), 41);
+        assert!(too_sparse(&layout, 1, false), "11:45Z from 1 of 41");
+        assert!(too_sparse(&layout, 13, false));
+        assert!(!too_sparse(&layout, 14, false), "14 of 41 is a third");
+        assert!(!too_sparse(&layout, 1, true), "the newest frame is kept");
+        let set = choose(
+            &sites,
+            &[
+                SiteArg::Id("vara".into()),
+                SiteArg::Id("nohur".into()),
+                SiteArg::Id("dksin".into()),
+            ],
+            None,
+        )
+        .unwrap();
+        let mine = Layout::new(&set, &sites).unwrap();
+        assert!(!too_sparse(&mine, 0, false), "My mosaic");
     }
 
     /// Review S1: a composite's whole-volume products build back 3 frame

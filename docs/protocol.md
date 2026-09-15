@@ -1168,7 +1168,10 @@ the ray nearest the bearing within 0.75°); a radar is a *candidate* where
 every radar's volume for T is in, or once it is T + 8 minutes and no volume
 has come for 30 seconds; a volume that arrives after its frame was built
 builds it once more under the same `id` while T is one of the two newest
-frame times and under 12 minutes old. A radar missing from a frame is named
+frame times and under 12 minutes old. A frame before the newest that fewer
+than a third of the composite's radars reached is not built at all (it
+would stay in the loop for good; `engine.log` says so). A radar missing
+from a frame is named
 in its provenance (`engine.log`), and its area falls to its neighbours or is
 no data. Each radar is read by its provider's own poller through the tilt
 store, pollers 2 seconds apart, each provider one volume at a time

@@ -89,8 +89,11 @@ pub struct Cut {
     /// radars' volumes (`mosaic::grid_box`). `iberia` offers only the
     /// composite (S33).
     pub products: bool,
-    /// Whether following hands off to it where no radar reaches the view
-    /// centre (S33: Portugal's radars can be seen only through `iberia`).
+    /// Whether following hands off to it, with the centre in its box, where
+    /// the composite alone shows the radars: nearer one of the box's
+    /// reference radars than any table radar, or beyond 1.3 × the nearest
+    /// radar's range (S33, review SF4; `main.rs` `handoff`). Portugal's
+    /// radars can be seen only through `iberia`.
     pub handoff: bool,
 }
 
@@ -1136,17 +1139,21 @@ mod tests {
         assert!(!crate::products::for_station(&nordic).0.is_empty());
         // iberia: the composite only (no product menu, no radars to cut).
         assert!(crate::products::for_station(&iberia).0.is_empty());
-        // nordic's products still come from every radar of the Nordic table...
-        let polar = sites.iter().filter(|s| s.kind == SiteKind::Polar).count();
-        assert_eq!(crate::mosaic::grid_radars(&nordic, &sites).len(), polar);
-        // ...and never from an Iberian radar.
-        let mut madrid = station("vara");
-        (madrid.id, madrid.lat, madrid.lon, madrid.range_km) =
-            ("estjv".into(), 40.17592, -3.71368, 240.0);
-        let with_spain = [sites.clone(), vec![madrid]].concat();
-        let radars = crate::mosaic::grid_radars(&nordic, &with_spain);
-        assert_eq!(radars.len(), polar);
-        assert!(radars.iter().all(|s| s.id != "estjv"));
+        // S32's reach rule over each box: nordic's products still come from
+        // its 41 radars and sweden's from SMHI's 12, never from Spain's...
+        let radars = |s: &Station| crate::mosaic::grid_radars(s, &sites);
+        assert_eq!(radars(&nordic).len(), 41);
+        assert!(radars(&nordic).iter().all(|s| s.country != "ES"));
+        assert_eq!(radars(&station("sweden")).len(), 12);
+        // ...and iberia's box reaches Spain's nine peninsular radars, not
+        // the Canaries (none of its products is made: no product menu).
+        let ids: Vec<String> = radars(&iberia).into_iter().map(|s| s.id).collect();
+        assert_eq!(ids.len(), 9, "{ids:?}");
+        assert!(ids.iter().all(|id| id.starts_with("es")), "{ids:?}");
+        assert!(
+            !ids.iter().any(|id| id == "esatn" || id == "esbnv"),
+            "{ids:?}"
+        );
     }
 
     /// A composite served from memory in ranges.

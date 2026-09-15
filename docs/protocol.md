@@ -374,7 +374,14 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
   releasing the lock hands off on the next settle, not at once. A `grid`
   station is never a hand-off target. While one is selected, `view_center`
   hands off to nothing: the composite already covers the view, so only a
-  `select_site` leaves it.
+  `select_site` leaves it. S33's exception: `iberia` (its radars in
+  Portugal have no volumes) is a target with the centre inside its box
+  where the composite alone shows the radars there: nearer one of its
+  box's `referenceSites` (Portugal's) than to any station radar, or beyond
+  1.3 × the nearest radar's `rangeKm` (Porto, Lisbon, Galicia's coast; a
+  place in Spain still follows a Spanish radar). Selected, `iberia` holds
+  while the centre stays in its box and hands off by the nearest-radar
+  rule once it leaves.
 - `search_places` ranks the embedded gazetteer (GeoNames populated places
   with population ≥ 5000 in Sweden, Norway, Finland, Åland, Denmark and the
   Baltics, clipped to the SMHI network's Nordic envelope) for the
@@ -1554,7 +1561,8 @@ hides radar and latches the error until relaunch.
 - `state.frame.kind` (`polar` or `grid`) is new and always sent. Polar
   frames are otherwise unchanged. A `grid` frame carries `frame.grid`, an
   empty `azimuthLut`, and zero polar geometry.
-- `view_center` never hands off to or from a `grid` station.
+- `view_center` never hands off to or from a `grid` station, except
+  `iberia` (S33, above).
 
 Additive since (S14, still version 2):
 

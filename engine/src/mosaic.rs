@@ -3338,6 +3338,13 @@ mod tests {
             assert!(built.grid.codes.iter().any(|&c| c >= 60));
             assert!(built.grid.codes.contains(&1), "holes between the radars");
             assert_eq!(built.product, "CAPPI");
+            // Review #3: a frame above the ground credits the terrain.
+            assert_eq!(
+                built.attribution.contains(crate::terrain::CREDIT),
+                above == Above::Ground,
+                "{}",
+                built.attribution
+            );
         }
     }
 

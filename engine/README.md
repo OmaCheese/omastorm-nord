@@ -152,6 +152,23 @@ Korppoo 5 requests and 604–636 KB a frame; for comparison Vara 39 requests
 and 737 KB, Hurum 1 request and 679–814 KB, Sindal 1 request and 0.98–1.23 MB;
 the second product of each came from the store with no request.
 
+**Rolling back.** An engine older than S24a reads a frame id's unknown
+last part as its lowest scan (`products::variant_of`), so over a cache that
+holds `-etop` and `-vil` frames it shows them in the lowest-scan loop. Before
+starting an older engine on such a cache, stop the engine and delete those
+frames from the catalog and their PNGs (`<site>/<id>-<hash>-sweep.png`,
+`-azlut.png`, `-codes.png`), with the engine's own `XDG_CACHE_HOME`:
+
+```sh
+dir=${XDG_CACHE_HOME:-~/.cache}/omastorm-se/frames
+sqlite3 "$dir/catalog.sqlite" "DELETE FROM frames WHERE id LIKE '%-etop' OR id LIKE '%-vil'"
+rm -f "$dir"/*/*-etop-*.png "$dir"/*/*-vil-*.png
+```
+
+or wipe the catalog (the cache refills). From S24a on, `variant_of` gives
+any all-letter last part but `loading` its own ring, so a later engine's
+new products roll back cleanly.
+
 ### My mosaic
 
 `src/mosaic.rs` (S25) makes the grid station `mymosaic` from the lowest scan

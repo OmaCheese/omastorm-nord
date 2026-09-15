@@ -438,11 +438,18 @@ impl Want {
 /// that is a product other than the lowest scan (`cappi1`, `cmax`, `clear`,
 /// `a40`, …), else `e0`. So a frame catalogued before S20, or one whose id
 /// names no product at all, is the lowest scan, as it always was.
+///
+/// Any other all-letter last part (`[a-z]+`) but the placeholder's
+/// `loading` is a product too (S24a review #3): one a later engine makes,
+/// so an engine rolled back over that engine's cache keeps those frames in
+/// their own ring instead of showing them as its lowest scan.
 pub fn variant_of(frame_id: &str) -> &str {
     let last = frame_id.rsplit('-').next().unwrap_or_default();
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let hex8 = |s: &str| s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let letters = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase());
     let product = matches!(last, "cmax" | "clear" | "etop" | "vil")
+        || (frame_id.contains('-') && last != "loading" && letters(last))
         || last.strip_prefix("cappi").is_some_and(|h| {
             // S30: above the ground ends in `g`.
             digits(h) || h.strip_suffix('g').is_some_and(digits)
@@ -1421,7 +1428,14 @@ mod tests {
         // synthetic frame, scripts/check-popover.sh's `popover-test-0`).
         assert_eq!(variant_of("popover-test-0"), "e0");
         assert_eq!(variant_of("vara-loading"), "e0");
-        assert_eq!(variant_of("x-abc"), "e0");
+        assert_eq!(variant_of("-loading"), "e0");
+        // S24a review #3: an all-letter suffix this engine does not know is
+        // a later engine's product, its own ring, never the lowest scan.
+        assert_eq!(variant_of("x-abc"), "abc");
+        assert_eq!(variant_of("vara-20260915T0000Z-etop"), "etop");
+        assert_eq!(variant_of("vara-20260915T0000Z-vil"), "vil");
+        assert_eq!(variant_of("vara-20260915T0000Z"), "e0");
+        assert_eq!(variant_of("x-abc1"), "e0");
         use crate::providers::ord;
         use crate::smhi_live as smhi;
         let smhi_depths = (smhi::BACKFILL, smhi::PRODUCT_BACKFILL);
@@ -1902,7 +1916,8 @@ mod tests {
             "cappi1000g"
         );
         assert_eq!(variant_of("x-cappi1000q"), "e0");
-        assert_eq!(variant_of("x-cappig"), "e0");
+        // All letters: a product of its own since S24a review #3.
+        assert_eq!(variant_of("x-cappig"), "cappig");
     }
 
     #[test]

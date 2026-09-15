@@ -106,14 +106,21 @@ def main():
     rscale, rstart = float(where["rscale"]), float(where["rstart"])
     rstart_unit = "km (ODIM)"
     root_how = f["how"].attrs if "how" in f else {}
-    if "lowprf" in root_how and float(root_how["lowprf"]) > 0:
-        unambiguous_km = 299_792.458 / (2.0 * float(root_how["lowprf"]))
-        ray_km = nbins * rscale / 1000.0
-        if rstart + ray_km > unambiguous_km >= rstart / 1000.0 + ray_km:
-            rstart, rstart_unit = rstart / 1000.0, (
-                f"metres: as km the ray would end at {rstart + nbins * rscale / 1000.0:g} km,"
-                f" past c/(2 lowprf) = {unambiguous_km:.1f} km"
-            )
+    ray_km = nbins * rscale / 1000.0
+    unambiguous_km = (299_792.458 / (2.0 * float(root_how["lowprf"]))
+                      if "lowprf" in root_how and float(root_how["lowprf"]) > 0 else None)
+    if unambiguous_km and rstart + ray_km > unambiguous_km >= rstart / 1000.0 + ray_km:
+        rstart, rstart_unit = rstart / 1000.0, (
+            f"metres: as km the ray would end at {rstart + ray_km:g} km,"
+            f" past c/(2 lowprf) = {unambiguous_km:.1f} km"
+        )
+    elif rstart > ray_km / 2.0:
+        # A radar never keeps only the far half of its own ray: Valladolid's
+        # and San Sebastián's IRIS 8.13 files (PRF 250 Hz, 600 km
+        # unambiguous) write 125 for 240 gates of 1 km.
+        rstart, rstart_unit = rstart / 1000.0, (
+            f"metres: as km the first gate would lie past half the ray ({ray_km:g} km of gates)"
+        )
     elangle = float(where["elangle"])
     data = ds[m]["data"][...]
     assert data.shape == (nrays, nbins), data.shape

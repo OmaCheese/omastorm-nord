@@ -672,6 +672,24 @@ mod tests {
         assert_eq!(rstart_km(125.0), 0.125);
     }
 
+    /// AEMET (Valladolid, S32): the older IRIS 8.13 export of two of the
+    /// eleven (San Sebastián's too): 450 rays of 0.8° with no azimuths at all
+    /// (equal sectors from north, like MET Norway's; a clutter-against-
+    /// terrain check put the best rotation at 0°), 240 gates of 1 km and
+    /// `rstart` 125, metres again.
+    #[test]
+    fn aemet_valladolid_has_450_rays_and_no_azimuths() {
+        let (sweep, site, golden) =
+            matches_golden("ord_eslid_202609151900.h5", "eslid-20260915", Tilt::Lowest);
+        assert_eq!(golden.odim_dataset, "/dataset1/data1");
+        assert_eq!((sweep.rays.len(), sweep.gates), (450, 240));
+        assert_eq!((sweep.first_gate_m, sweep.gate_spacing_m), (625, 1000));
+        assert_eq!(sweep.rays[0].azimuth_deg, 0.4);
+        assert_eq!(sweep.rays[449].azimuth_deg, 359.6);
+        assert_eq!(golden.ray_time_base, "2026-09-15T19:00:08Z");
+        assert_eq!(site.source_item("NOD"), Some("eslid"));
+    }
+
     /// FMI (Korppoo): a single-sweep SCAN (ODIM 2.3) holding TH as data1 and
     /// DBZH as data2; `startazA`/`stopazA` but no ray times.
     #[test]

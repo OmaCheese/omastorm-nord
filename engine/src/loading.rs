@@ -147,6 +147,9 @@ pub struct Tracker {
     /// A radar's frames backfilled since the load began, and its plan.
     backfilled: u32,
     planned: Option<u32>,
+    /// A radar's backfill ended (review NIT4): its history stage finishes
+    /// as soon as it shows, even if that is after the first stage's linger.
+    ended: bool,
     /// What the wire said, and when it last changed.
     published: Option<Loading>,
     published_at: Option<Instant>,
@@ -259,6 +262,30 @@ impl Tracker {
         }
     }
 
+    /// A radar's history stage that waited behind the first stage's linger
+    /// (review NIT4): its counts as they are now, and finished if its
+    /// backfill already ended.
+    fn refresh_history(&mut self, now: Instant) {
+        let (Kind::Radar, Some(total), Some(current)) = (self.kind, self.planned, &self.current)
+        else {
+            return;
+        };
+        if current.stage != Stage::History || total == 0 {
+            return;
+        }
+        let label = history_label(&current.label, self.backfilled, total);
+        self.current = Some(Loading::new(
+            Stage::History,
+            self.backfilled,
+            total,
+            Unit::Frames,
+            label,
+        ));
+        if self.ended {
+            self.finish(now);
+        }
+    }
+
     /// A radar's backfilled frame joined the timeline.
     pub fn backfilled(&mut self, now: Instant) {
         if self.kind != Kind::Radar {
@@ -307,6 +334,7 @@ impl Tracker {
         if self.kind != Kind::Radar {
             return;
         }
+        self.ended = true;
         if self
             .current
             .as_ref()
@@ -402,11 +430,11 @@ impl Tracker {
             && now.duration_since(at) >= LINGER
         {
             self.current = self.next.take();
-            self.finished_at = self
-                .current
-                .as_ref()
-                .filter(|s| s.percent >= 100)
-                .map(|_| now);
+            self.finished_at = None;
+            self.refresh_history(now);
+            if self.current.as_ref().is_some_and(|s| s.percent >= 100) {
+                self.finished_at.get_or_insert(now);
+            }
             self.urgent = true;
         }
         let due = self.urgent
@@ -499,6 +527,32 @@ mod tests {
         t.history_end(at(t0, 2400));
         assert_eq!(t.wire(at(t0, 2400)).unwrap().percent, 100);
         assert_eq!(t.wire(at(t0, 3500)), None);
+    }
+
+    /// Review NIT4: the whole backfill (plan, frames, end) lands while the
+    /// first frame's 100 lingers (a tilt store with every frame, no
+    /// backfill delay): the history stage then shows its real count and
+    /// finishes, rather than a stale count that never ends.
+    #[test]
+    fn a_backfill_inside_the_linger_shows_and_finishes() {
+        let t0 = Instant::now();
+        let mut t = Tracker::default();
+        t.begin(Kind::Radar, "Vara Rain mass", false, None);
+        t.shown(at(t0, 0));
+        assert_eq!(t.wire(at(t0, 0)).unwrap().percent, 100);
+        t.plan("Vara Rain mass", 11, at(t0, 100));
+        for i in 0..11 {
+            t.backfilled(at(t0, 200 + i * 10));
+        }
+        t.history_end(at(t0, 500));
+        assert_eq!(t.wire(at(t0, 600)).unwrap().stage, Stage::First, "lingers");
+        let history = t.wire(at(t0, 1100)).unwrap();
+        assert_eq!(
+            (history.stage, history.done, history.total, history.percent),
+            (Stage::History, 11, 11, 100)
+        );
+        assert_eq!(history.label, "Vara Rain mass: 11 of 11 frames");
+        assert_eq!(t.wire(at(t0, 2200)), None, "and ends");
     }
 
     #[test]

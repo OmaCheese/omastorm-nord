@@ -270,7 +270,8 @@ pub fn table() -> Table {
         .expect("engine/data/sites.json is valid");
     let mut sites: Vec<Station> = file.sites.into_iter().map(Row::station).collect();
     sites.push(crate::composite::station());
-    sites.push(opera::station());
+    // OPERA's boxes: `nordic`, then `iberia` (S33).
+    sites.extend(opera::stations());
     sites.push(crate::mosaic::station());
     Table {
         source: file.source,
@@ -366,9 +367,10 @@ mod tests {
     #[test]
     fn the_table_is_smhis_twelve_radars_its_composite_and_ords_twenty_nine() {
         let sites = table().sites;
-        // SMHI's 13 (12 radars and sweden), OPERA's Nordic composite (S16),
-        // ORD's 29 radars (S15) and 11 (S32) and My mosaic (S25), listed last.
-        assert_eq!(sites.len(), 13 + 1 + 29 + 11 + 1);
+        // SMHI's 13 (12 radars and sweden), OPERA's Nordic and Iberian
+        // composites (S16, S33), ORD's 29 radars (S15) and 11 (S32) and My
+        // mosaic (S25), listed last.
+        assert_eq!(sites.len(), 13 + 2 + 29 + 11 + 1);
         let mine = sites.last().unwrap();
         assert_eq!(
             (mine.id.as_str(), mine.kind, mine.provider),

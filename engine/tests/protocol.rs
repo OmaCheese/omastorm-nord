@@ -126,9 +126,9 @@ fn fixture_transport_and_shared_commands() {
     );
     // The 12 SMHI radars, ORD's 29 of Norway, Finland and Denmark (S15)
     // and 11 of Spain (S32), the national composite (protocol v2) and
-    // OPERA's Nordic composite (S16) and My mosaic (S25): every station says
-    // its kind, and the composites are the grids.
-    assert_eq!(sites.len(), 55);
+    // OPERA's Nordic and Iberian composites (S16, S33) and My mosaic (S25):
+    // every station says its kind, and the composites are the grids.
+    assert_eq!(sites.len(), 56);
     assert!(
         sites
             .iter()
@@ -139,7 +139,7 @@ fn fixture_transport_and_shared_commands() {
         .filter(|s| s["kind"] == "grid")
         .map(|s| s["id"].as_str().unwrap())
         .collect();
-    assert_eq!(grids, ["sweden", "nordic", "mymosaic"]);
+    assert_eq!(grids, ["sweden", "nordic", "iberia", "mymosaic"]);
     let mut ids = std::collections::HashSet::new();
     for site in sites {
         assert!(ids.insert(site["id"].as_str().unwrap()));
@@ -255,6 +255,13 @@ fn fixture_transport_and_shared_commands() {
     }
     assert_eq!(offer("mymosaic")["products"], json!([]));
     assert_eq!(offer("mymosaic")["elevations"], json!([]));
+    // S33: OPERA's Iberian crop shows its composite only.
+    assert_eq!(offer("iberia")["products"], json!([]));
+    assert_eq!(offer("iberia")["elevations"], json!([]));
+    assert_eq!(
+        offer("iberia")["attribution"],
+        "EUMETNET OPERA (AEMET, IPMA), CC BY 4.0"
+    );
     let finnish: Vec<&Value> = sites.iter().filter(|s| s["country"] == "FI").collect();
     assert_eq!(finnish.len(), 12);
     for site in finnish {

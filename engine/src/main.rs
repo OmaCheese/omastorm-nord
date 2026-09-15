@@ -567,7 +567,9 @@ fn great_circle_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 ///
 /// The composite covers the whole view already, so it is never a target,
 /// and while it is selected nothing is handed off to (`docs/protocol.md`,
-/// `view_center`).
+/// `view_center`). S33: except where no radar's range reaches the centre
+/// and an OPERA box that takes the hand-off holds it (`iberia`, where
+/// Portugal's radars show only through the composite).
 fn handoff<'a>(sites: &'a [Station], current: &str, lat: f64, lon: f64) -> Option<&'a Station> {
     if sites
         .iter()
@@ -576,6 +578,21 @@ fn handoff<'a>(sites: &'a [Station], current: &str, lat: f64, lon: f64) -> Optio
         return None;
     }
     let distance = |s: &Station| great_circle_km(lat, lon, s.lat, s.lon);
+    let reached = sites
+        .iter()
+        .any(|s| s.kind == SiteKind::Polar && distance(s) <= s.range_km);
+    if !reached
+        && let Some(composite) = sites.iter().find(|s| {
+            s.kind == SiteKind::Grid
+                && providers::opera::cut(&s.id).is_some_and(|c| {
+                    c.handoff
+                        && (c.area.south..=c.area.north).contains(&lat)
+                        && (c.area.west..=c.area.east).contains(&lon)
+                })
+        })
+    {
+        return Some(composite);
+    }
     let nearest = sites
         .iter()
         .filter(|s| s.kind == SiteKind::Polar)
@@ -1018,12 +1035,16 @@ impl Shared {
         let station = match station {
             Some(s) if self.state.source == Source::Live && offers(&s) => s,
             Some(s) if s.kind == SiteKind::Grid => {
+                // S33: an OPERA box without products (`iberia`) shows its
+                // composite only.
+                let why = if s.provider == providers::ProviderId::Mosaic {
+                    "its set's rule says what it shows"
+                } else {
+                    "it shows the composite only"
+                };
                 return (
                     false,
-                    Some(format!(
-                        "{} has no products to choose; its set's rule says what it shows.",
-                        s.name
-                    )),
+                    Some(format!("{} has no products to choose; {why}.", s.name)),
                 );
             }
             Some(_) if self.state.source == Source::Archived => {
@@ -3484,8 +3505,8 @@ mod handoff_tests {
         let sites = site_table().sites;
         // SMHI's 12 radars and ORD's 29 (NO, FI, DK: S15) and 11 (ES: S32)
         // from sites.json, then the composites: SMHI's (S8) and OPERA's
-        // Nordic crop (S16), and My mosaic (S25).
-        assert_eq!(sites.len(), 55);
+        // Nordic and Iberian crops (S16, S33), and My mosaic (S25).
+        assert_eq!(sites.len(), 56);
         assert_eq!(
             sites.iter().filter(|s| s.kind == SiteKind::Polar).count(),
             52
@@ -3496,7 +3517,7 @@ mod handoff_tests {
                 .filter(|s| s.kind == SiteKind::Grid)
                 .map(|s| &s.id[..])
                 .collect::<Vec<_>>(),
-            ["sweden", "nordic", "mymosaic"]
+            ["sweden", "nordic", "iberia", "mymosaic"]
         );
         // My mosaic is never a target, and nothing is handed off to from it.
         assert!(handoff(&sites, "mymosaic", 57.71, 11.97).is_none());
@@ -3505,7 +3526,7 @@ mod handoff_tests {
         // selected nothing is handed off to.
         assert!(handoff(&sites, "nordic", 59.33, 18.07).is_none());
         assert!(handoff(&sites, "", 62.25, 18.0).is_some_and(|s| s.kind == SiteKind::Polar));
-        for s in &sites {
+        for s in sites.iter().filter(|s| s.id != "iberia") {
             // The Nordic box, or (S32) Spain's: the peninsula and the Canaries.
             let nordic = (53.0..=71.5).contains(&s.lat) && (3.0..=33.0).contains(&s.lon);
             let iberia = (34.0..=46.0).contains(&s.lat) && (-11.0..=5.0).contains(&s.lon)

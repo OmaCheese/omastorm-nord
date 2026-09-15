@@ -1,6 +1,7 @@
 //! Composites: SMHI's national composite (`area/sweden/product/comp`;
 //! stream S8, DEC-11), and EUMETNET OPERA's European one cut to the Nordic
-//! box (`providers/opera.rs`; stream S16, DEC-14). One ODIM `COMP` file
+//! box (`providers/opera.rs`; stream S16, DEC-14) and the Iberian one
+//! (stream S33, DEC-17), both from one read of a file. One ODIM `COMP` file
 //! every 5 minutes covers every radar of its network. The engine decodes it
 //! and reprojects it to a Web Mercator grid texture, so both UIs draw it as
 //! one textured rectangle (`docs/protocol.md`, grid texture).
@@ -1097,7 +1098,7 @@ fn read_codes<R: Read + Seek>(
     dataset: &Dataset,
     reader: &Shared<R>,
     source: &Source,
-    target: &Target,
+    targets: &[Target],
     coding: Coding,
 ) -> Result<Vec<u8>, String> {
     let shape = dataset.shape().map_err(|e| e.to_string())?;
@@ -1113,7 +1114,7 @@ fn read_codes<R: Read + Seek>(
     };
     match chunk {
         Some((rows, cols)) if rows < source.ysize || cols < source.xsize => {
-            read_chunks(dataset, reader, source, target, coding, (rows, cols))
+            read_chunks(dataset, reader, source, targets, coding, (rows, cols))
         }
         _ => {
             let values = dataset.read_f64().map_err(|e| e.to_string())?;
@@ -1130,25 +1131,28 @@ fn read_codes<R: Read + Seek>(
     }
 }
 
-/// The chunks some texel of `target` falls in, and only those, one read
-/// per run of chunks stored back to back. The rest of the grid, and a
-/// needed chunk the file does not allocate, is nodata.
+/// The chunks some texel of any of `targets` falls in, and only those, one
+/// read per run of chunks stored back to back (S33: one read serves every
+/// box). The rest of the grid, and a needed chunk the file does not
+/// allocate, is nodata.
 fn read_chunks<R: Read + Seek>(
     dataset: &Dataset,
     reader: &Shared<R>,
     source: &Source,
-    target: &Target,
+    targets: &[Target],
     coding: Coding,
     (rows, cols): (usize, usize),
 ) -> Result<Vec<u8>, String> {
     let across = source.xsize.div_ceil(cols);
     let down = source.ysize.div_ceil(rows);
     let mut needed = vec![false; across * down];
-    target.each_texel(source, |pixel| {
-        if let Some((i, j)) = pixel {
-            needed[j / rows * across + i / cols] = true;
-        }
-    });
+    for target in targets {
+        target.each_texel(source, |pixel| {
+            if let Some((i, j)) = pixel {
+                needed[j / rows * across + i / cols] = true;
+            }
+        });
+    }
     let element = Element::of(&dataset.datatype().map_err(|e| e.to_string())?)?;
     let filters = dataset.filters();
     if let Some(id) = filters.iter().find(|&&id| id != DEFLATE && id != SHUFFLE) {
@@ -1220,6 +1224,31 @@ pub fn decode_box<R: Read + Seek + Send + 'static>(
     reader: R,
     crop: Option<LonLatBox>,
 ) -> Result<Grid, CompositeError> {
+    let crops = crop.map(|c| [c]);
+    let mut grids = decode_crops(reader, crops.as_ref().map(|c| &c[..]))?;
+    Ok(grids.remove(0))
+}
+
+/// One read of a composite cut to every box of `crops`, one grid each, in
+/// order (S33: OPERA's `nordic` and `iberia` from the same file). The
+/// chunks under any of the boxes are read once, in the runs one box alone
+/// would read, so each grid is the one `decode_box` gives for its box.
+pub fn decode_boxes<R: Read + Seek + Send + 'static>(
+    reader: R,
+    crops: &[LonLatBox],
+) -> Result<Vec<Grid>, CompositeError> {
+    if crops.is_empty() {
+        return Err(fail("no box to cut the composite to"));
+    }
+    decode_crops(reader, Some(crops))
+}
+
+/// `decode_box` and `decode_boxes`: the whole grid's box when `crops` is
+/// `None`.
+fn decode_crops<R: Read + Seek + Send + 'static>(
+    reader: R,
+    crops: Option<&[LonLatBox]>,
+) -> Result<Vec<Grid>, CompositeError> {
     let reader = Shared::new(reader);
     let hdf5 = ReadSeekSource::new(reader.clone())
         .map_err(|e| fail(format!("reading the composite: {e}")))?;
@@ -1263,29 +1292,38 @@ pub fn decode_box<R: Read + Seek + Send + 'static>(
     let end_ms = nominal_ms(&dwhat, "enddate", "endtime").unwrap_or(start_ms);
     let elevation_deg = num(&dwhat, "prodpar").unwrap_or(0.0);
 
-    let target = Target::over(crop.unwrap_or_else(|| source.bounds()));
+    let targets: Vec<Target> = match crops {
+        Some(crops) => crops.iter().map(|&c| Target::over(c)).collect(),
+        None => vec![Target::over(source.bounds())],
+    };
     let dataset = file
         .dataset(&format!("{data}/data"))
         .map_err(|e| fail(format!("{data}/data: {e}")))?;
-    let codes = read_codes(&dataset, &reader, &source, &target, coding)
+    let codes = read_codes(&dataset, &reader, &source, &targets, coding)
         .map_err(|e| fail(format!("{data}/data: {e}")))?;
-    let mut out = Vec::with_capacity(target.width as usize * target.height as usize);
-    target.each_texel(&source, |pixel| {
-        out.push(pixel.map_or(1, |(i, j)| codes[j * source.xsize + i]));
-    });
-    Ok(Grid {
-        width: target.width,
-        height: target.height,
-        codes: out,
-        start_ms,
-        end_ms,
-        elevation_deg,
-        west: target.west,
-        east: target.east(),
-        north: target.north,
-        south: target.south(),
-        source_projdef: projdef,
-    })
+    let grids = targets
+        .iter()
+        .map(|target| {
+            let mut out = Vec::with_capacity(target.width as usize * target.height as usize);
+            target.each_texel(&source, |pixel| {
+                out.push(pixel.map_or(1, |(i, j)| codes[j * source.xsize + i]));
+            });
+            Grid {
+                width: target.width,
+                height: target.height,
+                codes: out,
+                start_ms,
+                end_ms,
+                elevation_deg,
+                west: target.west,
+                east: target.east(),
+                north: target.north,
+                south: target.south(),
+                source_projdef: projdef.clone(),
+            }
+        })
+        .collect();
+    Ok(grids)
 }
 
 #[cfg(test)]
@@ -1694,9 +1732,11 @@ mod tests {
     );
     const NORDIC_GOLDEN: &str = include_str!("../../golden/nordic-20260914/grid.json");
 
+    /// An OPERA crop's answer key (`golden/nordic-20260914`,
+    /// `golden/iberia-20260915`: the same producer over two boxes).
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
-    struct Nordic {
+    struct OperaKey {
         sha256: String,
         projdef: String,
         date: String,
@@ -1746,7 +1786,7 @@ mod tests {
         counts: Option<Counts>,
     }
 
-    impl Nordic {
+    impl OperaKey {
         fn crop(&self) -> LonLatBox {
             LonLatBox {
                 west: self.crop.west,
@@ -1757,7 +1797,7 @@ mod tests {
         }
     }
 
-    fn nordic() -> Nordic {
+    fn nordic() -> OperaKey {
         serde_json::from_str(NORDIC_GOLDEN).unwrap()
     }
 
@@ -1871,8 +1911,14 @@ mod tests {
             nodata: -9_999_000.0,
             undetect: -8_888_000.0,
         };
-        let codes =
-            read_codes(&dataset, &reader, &source, &Target::over(g.crop()), coding).unwrap();
+        let codes = read_codes(
+            &dataset,
+            &reader,
+            &source,
+            &[Target::over(g.crop())],
+            coding,
+        )
+        .unwrap();
         let mut checked = 0;
         for c in g.allocated_chunks.iter().filter(|c| c.needed) {
             let theirs = c.counts.as_ref().unwrap();
@@ -1990,5 +2036,247 @@ mod tests {
             traffic.bytes(),
             traffic.total()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // OPERA's Iberian crop (S33, DEC-17): the same rules over another box
+    // -----------------------------------------------------------------------
+
+    const IBERIA_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../data/raw/opera_iberia_202609151700.h5"
+    );
+    const IBERIA_GOLDEN: &str = include_str!("../../golden/iberia-20260915/grid.json");
+
+    fn iberia() -> OperaKey {
+        serde_json::from_str(IBERIA_GOLDEN).unwrap()
+    }
+
+    fn iberia_fixture() -> Vec<u8> {
+        std::fs::read(IBERIA_FIXTURE).expect("run bash scripts/extract-fixtures.sh first")
+    }
+
+    /// `crops` of `bytes` served in ranges: the grids, the requests and the
+    /// bytes they took.
+    fn read_ranged(bytes: Vec<u8>, crops: &[LonLatBox]) -> (Vec<Grid>, u32, u64) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let reader = opera_reader(bytes, asked);
+        let traffic = reader.traffic();
+        let grids = decode_boxes(reader, crops).unwrap();
+        (grids, traffic.requests(), traffic.bytes())
+    }
+
+    #[test]
+    fn the_iberian_fixture_is_the_one_its_golden_file_describes() {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(iberia_fixture());
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, iberia().sha256);
+        // The same source grid as the Nordic key's.
+        assert_eq!(iberia().projdef, nordic().projdef);
+    }
+
+    #[test]
+    fn laea_matches_pyproj_over_iberia() {
+        let g = iberia();
+        let laea = Laea::parse(&g.projdef).unwrap();
+        assert!(g.projection.len() >= 18);
+        for p in &g.projection {
+            let (x, y) = laea.forward(p.lon, p.lat);
+            assert!(
+                (x - p.x).abs() < 1e-3 && (y - p.y).abs() < 1e-3,
+                "forward {}, {}: {x}, {y} vs {}, {}",
+                p.lon,
+                p.lat,
+                p.x,
+                p.y
+            );
+            let (lon, lat) = laea.inverse(p.x, p.y);
+            assert!(
+                (lon - p.inverse_lon).abs() < 1e-9 && (lat - p.inverse_lat).abs() < 1e-9,
+                "inverse {}, {}: {lon}, {lat}",
+                p.x,
+                p.y
+            );
+        }
+    }
+
+    #[test]
+    fn the_iberian_box_needs_five_chunks() {
+        let g = iberia();
+        let file =
+            File::from_source(ReadSeekSource::new(Cursor::new(iberia_fixture())).unwrap()).unwrap();
+        let (source, _) = Source::read(&attrs(&file, "/where").unwrap()).unwrap();
+        let mut needed = std::collections::BTreeSet::new();
+        let mut off_grid = 0;
+        Target::over(g.crop()).each_texel(&source, |pixel| match pixel {
+            Some((i, j)) => {
+                needed.insert((j / g.chunk_rows, i / g.chunk_cols));
+            }
+            None => off_grid += 1,
+        });
+        let expected: Vec<(usize, usize)> =
+            g.needed_chunks.iter().map(|c| (c.row, c.col)).collect();
+        assert_eq!(needed.into_iter().collect::<Vec<_>>(), expected);
+        assert_eq!(expected, [(3, 0), (4, 0), (4, 1), (5, 0), (5, 1)]);
+        // The whole box lies on OPERA's grid.
+        assert_eq!(off_grid, 0);
+    }
+
+    #[test]
+    fn the_iberian_chunks_decode_like_h5py() {
+        let g = iberia();
+        let reader = Shared::new(Cursor::new(iberia_fixture()));
+        let file = File::from_source(ReadSeekSource::new(reader.clone()).unwrap()).unwrap();
+        let (source, _) = Source::read(&attrs(&file, "/where").unwrap()).unwrap();
+        let dataset = file.dataset("/dataset1/data1/data").unwrap();
+        let coding = Coding {
+            gain: 1.0,
+            offset: 0.0,
+            nodata: -9_999_000.0,
+            undetect: -8_888_000.0,
+        };
+        let codes = read_codes(
+            &dataset,
+            &reader,
+            &source,
+            &[Target::over(g.crop())],
+            coding,
+        )
+        .unwrap();
+        let mut checked = 0;
+        for c in g.allocated_chunks.iter().filter(|c| c.needed) {
+            let theirs = c.counts.as_ref().unwrap();
+            let mut ours = (0, 0, 0);
+            for r in c.row * g.chunk_rows..((c.row + 1) * g.chunk_rows).min(source.ysize) {
+                let line = &codes[r * source.xsize..][..source.xsize];
+                let cells =
+                    &line[c.col * g.chunk_cols..((c.col + 1) * g.chunk_cols).min(source.xsize)];
+                let (m, u, n) = counts(cells);
+                ours = (ours.0 + m, ours.1 + u, ours.2 + n);
+            }
+            assert_eq!(
+                ours,
+                (theirs.measured, theirs.undetect, theirs.nodata),
+                "chunk {}, {}",
+                c.row,
+                c.col
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 5, "the fixture keeps all five needed chunks");
+    }
+
+    #[test]
+    fn the_iberian_crop_reprojects_like_pyproj() {
+        let g = iberia();
+        let grid = decode_box(Cursor::new(iberia_fixture()), Some(g.crop())).unwrap();
+        assert_eq!((grid.width, grid.height), (g.width, g.height));
+        assert_eq!((grid.width, grid.height), (835, 690));
+        for (ours, theirs, edge) in [
+            (grid.west, g.west, "west"),
+            (grid.east, g.east, "east"),
+            (grid.north, g.north, "north"),
+            (grid.south, g.south, "south"),
+        ] {
+            assert!((ours - theirs).abs() < 1e-8, "{edge}: {ours} vs {theirs}");
+        }
+        assert_eq!(
+            (grid.start_ms, grid.end_ms),
+            (utc(&g.date, &g.time), utc(&g.end_date, &g.end_time))
+        );
+        let mut measured_samples = 0;
+        for s in &g.samples {
+            let code = grid.codes[(s.row * grid.width + s.col) as usize];
+            assert_eq!(
+                code, s.code,
+                "texel {}, {} ({}, {})",
+                s.col, s.row, s.lon, s.lat
+            );
+            measured_samples += usize::from(code >= 2);
+        }
+        // A nearly dry day: every measured texel is a sample.
+        assert!(measured_samples > 0 && measured_samples as u64 == g.counts.measured);
+        let (measured, undetect, nodata) = counts(&grid.codes);
+        for (ours, theirs, what) in [
+            (measured, g.counts.measured, "measured"),
+            (undetect, g.counts.undetect, "undetect"),
+            (nodata, g.counts.nodata, "nodata or outside"),
+        ] {
+            assert!(
+                ours.abs_diff(theirs) <= g.near_edge,
+                "{what}: {ours} vs {theirs}"
+            );
+        }
+    }
+
+    /// `bytes` served in ranges under the OPERA provider's own plan (16 KiB
+    /// prefetch, 4 KiB blocks), recording what is asked: the 70 KB Iberian
+    /// fixture would sit almost whole in the test reader's 64 KiB prefetch.
+    fn opera_reader(bytes: Vec<u8>, asked: Arc<Mutex<Vec<(u64, u64)>>>) -> RangeReader {
+        RangeReader::open_planned(
+            Box::new(Recording(bytes, asked)),
+            crate::providers::opera::PLAN,
+            std::time::Duration::ZERO,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn only_the_iberian_chunks_are_fetched() {
+        let g = iberia();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let reader = opera_reader(iberia_fixture(), asked.clone());
+        let traffic = reader.traffic();
+        decode_box(reader, Some(g.crop())).unwrap();
+        let asked = asked.lock().unwrap();
+        let unneeded: Vec<&Allocated> = g.allocated_chunks.iter().filter(|c| !c.needed).collect();
+        assert_eq!(
+            unneeded.len(),
+            1,
+            "the fixture keeps chunk (4, 2) to test this"
+        );
+        for c in unneeded {
+            let overlap: u64 = asked
+                .iter()
+                .map(|&(offset, len)| {
+                    (offset + len)
+                        .min(c.address + c.size)
+                        .saturating_sub(offset.max(c.address))
+                })
+                .sum();
+            assert!(
+                overlap <= smhi_live::BLOCK && c.size > smhi_live::BLOCK,
+                "chunk ({}, {}): {overlap} of its {} bytes fetched by {asked:?}",
+                c.row,
+                c.col,
+                c.size
+            );
+        }
+        assert!(traffic.requests() <= 6, "{asked:?}");
+    }
+
+    #[test]
+    fn one_read_cuts_both_boxes_as_two_reads_would() {
+        let (nordic_box, iberia_box) = (nordic().crop(), iberia().crop());
+        for bytes in [nordic_fixture(), iberia_fixture()] {
+            let (both, requests, fetched) = read_ranged(bytes.clone(), &[nordic_box, iberia_box]);
+            let (alone_n, requests_n, fetched_n) = read_ranged(bytes.clone(), &[nordic_box]);
+            let (alone_i, requests_i, fetched_i) = read_ranged(bytes.clone(), &[iberia_box]);
+            for (cut, alone) in both.iter().zip([&alone_n[0], &alone_i[0]]) {
+                assert_eq!((cut.width, cut.height), (alone.width, alone.height));
+                assert!(cut.codes == alone.codes);
+                assert_eq!((cut.west, cut.south), (alone.west, alone.south));
+            }
+            // And each is `decode_box`'s.
+            let single = decode_box(Cursor::new(bytes), Some(iberia_box)).unwrap();
+            assert!(single.codes == both[1].codes);
+            // One metadata read instead of two, never more ranges than both.
+            assert!(
+                requests < requests_n + requests_i && fetched < fetched_n + fetched_i,
+                "both {requests} req {fetched} B; nordic {requests_n}/{fetched_n}; iberia {requests_i}/{fetched_i}"
+            );
+        }
+        assert!(decode_boxes(Cursor::new(iberia_fixture()), &[]).is_err());
     }
 }

@@ -42,7 +42,9 @@ composite (`sweden`), which covers many radars at once. A grid station's
 centring the map. It has no antenna, so a client draws no station marker,
 range ring, or coverage circle for it. Since S24b the provider composites
 (`sweden`, `nordic`) also offer products the engine makes from their radars'
-volumes ([The composites' products](#the-composites-products)).
+volumes ([The composites' products](#the-composites-products)). `iberia`
+(S33, OPERA's Iberian crop) offers none: its `products` is empty, so a
+client shows no product chooser, and the composite is all it shows.
 
 Every station also carries the following fields, always sent (S14). They
 are additive, so the version stays 2 and an older client ignores them:
@@ -50,7 +52,7 @@ are additive, so the version stays 2 and an older client ignores them:
 - `id`: the station id every command and `state.site.id` use (DEC-12). A
   Swedish radar's id is its SMHI area key (`vara`, `balsta`); every other
   radar's is its ODIM node code in lowercase (`nohur`, `fikor`, `dksin`); a
-  composite's is a region word (`sweden`, `nordic`). Ids are unique across
+  composite's is a region word (`sweden`, `nordic`, `iberia`). Ids are unique across
   the table, aliases included. Clients treat them as opaque.
 - `aliases`: other ids the engine accepts for this station in `select_site`,
   so a stored or typed id keeps working. A Swedish radar lists its ODIM node
@@ -652,7 +654,18 @@ station `nordic`, EUMETNET OPERA's European composite from the Open Radar
 Data 24-hour S3 cache, cut to 3–33° E, 53–71.5° N (a 1670 × 2297 texture,
 larger than Sweden's 1364 × 1983 and above WebGL2's guaranteed 2048), read
 11 of its 30 chunks at a time (~0.9 MB a frame), a 5-minute cadence and a
-24-frame backfill, credited `EUMETNET OPERA, CC BY 4.0`, `country` empty. The
+24-frame backfill, credited `EUMETNET OPERA, CC BY 4.0`, `country` empty.
+Since S33 (DEC-17) `opera` also lists `iberia`, the same composite cut to
+10.5° W–4.5° E, 35–44.5° N (mainland Portugal and Spain with the Balearics;
+an 835 × 690 texture, 5 of the 30 chunks, ~47 KB a frame), with the same
+cadence, reads and backfill, credited `EUMETNET OPERA (AEMET, IPMA), CC BY
+4.0`, `country` empty, at the middle of its box (39.75° N, 3° W). Portugal's
+radars have no volumes in Open Radar Data, so they show only through it.
+`iberia` offers no products (`products` empty). One read of a file serves
+every OPERA box the engine is polling (the selected one and any keep-warm
+one): the engine's OPERA pollers share the read and the listing, so two
+boxes shown cost the listings and file opens of one, plus the other box's
+chunks in the same read. The
 frames of every provider share this section's rules: `id` is
 `<station id>-<scanTime compact>-e0`, values are requantized to `scale` 2
 and `offset` 66, and complete frames enter the catalog under the station
@@ -683,6 +696,9 @@ ORD radars and `nordic` read the Open Radar Data S3 caches, not the ORD
 API, so they do not count against its 200 requests an hour (DEC-13,
 DEC-14); SMHI's API has no published limit, and the pollers stay as polite
 as for a selected station. `nordic` is not recommended warm for its volume.
+`iberia` warm costs about as many requests as `nordic` but ~47 KB a frame
+(~0.6 MB an hour); warm beside a selected `nordic` (or the other way round)
+it adds no listing or file open, only its chunks in the same reads (S33).
 
 ## Products
 

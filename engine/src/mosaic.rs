@@ -2192,9 +2192,20 @@ impl Schedule {
         for t in window.iter().copied().chain(later).filter(|t| !finished(t)) {
             let (mut done, mut total) = (0u32, 0u32);
             for &r in &counted {
-                let top = newest_in_hand(r)
-                    .filter(|n| *n >= t)
-                    .unwrap_or((due + CADENCE_MS).max(t));
+                let newest = newest_in_hand(r);
+                // Review SF2: a radar whose newest scan is older than `t`
+                // (SMHI's listing lagging, its poller probing forward) brings
+                // its volumes from there up to `t`: each probe counts.
+                if let Some(behind) = newest.filter(|n| *n < t) {
+                    total += ((t - behind) / CADENCE_MS) as u32 + 1;
+                    done += self
+                        .scans
+                        .range(behind..=t)
+                        .filter(|(_, v)| v[r].is_some())
+                        .count() as u32;
+                    continue;
+                }
+                let top = newest.unwrap_or((due + CADENCE_MS).max(t));
                 let need = ((top - t) / CADENCE_MS) as u32 + 1;
                 total += need;
                 done += if self.has(r, t) {
@@ -3724,6 +3735,112 @@ mod tests {
         assert!(s.silent[1]);
         assert_eq!(remembered_silent("s31-test-quiet", now), Some(0));
         remember_silent("s31-test-quiet", false, now);
+    }
+
+    /// Review SF2: SMHI's listing names 16:30 while 16:40 is the target; its
+    /// poller probes 16:35, then 16:40. Each probe moves the percentage up,
+    /// and it never goes down.
+    #[test]
+    fn a_lagging_listings_probes_move_the_first_stage() {
+        let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS; // "16:40"
+        let now = t + DUE_MS;
+        let have = || Have {
+            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+            cost: Cost::default(),
+        };
+        let pct = |s: &Schedule| {
+            let f = s.fill(now).unwrap();
+            assert_eq!((f.stage, f.t), (crate::loading::Stage::First, t));
+            crate::loading::percent(f.done, f.total)
+        };
+        let mut s = Schedule::new(vec![5_000.0; 2], &[]).with_depth(1);
+        s.add(1, t, have(), now, true); // the other radar is in
+        s.add(0, t - 2 * CADENCE_MS, have(), now, true); // listed: 16:30
+        let mut seen = vec![pct(&s)];
+        s.add(0, t - CADENCE_MS, have(), now, true); // probe: 16:35
+        seen.push(pct(&s));
+        s.add(0, t, have(), now, true); // probe: 16:40
+        seen.push(pct(&s));
+        assert_eq!(seen, [50, 66, 100], "2 of 4, 2 of 3, 2 of 2 volumes");
+    }
+
+    /// Review SF2: the live cold run's arrivals (2026-09-15, Nordic Rain
+    /// mass from an empty tilt store; each volume's time from its tilt
+    /// files, the silent radars from engine.log; written by
+    /// ~/Projects/omastorm-S31-run/arrivals.py) replayed through the
+    /// schedule: the first stage's percentage after each arrival, as the
+    /// tracker shows it (never down; 99 until the frame). Ignored: it needs
+    /// that file (`S31_ARRIVALS` names another).
+    #[test]
+    #[ignore]
+    fn the_cold_runs_arrivals_replayed() {
+        let path = std::env::var("S31_ARRIVALS")
+            .unwrap_or_else(|_| "/home/rb/Projects/omastorm-S31-run/arrivals.json".into());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let n = v["radars"].as_u64().unwrap() as usize;
+        let start = v["start"].as_i64().unwrap();
+        // (when, radar, Some(nominal time) for a volume, None for silent)
+        let mut steps: Vec<(i64, usize, Option<i64>)> = v["arrivals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                let t = a["t"].as_i64().unwrap();
+                (
+                    a["at"].as_i64().unwrap(),
+                    a["radar"].as_u64().unwrap() as usize,
+                    Some(t),
+                )
+            })
+            .chain(v["silent"].as_array().unwrap().iter().map(|a| {
+                (
+                    a["at"].as_i64().unwrap(),
+                    a["radar"].as_u64().unwrap() as usize,
+                    None,
+                )
+            }))
+            .collect();
+        steps.sort_by_key(|s| s.0);
+        let mut s = Schedule::new(vec![5_000.0; n], &[]).with_depth(1);
+        let mut shown = 0;
+        let mut last = u32::MAX;
+        for (at, radar, what) in steps {
+            match what {
+                Some(t) => {
+                    let have = Have {
+                        sweep: Arc::new(sweep(100, 10, 0.5, t)),
+                        cost: Cost::default(),
+                    };
+                    s.add(radar, t, have, at, true);
+                }
+                None => s.set_silent(radar, true),
+            }
+            if let Some(t) = s.ready(at).first() {
+                println!(
+                    "{:5.0} s  frame {} ready",
+                    (at - start) as f64 / 1000.0,
+                    utc(*t, "%H:%MZ")
+                );
+                break;
+            }
+            if let Some(f) = s
+                .fill(at)
+                .filter(|f| f.stage == crate::loading::Stage::First)
+            {
+                shown = shown.max(crate::loading::percent(f.done, f.total).min(99));
+                if shown / 5 != last / 5 || last == u32::MAX {
+                    println!(
+                        "{:5.0} s  {shown:3} %  {} of {} volumes, {}",
+                        (at - start) as f64 / 1000.0,
+                        f.done,
+                        f.total,
+                        f.progress("Nordic Rain mass").label
+                    );
+                    last = shown;
+                }
+            }
+        }
     }
 
     #[test]

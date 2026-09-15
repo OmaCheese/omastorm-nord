@@ -20,6 +20,8 @@ pub enum Message<'a> {
     Error(&'a Rejection<'a>),
     TileReady(&'a TileReady<'a>),
     Places(&'a Places<'a>),
+    /// One column's values, to the client that asked (S24c).
+    Profile(&'a crate::grid3d::Profile),
 }
 
 /// One tile answering a client's `tiles_needed`, sent to that client alone
@@ -94,6 +96,8 @@ pub struct Hello {
     pub reference_sites: Vec<crate::reference::ReferenceSite>,
     /// What My mosaic accepts (S25, additive).
     pub mosaic: crate::mosaic::Info,
+    /// The shape of sections and profiles (S24c, additive).
+    pub sections: crate::grid3d::Info,
 }
 
 /// The launcher's view of a running daemon's hello. Only the fields needed to
@@ -211,6 +215,9 @@ pub struct State {
     /// My mosaic's radars and rule, shared like the station (S25); empty
     /// until a client sends `set_mosaic`.
     pub mosaic: crate::mosaic::Set,
+    /// The vertical cut a client set (S24c), shared like the station;
+    /// `null` when none.
+    pub section: Option<crate::grid3d::SectionState>,
 }
 
 /// `state.basemap`: what draws the tiles and, for `osm`, whether it can.
@@ -292,6 +299,7 @@ impl State {
                     .iter()
                     .flat_map(|e| [e.texture.as_str(), e.azimuth_lut.as_str(), e.codes.as_str()]),
             )
+            .chain(self.section.iter().map(|s| s.texture.as_str()))
             .filter(|path| !path.is_empty())
     }
 }
@@ -528,6 +536,19 @@ pub enum Command {
         lat: Option<f64>,
         #[serde(default)]
         lon: Option<f64>,
+    },
+    /// Set, move or (neither point) clear the section (S24c); answered in
+    /// `state.section`.
+    SetSection {
+        #[serde(default)]
+        from: Option<crate::grid3d::Point>,
+        #[serde(default)]
+        to: Option<crate::grid3d::Point>,
+    },
+    /// One column's values (S24c), answered with `profile` to the sender.
+    Profile {
+        lat: f64,
+        lon: f64,
     },
     /// Anything newer than this build.
     #[serde(other)]

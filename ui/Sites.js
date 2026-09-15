@@ -12,7 +12,9 @@
 var COUNTRIES = {
     SE: ["Sweden", "Sverige"], NO: ["Norway", "Norge"], FI: ["Finland", "Suomi"],
     DK: ["Denmark", "Danmark"], AX: ["Åland"], EE: ["Estonia", "Eesti"],
-    LV: ["Latvia", "Latvija"], LT: ["Lithuania", "Lietuva"]
+    LV: ["Latvia", "Latvija"], LT: ["Lithuania", "Lietuva"],
+    // S32: Iberia.
+    ES: ["Spain", "España"], PT: ["Portugal"], AD: ["Andorra"], GI: ["Gibraltar"]
 };
 function countryName(code) { return code && COUNTRIES[code] ? COUNTRIES[code][0] : code || ""; }
 function isGrid(site) { return site.kind === "grid"; }
@@ -22,9 +24,11 @@ function stateName(county) { return county || ""; }
 function place(site) { var s = stateName(site.state); return site.name.toUpperCase() + (s ? ", " + s.toUpperCase() : ""); }
 // Lower case with the Nordic letters folded one for one (å ä → a, ö ø → o,
 // æ → a, é → e), so "ostersund" finds Östersund and a hit's position in the
-// folded text is its position in the shown one.
+// folded text is its position in the shown one; since S32 the Spanish and
+// Portuguese ones too (í → i, ñ → n, ç → c: "nijar" finds Níjar).
 function fold(text) {
-    return text.toLowerCase().replace(/[åäàáæ]/g, "a").replace(/[öøó]/g, "o").replace(/[éè]/g, "e").replace(/ü/g, "u");
+    return text.toLowerCase().replace(/[åäàáâãæ]/g, "a").replace(/[öøóòôõ]/g, "o").replace(/[éèêë]/g, "e")
+        .replace(/[üúùû]/g, "u").replace(/[íìîï]/g, "i").replace(/ñ/g, "n").replace(/ç/g, "c");
 }
 
 function distanceKm(lat1, lon1, lat2, lon2) {

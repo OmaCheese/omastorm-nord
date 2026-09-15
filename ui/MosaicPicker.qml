@@ -32,10 +32,15 @@ Item {
     /// (the height and what it is above count only for the height rule, S30).
     property var draft: ({ sites: [], rule: "lowest", heightM: 2000, above: "sea" })
     /// S30: heights above the ground; an older engine's CAPPI entry in
-    /// hello.products says nothing about them.
+    /// hello.products says nothing about them. S32: only when every chosen
+    /// radar's hello.sites[].above has it (none of Spain's).
     readonly property bool groundOffered: {
         var p = engine ? engine.products.find(x => x.id === "CAPPI") : null;
-        return !!p && Array.isArray(p.above) && p.above.indexOf("ground") >= 0;
+        if (!p || !Array.isArray(p.above) || p.above.indexOf("ground") < 0) return false;
+        return draft.sites.every(d => {
+            var s = engine.sites.find(x => x.id === d.id);
+            return !(s && Array.isArray(s.above) && s.above.indexOf("ground") < 0);
+        });
     }
     /// The radars in list order, fixed when the checklist opens.
     property var radars: []

@@ -23,7 +23,12 @@
 #   (DK), else equal sectors clockwise from north (NO: no angles at all);
 # - ray times from how/startazT + stopazT, else the dataset's nominal
 #   startdate/starttime and enddate/endtime (NO, FI, DK);
-# - the first gate at rstart (km) + rscale / 2 (DK's rstart is 0.5 km).
+# - the first gate at rstart (km) + rscale / 2 (DK's rstart is 0.5 km);
+#   S32: AEMET writes rstart in metres (200). Decided here from the pulse
+#   rate, not from the engine's threshold: read as km, the ray would end
+#   beyond the unambiguous range c / (2 x lowprf) of the root how/lowprf,
+#   so it is metres (esahr: 560 Hz -> 267.7 km; 200 km + 250 km would be 450).
+# - ES (S32): float64 TH then DBZH, gain 1, offset 0, undetect -32, nodata 95.5.
 import datetime
 import hashlib
 import json
@@ -99,6 +104,23 @@ def main():
     how = ds["how"].attrs if "how" in ds else {}
     nrays, nbins = int(where["nrays"]), int(where["nbins"])
     rscale, rstart = float(where["rscale"]), float(where["rstart"])
+    rstart_unit = "km (ODIM)"
+    root_how = f["how"].attrs if "how" in f else {}
+    ray_km = nbins * rscale / 1000.0
+    unambiguous_km = (299_792.458 / (2.0 * float(root_how["lowprf"]))
+                      if "lowprf" in root_how and float(root_how["lowprf"]) > 0 else None)
+    if unambiguous_km and rstart + ray_km > unambiguous_km >= rstart / 1000.0 + ray_km:
+        rstart, rstart_unit = rstart / 1000.0, (
+            f"metres: as km the ray would end at {rstart + ray_km:g} km,"
+            f" past c/(2 lowprf) = {unambiguous_km:.1f} km"
+        )
+    elif rstart > ray_km / 2.0:
+        # A radar never keeps only the far half of its own ray: Valladolid's
+        # and San Sebastián's IRIS 8.13 files (PRF 250 Hz, 600 km
+        # unambiguous) write 125 for 240 gates of 1 km.
+        rstart, rstart_unit = rstart / 1000.0, (
+            f"metres: as km the first gate would lie past half the ray ({ray_km:g} km of gates)"
+        )
     elangle = float(where["elangle"])
     data = ds[m]["data"][...]
     assert data.shape == (nrays, nbins), data.shape
@@ -173,6 +195,7 @@ def main():
         "firstGateM": rnd(rstart * 1000.0 + rscale / 2.0),
         "gateSpacingM": rnd(rscale),
         "rangeKm": rstart + nbins * rscale / 1000.0,
+        "rstartUnit": rstart_unit,
         "elangle": elangle,
         "a1gate": int(where["a1gate"]) if "a1gate" in where else None,
         "odimGain": gain,

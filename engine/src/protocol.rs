@@ -157,6 +157,11 @@ pub struct SiteEntry {
     pub station: Station,
     pub products: Vec<&'static str>,
     pub elevations: Vec<crate::products::Elevation>,
+    /// S32: what `CAPPI`'s height can be above at this station, a subset of
+    /// `hello.products`' `above` (`products::above_for`); not sent where the
+    /// station makes no `CAPPI`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub above: Vec<&'static str>,
 }
 
 /// What a station is: one radar, or the national composite, which has no

@@ -19,7 +19,9 @@
 //!   per elevation, a few seconds apart; DMI one volume of every quantity.
 //!   The newest time waits until its best file is as good as the previous
 //!   time's (`complete`), so a Finnish 0.7° scan or a Norwegian TH file that
-//!   lands first is not taken for the frame.
+//!   lands first is not taken for the frame. AEMET (Spain, S32) publishes a
+//!   long-range volume at :x0 and a Doppler volume at :x7 every 10 minutes;
+//!   only the first is read (`one_task`).
 //! - A file is read through `RangeReader` (`plan_for` its listed size and
 //!   the product: whole up to `WHOLE_UP_TO` for the lowest scan, up to
 //!   `PRODUCT_WHOLE_UP_TO` for any other, else `PLAN`'s 8 KiB blocks) and
@@ -155,6 +157,51 @@ pub const SPEC: Spec = Spec {
     ranges: PLAN,
 };
 
+/// Development only (S32): a base URL that replaces `CACHE`, so an offline
+/// replay can serve saved files and listings from a local server. Unset in
+/// every real run.
+pub const BASE_ENV: &str = "OMASTORM_ORD_BASE";
+
+/// AEMET's radars (Spain, S32) publish their long-range volume every 10
+/// minutes (measured: the median gap of each of the 11, 2026-09-15), landing
+/// about 5 minutes after the nominal time.
+pub const ES_CADENCE: Duration = Duration::from_secs(10 * 60);
+
+/// A station's cadence: its country's (S32: Spain's 10 minutes), else the
+/// provider's 5.
+pub fn cadence_for(station: &Station) -> Duration {
+    match station.country.as_str() {
+        "ES" => ES_CADENCE,
+        _ => CADENCE,
+    }
+}
+
+/// Between listing polls for a Spanish station (review N3): its files come
+/// every 10 minutes, so a listing every 2 halves its requests and adds at
+/// most a minute to a file's wait (it lands ~5 min after its time: 7 min at
+/// worst, inside the mosaic's `DUE_MS` 8 and the 20-min `stale`).
+pub const ES_POLL: Duration = Duration::from_secs(2 * 60);
+
+/// The listing poll for `station`: `ES_POLL` for AEMET's instead of the
+/// provider's `POLL`; any other interval (a test's) stays as it is.
+pub fn poll_for(station: &Station, poll: Duration) -> Duration {
+    if poll == POLL && station.country == "ES" {
+        ES_POLL
+    } else {
+        poll
+    }
+}
+
+/// A station's staleness thresholds: its country's cadence (S32: a Spanish
+/// frame is 15 minutes old just before the next lands, so `SPEC`'s 15-minute
+/// `stale` would flash every cycle), else the provider's.
+pub fn staleness_for(station: &Station) -> Staleness {
+    match station.country.as_str() {
+        "ES" => Staleness::from_cadence(cadence_for(station)),
+        _ => SPEC.staleness,
+    }
+}
+
 /// One volume fetch at a time for this provider (SMHI's poller has its own
 /// permit; the engine polls one station at a time).
 static FETCHER: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
@@ -202,6 +249,23 @@ pub struct Listed {
     pub parts: Vec<Listed>,
 }
 
+/// The files of the station's reflectivity task (S32). AEMET publishes two
+/// tasks every 10 minutes, each its own nominal time: at :x0 the long-range
+/// volume (`DBZH_TH`, 0.5/1.3/2.1°, 250 km) and at :x7 a Doppler volume
+/// (`DBZH_VRADH`, 0.5/1.5°, 150 km). Read alike they would alternate range,
+/// angles and gate size frame by frame, so while the listing holds a file
+/// with `TH`, the Doppler task's files (`Listed::doppler`) are left out. No
+/// other radar is affected: MET Norway's VRADH files hold no reflectivity
+/// (`Listed::parse` drops them), FMI's and DMI's hold `TH` too. AEMET's
+/// (`es…` node codes) are left out always (review S1): with the long-range
+/// task down the station goes stale, rather than showing a 150 km scan.
+fn one_task(listed: &[Listed]) -> impl Iterator<Item = &Listed> {
+    let with_th = listed.iter().any(|f| f.quantities().contains(&"TH"));
+    listed
+        .iter()
+        .filter(move |f| !((with_th || f.aemet()) && f.doppler()))
+}
+
 /// Whether a station's files hold one scan each (FMI's `SCAN`, S24a): any
 /// product but the lowest scan then reads every file of a nominal time as
 /// one volume.
@@ -232,7 +296,7 @@ pub fn is_set_source(source: &str) -> bool {
 /// is not as good (`choose`'s rule): the rest of it is still arriving.
 pub fn choose_sets(listed: &[Listed]) -> Vec<Listed> {
     let mut times: BTreeMap<i64, BTreeMap<i64, Listed>> = BTreeMap::new();
-    for file in listed {
+    for file in one_task(listed) {
         let angles = times.entry(file.valid_ms).or_default();
         let tenths = (file.lowest_deg * 10.0).round() as i64;
         match angles.get(&tenths) {
@@ -291,6 +355,33 @@ impl Listed {
         })
     }
 
+    /// The quantities its name lists (`DBZH_TH` → `["DBZH", "TH"]`).
+    fn quantities(&self) -> Vec<&str> {
+        self.key
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.strip_suffix(".h5"))
+            .and_then(|name| name.split('@').nth(3))
+            .map_or_else(Vec::new, |q| q.split('_').collect())
+    }
+
+    /// Whether it is a Doppler task's file: radial velocity (`VRADH`) with
+    /// reflectivity beside it but no `TH` (S32, AEMET's `…@0.5_1.5@DBZH_VRADH.h5`
+    /// at :x7, 150 km of 500 m gates, beside the long-range
+    /// `…@0.5_1.3_2.1@DBZH_TH.h5` at :x0, 250 km of 1 km gates).
+    fn doppler(&self) -> bool {
+        let q = self.quantities();
+        q.contains(&"VRADH") && !q.contains(&"TH")
+    }
+
+    /// Whether it is one of AEMET's (Spain: the node code starts `es`).
+    fn aemet(&self) -> bool {
+        self.key
+            .rsplit('/')
+            .next()
+            .is_some_and(|n| n.starts_with("es"))
+    }
+
     /// Whether this file is the better one to read for its time.
     fn beats(&self, other: &Listed) -> bool {
         (self.rank, self.lowest_deg) < (other.rank, other.lowest_deg)
@@ -308,7 +399,7 @@ impl Listed {
 /// of it is still arriving); the next poll sees it again.
 pub fn choose(listed: &[Listed]) -> Vec<Listed> {
     let mut best: BTreeMap<i64, Listed> = BTreeMap::new();
-    for file in listed {
+    for file in one_task(listed) {
         match best.get(&file.valid_ms) {
             Some(held) if !file.beats(held) => {}
             _ => {
@@ -871,7 +962,12 @@ impl Config {
 
     pub fn ord() -> Self {
         Config {
-            base: CACHE.to_owned(),
+            // Development only (S32): `OMASTORM_ORD_BASE` points the poller
+            // at a local copy of the cache, for offline replays.
+            base: std::env::var(BASE_ENV)
+                .ok()
+                .filter(|b| !b.is_empty())
+                .unwrap_or_else(|| CACHE.to_owned()),
             poll: POLL,
             max_back_off: MAX_BACK_OFF,
             backfill_delay: BACKFILL_DELAY,
@@ -957,6 +1053,8 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
     let cfg = Config {
         angles_per_set: per_angle(&source)
             .then(|| crate::products::nominal_angles(&station).len().max(1)),
+        // Review N3: Spain's 10-minute files are listed every 2 minutes.
+        poll: poll_for(&station, cfg.poll),
         ..cfg
     };
     let sets = cfg.sets();
@@ -1379,6 +1477,52 @@ mod tests {
             file(45, "TH", "0.5"),
         ]);
         assert_eq!(healed.len(), 3);
+    }
+
+    #[test]
+    fn aemet_s_doppler_task_is_left_out() {
+        // S32: every 10 minutes the long-range volume at :x0 and the Doppler
+        // volume at :x7, each its own nominal time.
+        let es = |minute: u32, rest: &str| {
+            Listed::parse(&format!(
+                "2026/09/15/ES/esahr/PVOL/esahr@20260915T09{minute:02}@{rest}.h5"
+            ))
+            .unwrap()
+        };
+        let listed = [
+            es(20, "0.5_1.3_2.1@DBZH_TH"),
+            es(27, "0.5_1.5@DBZH_VRADH"),
+            es(30, "0.5_1.3_2.1@DBZH_TH"),
+            es(37, "0.5_1.5@DBZH_VRADH"),
+        ];
+        assert!(listed[1].doppler() && !listed[0].doppler());
+        let times =
+            |chosen: Vec<Listed>| -> Vec<i64> { chosen.iter().map(|f| f.valid_ms).collect() };
+        assert_eq!(times(choose(&listed)), [utc(15, 9, 20), utc(15, 9, 30)]);
+        assert_eq!(
+            times(choose_sets(&listed)),
+            [utc(15, 9, 20), utc(15, 9, 30)]
+        );
+        // Review S1: AEMET's Doppler file is not read even alone (the
+        // long-range task down: the station goes stale instead); another
+        // network's, with no TH file to prefer, still is (the generic rule).
+        assert!(choose(&[es(27, "0.5_1.5@DBZH_VRADH")]).is_empty());
+        assert!(choose_sets(&[es(27, "0.5_1.5@DBZH_VRADH")]).is_empty());
+        assert_eq!(choose(&[file(27, "DBZH_VRADH", "0.5_1.5")]).len(), 1);
+        // Review N3: Spain's listings every 2 minutes; a test's interval and
+        // every other country's stay.
+        let station = |country: &str| Station {
+            country: country.into(),
+            ..Station::default()
+        };
+        assert_eq!(poll_for(&station("ES"), POLL), ES_POLL);
+        assert_eq!(poll_for(&station("NO"), POLL), POLL);
+        let quick = Duration::from_millis(40);
+        assert_eq!(poll_for(&station("ES"), quick), quick);
+        assert_eq!(cadence_for(&station("ES")), ES_CADENCE);
+        assert_eq!(cadence_for(&station("FI")), CADENCE);
+        // FMI's DBZH_TH_VRADH scans are no Doppler task: all three kept.
+        assert!(!file(35, "DBZH_TH_VRADH", "0.5").doppler());
     }
 
     #[test]

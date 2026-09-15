@@ -788,14 +788,17 @@ impl Shared {
         self.show_entry(&entry)
     }
     /// The selected station's staleness thresholds, from its provider's
-    /// cadence; SMHI's before any station is selected.
+    /// cadence (an ORD station's from its country's, S32); SMHI's before any
+    /// station is selected.
     fn staleness(&self) -> Staleness {
-        let provider = self
-            .sites
-            .iter()
-            .find(|s| s.id == self.state.site.id)
-            .map_or(providers::ProviderId::Smhi, |s| s.provider);
-        providers::spec(provider).staleness
+        let station = self.sites.iter().find(|s| s.id == self.state.site.id);
+        match station {
+            Some(s) if s.provider == providers::ProviderId::Ord => providers::ord::staleness_for(s),
+            _ => {
+                let provider = station.map_or(providers::ProviderId::Smhi, |s| s.provider);
+                providers::spec(provider).staleness
+            }
+        }
     }
     /// Age of the newest radial received for the live station: the sweep
     /// in progress while one paints, else the newest complete frame.
@@ -1035,6 +1038,15 @@ impl Shared {
                     Some("Select a radar before choosing a product.".into()),
                 );
             }
+        };
+        // S32: no terrain under this radar (a Spanish one): a height above
+        // the ground is one above sea level, and `state.product` says so.
+        let choice = match choice.above {
+            Some(products::Above::Ground) if !products::has_terrain(&station) => products::Choice {
+                above: Some(products::Above::Sea),
+                ..choice
+            },
+            _ => choice,
         };
         let Some(want) = products::want_for(&station, &choice) else {
             let at = if elevation_index > 0 {
@@ -3470,13 +3482,13 @@ mod handoff_tests {
     #[test]
     fn the_site_table_is_the_nordic_network() {
         let sites = site_table().sites;
-        // SMHI's 12 radars and ORD's 29 (NO, FI, DK: S15) from sites.json,
-        // then the composites: SMHI's (S8) and OPERA's Nordic crop (S16),
-        // and My mosaic (S25).
-        assert_eq!(sites.len(), 44);
+        // SMHI's 12 radars and ORD's 29 (NO, FI, DK: S15) and 11 (ES: S32)
+        // from sites.json, then the composites: SMHI's (S8) and OPERA's
+        // Nordic crop (S16), and My mosaic (S25).
+        assert_eq!(sites.len(), 55);
         assert_eq!(
             sites.iter().filter(|s| s.kind == SiteKind::Polar).count(),
-            41
+            52
         );
         assert_eq!(
             sites
@@ -3494,12 +3506,36 @@ mod handoff_tests {
         assert!(handoff(&sites, "nordic", 59.33, 18.07).is_none());
         assert!(handoff(&sites, "", 62.25, 18.0).is_some_and(|s| s.kind == SiteKind::Polar));
         for s in &sites {
-            assert!(
-                (53.0..=71.5).contains(&s.lat) && (3.0..=33.0).contains(&s.lon),
-                "{}",
-                s.id
-            );
+            // The Nordic box, or (S32) Spain's: the peninsula and the Canaries.
+            let nordic = (53.0..=71.5).contains(&s.lat) && (3.0..=33.0).contains(&s.lon);
+            let iberia = (34.0..=46.0).contains(&s.lat) && (-11.0..=5.0).contains(&s.lon)
+                || (25.5..=31.0).contains(&s.lat) && (-19.5..=-12.5).contains(&s.lon);
+            assert!(nordic != iberia, "{}", s.id);
+            assert_eq!(iberia, s.country == "ES", "{}", s.id);
         }
+        // S32: a place in Spain follows a Spanish radar, never a composite,
+        // from nowhere, from a Nordic radar, or from another Spanish one.
+        let nearest = |lat, lon| handoff(&sites, "", lat, lon).map(|s| s.id.clone());
+        assert_eq!(nearest(40.42, -3.70).as_deref(), Some("estjv"), "Madrid");
+        assert_eq!(nearest(36.72, -4.42).as_deref(), Some("esahr"), "Málaga");
+        assert_eq!(nearest(41.39, 2.17).as_deref(), Some("esgld"), "Barcelona");
+        assert_eq!(
+            nearest(28.12, -15.43).as_deref(),
+            Some("esatn"),
+            "Las Palmas"
+        );
+        assert_eq!(nearest(43.26, -2.93).as_deref(), Some("essse"), "Bilbao");
+        assert_eq!(
+            handoff(&sites, "vara", 40.42, -3.70).map(|s| &s.id[..]),
+            Some("estjv")
+        );
+        assert_eq!(
+            handoff(&sites, "estjv", 37.39, -5.98).map(|s| &s.id[..]),
+            Some("esclg"),
+            "Madrid to Sevilla"
+        );
+        assert!(handoff(&sites, "nordic", 40.42, -3.70).is_none());
+        assert!(handoff(&sites, "sweden", 40.42, -3.70).is_none());
         // Following from Gothenburg settles on Vara; from Stockholm, Bålsta.
         let nearest = |lat, lon| handoff(&sites, "", lat, lon).map(|s| s.id.clone());
         assert_eq!(nearest(57.71, 11.97).as_deref(), Some("vara"));

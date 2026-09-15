@@ -95,6 +95,18 @@ def decode(ds):
     how = ds["how"].attrs if "how" in ds else {}
     nrays, nbins = int(where["nrays"]), int(where["nbins"])
     rscale, rstart = float(where["rscale"]), float(where["rstart"])
+    # S32: AEMET writes rstart in metres; decided as golden/produce-odim.py
+    # does: from the pulse rate (as km the ray would end past c/(2 lowprf)),
+    # else because as km the first gate would lie past half the ray (the
+    # IRIS 8.13 exports' PRF 250 Hz leaves the first test undecided).
+    root_how = ds.file["how"].attrs if "how" in ds.file else {}
+    ray_km = int(where["nbins"]) * rscale / 1000.0
+    unambiguous_km = (299_792.458 / (2.0 * float(root_how["lowprf"]))
+                      if "lowprf" in root_how and float(root_how["lowprf"]) > 0 else None)
+    if unambiguous_km and rstart + ray_km > unambiguous_km >= rstart / 1000.0 + ray_km:
+        rstart /= 1000.0
+    elif rstart > ray_km / 2.0:
+        rstart /= 1000.0
     data = ds[m]["data"][...]
     assert data.shape == (nrays, nbins), data.shape
     per_ray = lambda key: (

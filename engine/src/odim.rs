@@ -34,7 +34,12 @@
 //! - **Ray times.** `how/startazT`/`stopazT` (SMHI), else the dataset's
 //!   nominal `startdate`/`starttime` and `enddate`/`endtime` (ORD).
 //! - **Range.** The first gate's centre is `rstart` (km) + `rscale` / 2:
-//!   250 m for SMHI and FMI, 125 m for MET Norway, 750 m for DMI.
+//!   250 m for SMHI and FMI, 125 m for MET Norway, 750 m for DMI. AEMET
+//!   (Spain, S32) writes `rstart` in metres, 200 for a first bin 200 m out
+//!   (`rstart_km`): 700 m for its 1 km gates.
+//! - **Float storage with its own markers (S32).** AEMET stores `TH` then
+//!   `DBZH` as float64 with gain 1, offset 0, `undetect` −32 and `nodata`
+//!   95.5 (IRIS's byte range, 0.5 dB steps); read like any storage.
 //! - **Other angles (S20).** `decode_tilts` reads every scan's `where`, lets
 //!   `products::needed` pick the scans a product needs, and decodes those
 //!   alike (`products.rs`).
@@ -304,7 +309,7 @@ pub fn decode_tilts<R: Read + Seek + Send + 'static>(
         infos.push(TiltInfo {
             elangle: need(&where_, &wpath, "elangle")?,
             // As `sweep_at` writes them into the sweep.
-            first_gate_m: (rstart * 1000.0 + rscale / 2.0).round() as u32,
+            first_gate_m: (rstart_km(rstart) * 1000.0 + rscale / 2.0).round() as u32,
             gate_spacing_m: rscale.round() as u32,
             gates: u16::try_from(bins).map_err(|_| fail(format!("{wpath}: {bins} bins")))?,
         });
@@ -441,12 +446,30 @@ fn sweep_at(file: &File, ds: &str) -> Result<Sweep, OdimError> {
         start_ms,
         end_ms,
         gates,
-        first_gate_m: (rstart * 1000.0 + rscale / 2.0).round() as u32,
+        first_gate_m: (rstart_km(rstart) * 1000.0 + rscale / 2.0).round() as u32,
         gate_spacing_m: rscale.round() as u32,
         scale: SCALE,
         offset: OFFSET,
         code1_status: OUTSIDE_COVERAGE,
     })
+}
+
+/// A `where/rstart` at or above this is metres, not ODIM's kilometres.
+const RSTART_METRES_FROM: f64 = 50.0;
+
+/// `where/rstart` in kilometres. ODIM says kilometres; AEMET's files (Vaisala
+/// IRIS 10.5 exports, ODIM 2.4) write metres: 200 for a first bin 200 m out.
+/// Read as kilometres, its long-range task (PRF 560 Hz, so 268 km
+/// unambiguous, 250 bins of 1 km) would start at 200 km and its Doppler task
+/// (299 bins of 500 m) at 200 km too, both beyond what their pulse rates
+/// can see. No radar starts its first bin tens of kilometres out, so any
+/// value from `RSTART_METRES_FROM` up is taken as metres.
+pub fn rstart_km(rstart: f64) -> f64 {
+    if rstart >= RSTART_METRES_FROM {
+        rstart / 1000.0
+    } else {
+        rstart
+    }
 }
 
 fn site(file: &File) -> Result<OdimSite, OdimError> {
@@ -625,6 +648,53 @@ mod tests {
         assert_eq!(site.source_item("NOD"), Some("nohur"));
         assert_eq!(site.source_item("PLC"), None, "MET Norway names no place");
         assert!(golden.counts.measured > 50_000, "the fixture has echoes");
+    }
+
+    /// AEMET (Alhaurín el Grande, S32): an ODIM 2.4 PVOL of float64 with gain
+    /// 1, `undetect` −32 and `nodata` 95.5, TH stored before DBZH (the
+    /// extract keeps both, review S3), 360 rays of 250 gates of 1 km, and
+    /// `rstart` 200 written in metres: the first gate's centre is 700 m out,
+    /// not 200.5 km (the key decides the unit from the pulse rate,
+    /// independently of `rstart_km`).
+    #[test]
+    fn aemet_alhaurin_reads_rstart_in_metres_and_float_markers() {
+        let (sweep, site, golden) =
+            matches_golden("ord_esahr_202609151900.h5", "esahr-20260915", Tilt::Lowest);
+        assert_eq!(
+            golden.odim_dataset, "/dataset1/data2",
+            "DBZH, not the TH before it"
+        );
+        assert_eq!((sweep.rays.len(), sweep.gates), (360, 250));
+        assert_eq!((sweep.first_gate_m, sweep.gate_spacing_m), (700, 1000));
+        assert_eq!(golden.ray_time_base, "2026-09-15T19:00:04Z");
+        assert_eq!(site.source_item("NOD"), Some("esahr"));
+        assert_eq!(site.source_item("PLC"), Some("Alhaurin Grande"));
+        assert!(golden.counts.measured > 5_000, "the fixture has echoes");
+        // The rule itself: ODIM's kilometres below 50, metres from there.
+        assert_eq!(rstart_km(0.5), 0.5);
+        assert_eq!(rstart_km(200.0), 0.2);
+        assert_eq!(rstart_km(125.0), 0.125);
+    }
+
+    /// AEMET (Valladolid, S32): the older IRIS 8.13 export of two of the
+    /// eleven (San Sebastián's too): 450 rays of 0.8° with no azimuths in the
+    /// dataset's `how`, so equal sectors from north (first centre 0.4°), like
+    /// MET Norway's. The root `/how` does carry 450 `startazA`/`stopazA`
+    /// (first centre ≈ 0.48°); neither the engine nor the key reads a root
+    /// per-ray array (which scan it describes is not said), a 0.08° offset.
+    /// A clutter-against-terrain check put the best rotation at 0°. 240
+    /// gates of 1 km and `rstart` 125, metres again.
+    #[test]
+    fn aemet_valladolid_has_450_rays_and_no_azimuths() {
+        let (sweep, site, golden) =
+            matches_golden("ord_eslid_202609151900.h5", "eslid-20260915", Tilt::Lowest);
+        assert_eq!(golden.odim_dataset, "/dataset1/data1");
+        assert_eq!((sweep.rays.len(), sweep.gates), (450, 240));
+        assert_eq!((sweep.first_gate_m, sweep.gate_spacing_m), (625, 1000));
+        assert_eq!(sweep.rays[0].azimuth_deg, 0.4);
+        assert_eq!(sweep.rays[449].azimuth_deg, 359.6);
+        assert_eq!(golden.ray_time_base, "2026-09-15T19:00:08Z");
+        assert_eq!(site.source_item("NOD"), Some("eslid"));
     }
 
     /// FMI (Korppoo): a single-sweep SCAN (ODIM 2.3) holding TH as data1 and

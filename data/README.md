@@ -127,6 +127,43 @@ All three store the lowest tilt as `/dataset1`, as do all 29 radars
 lowest `elangle` (`Tilt::Lowest`). `produce-odim.py` gives the same
 `sweep0.u8` from the original and from the extract.
 
+## Spanish fixtures (S32)
+
+Two of AEMET's radars from the same cache (DEC-16), because Spain's eleven
+come in two exports: Alhaurín el Grande (Vaisala IRIS 10.5, like nine of
+them) and Valladolid (IRIS 8.13, like San Sebastián). Cut by
+`scripts/trim-odim.py … --keep TH,DBZH` (Alhaurín's lowest tilt: both, so
+the fixture shows TH stored first) or `--keep DBZH`; answer keys in
+`golden/esahr-20260915/` and `golden/eslid-20260915/` from
+`golden/produce-odim.py`, Alhaurín's products from
+`golden/produce-products.py` on its three-tilt extract. Credit `© AEMET`
+(AEMET's reuse notice), CC BY 4.0 as ORD publishes it. Together 240,500
+bytes, under the 300 KB a country may take.
+
+| Fixture (`data/fixtures/`) | Original (`https://s3.waw3-1.cloudferro.com/openradar-24h/2026/09/15/…`) | Original bytes, sha256 | Extract bytes | Kept |
+|---|---|---|---|---|
+| `ord_esahr_202609151900.h5` | `ES/esahr/PVOL/esahr@20260915T1900@0.5_1.3_2.1@DBZH_TH.h5` | 213,439, `a632c07e…37dbc2` | 81,147 | TH, DBZH, lowest tilt |
+| `ord_esahr_202609151900_tilts.h5` | the same | | 102,024 | DBZH, 0.5, 1.3, 2.1° |
+| `ord_eslid_202609151900.h5` | `ES/eslid/PVOL/eslid@20260915T1900@0.5_1.4_2.3@DBZH_TH.h5` | 317,446, `aec8c791…101109` | 57,329 | DBZH, lowest tilt |
+
+What they prove in `engine/src/odim.rs`:
+
+- **Alhaurín el Grande** (ODIM 2.4 `PVOL`): `TH` then `DBZH` as float64
+  with gain 1, offset 0, `undetect` −32 and `nodata` 95.5; 360 rays with
+  `startazA`/`stopazA`, 250 gates of 1 km; `rstart` 200 is **metres**
+  (first gate at 700 m, `odim::rstart_km`); the key decides it from the
+  pulse rate (560 Hz: 267.7 km unambiguous, where 200 km + 250 km would be).
+- **Valladolid**: 450 rays of 0.8° with **no azimuths in the dataset's
+  `how`** (equal sectors from north, first centre 0.4°; a clutter-against-
+  terrain correlation put the best rotation at 0°), 240 gates, `rstart` 125
+  in metres (first gate at 625 m). The root `/how` does hold 450
+  `startazA`/`stopazA` (first centre ≈ 0.48°); the engine and the key read
+  only a dataset's own per-ray arrays, a 0.08° difference.
+
+AEMET also publishes a Doppler volume (`…@0.5_1.5@DBZH_VRADH.h5`) 7 minutes
+after each; the poller does not read it (`ord::one_task`), so it has no
+fixture.
+
 ## Multi-angle fixtures (S20)
 
 The products other than the lowest scan (pseudo-CAPPI, column maximum,
@@ -202,18 +239,25 @@ Natural Earth coastline, lakes, country boundary lines on land, and
 state/province lines at 1:10m and 1:50m, plus 1:10m populated places, from
 [natural-earth-vector](https://github.com/nvkelso/natural-earth-vector) master.
 Made with Natural Earth; [public domain](https://www.naturalearthdata.com/about/terms-of-use/).
-`engine/build.rs` embeds them as polylines (the 1:10m set clipped to the NEXRAD
-network envelope) and the engine strokes them into `ne` tiles at any zoom
+`engine/build.rs` embeds them as polylines (the 1:10m set clipped to the
+radars' envelopes: the Nordic box, 3–33° E, 53–71.5° N, and since S32 Iberia,
+11° W–5° E, 34–46° N, and the Canary Islands, 19.5–12.5° W, 25.5–31° N) and the engine strokes them into `ne` tiles at any zoom
 (`docs/protocol.md`, tiles). Roads and place labels at closer zooms come from
 OpenMapTiles vector tiles served by OpenFreeMap, © OpenStreetMap contributors
 (ODbL), fetched by the engine at run time and attributed in the UI.
 
 The location picker searches [GeoNames](https://www.geonames.org/)
-`cities5000` (populated places with population ≥ 5000) clipped to that
-same envelope, with admin-1 names from `admin1CodesASCII.txt`.
+`cities5000` (populated places with population ≥ 5000) clipped to those
+same envelopes and to the gazetteer's countries (Sweden, Norway, Finland,
+Åland, Denmark, Estonia, Latvia, Lithuania; since S32 Spain, Portugal,
+Andorra, Gibraltar), with admin-1 names from `admin1CodesASCII.txt`.
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Map labels do
-not use this table. The city-list checksum covers the official 2026-09-10
-snapshot (69,705 records).
+not use this table. The Nordic and Baltic rows are the official 2026-09-10
+snapshot (69,705 records worldwide, 1,074 kept); S32 appended the Spanish,
+Portuguese, Andorran and Gibraltar rows of the 2026-09-15 download (2,037),
+3,111 rows in all, and cut the 1:10m lines of the same day's
+natural-earth-vector master to the new boxes (its Nordic cut was
+byte-identical to the vendored one).
 
 ### Terrain (S30)
 

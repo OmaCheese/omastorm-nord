@@ -152,6 +152,35 @@ Korppoo 5 requests and 604–636 KB a frame; for comparison Vara 39 requests
 and 737 KB, Hurum 1 request and 679–814 KB, Sindal 1 request and 0.98–1.23 MB;
 the second product of each came from the store with no request.
 
+**Spain's volumes (S32, DEC-16).** AEMET's eleven radars come from the same
+cache (`ES/<nod>/PVOL`) with three quirks the decoder and poller handle:
+`where/rstart` is written in metres (`odim::rstart_km` reads 50 or more as
+metres); every 10 minutes a long-range volume (`…@DBZH_TH`, 0.5/1.3/2.1°,
+Valladolid and San Sebastián 0.5/1.4/2.3° with 450 rays and no azimuths)
+and, 7 minutes later, a Doppler volume (`…@DBZH_VRADH`, 150 km) that is
+never read (`ord::one_task`; not even alone, so with the long-range task
+down the station goes stale); and their 10-minute cadence gives staleness
+20/30 min (`ord::staleness_for`) and a listing every 2 minutes
+(`ord::ES_POLL`). Every file is under `WHOLE_UP_TO`, so one request each.
+Measured on 2026-09-15 (Alhaurín el Grande, then listing each minute): a
+join 33 requests and 7.06 MB (31 frames, five hours), then about 66
+requests and 1.6 MB an hour, about 36 an hour with the 2-minute listing; a
+product switch reads its 24 files whole again (25 requests, 5.65 MB), since
+the lowest scan stored only its own tilt. In My mosaic a Spanish radar
+counts at its own cadence (`Schedule::with_cadences`): a set of Spanish
+radars only makes the 10-minute frames (no :x5 time waits), and a mixed
+set's :x5 frames carry each Spanish radar's :x0 scan, named in the
+provenance (`esahr (its 12:00Z scan)`). The root `/how` of the IRIS 8.13
+exports holds per-ray azimuths the decoder does not read (a 0.08° offset). The
+terrain grid is Nordic: a Spanish radar's heights are above sea level only
+(`products::has_terrain`, `hello.sites[].above`). The Nordic composite's
+products keep their 41 radars (`mosaic::grid_radars` takes the radars whose
+reach touches the composite's box).
+
+`OMASTORM_ORD_BASE` (development only) replaces the cache's URL, so an
+offline replay can serve saved files and listings from a local server (S32's
+captures used one inside `unshare -rn`).
+
 **Rolling back.** An engine older than S24a reads a frame id's unknown
 last part as its lowest scan (`products::variant_of`), so over a cache that
 holds `-etop` and `-vil` frames it shows them in the lowest-scan loop. Before

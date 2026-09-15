@@ -20,8 +20,26 @@
 # (no X-RateLimit headers); the ORD API is not called. Launch, setup and the
 # checks never call this; rerun it only to take a new snapshot, then review
 # the diff.
+#
+# S32 added Spain's 11 AEMET radars (ES). Options:
+#   --only ES[,NO,...]  refetch only these countries; every other row stays
+#                       as it is, in place (new countries go last);
+#   --save DIR          read each newest file whole in one GET instead of
+#                       64 KB ranges, and keep it in DIR (fixtures, replays).
+# AEMET's quirks, read as the engine reads them: its Doppler volume at :x7
+# (DBZH_VRADH, no TH) is not the one read (engine/src/providers/ord.rs
+# `one_task`), and its rstart is in metres (engine/src/odim.rs `rstart_km`).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+only='' save=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    --only) only=$2; shift 2 ;;
+    --save) save=$(realpath -m "$2"); mkdir -p "$save"; shift 2 ;;
+    *) printf 'usage: %s [--only CC,CC] [--save DIR]\n' "$0" >&2; exit 2 ;;
+  esac
+done
+export ORD_ONLY=$only ORD_SAVE=$save
 command -v uv >/dev/null 2>&1 || {
   printf 'uv is required (it supplies h5py for this one run).\n' >&2
   exit 1
@@ -31,14 +49,28 @@ command -v uv >/dev/null 2>&1 || {
   exit 1
 }
 uv run --quiet --no-project --with h5py python - <<'PY'
-import datetime, io, json, math, re, statistics, urllib.parse, urllib.request
+import datetime, io, json, math, os, re, statistics, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 
 import h5py
 
 CACHE = "https://s3.waw3-1.cloudferro.com/openradar-24h"
 S3 = "{http://s3.amazonaws.com/doc/2006-03-01/}"
-ATTRIBUTION = {"NO": "MET Norway, CC BY 4.0", "FI": "FMI, CC BY 4.0", "DK": "DMI, CC BY 4.0"}
+ATTRIBUTION = {
+    "NO": "MET Norway, CC BY 4.0", "FI": "FMI, CC BY 4.0", "DK": "DMI, CC BY 4.0",
+    # DEC-16: ORD's licence (CC BY 4.0, exceptions in the metadata; none for
+    # Spain's) and AEMET's own reuse notice, which asks for "© AEMET".
+    "ES": "© AEMET, CC BY 4.0",
+}
+ONLY = [c for c in os.environ.get("ORD_ONLY", "").split(",") if c]
+SAVE = os.environ.get("ORD_SAVE", "")
+# GeoNames' admin-1 names are English for Spain and Lisbon; the regions read
+# in the local language (as engine/build.rs does for the gazetteer).
+REGION_LOCAL = {
+    "ES.51": "Andalucía", "ES.52": "Aragón", "ES.53": "Canarias", "ES.54": "Castilla-La Mancha",
+    "ES.55": "Castilla y León", "ES.56": "Cataluña", "ES.59": "País Vasco", "ES.60": "Comunitat Valenciana",
+    "ES.07": "Illes Balears", "ES.32": "Navarra", "PT.14": "Lisboa",
+}
 # node code -> display name. FI and DK from ORD's location list
 # (collections/observations/locations, 2026-09-14), NO from WMO OSCAR's
 # station names (ORD lists the Norwegian radars without one).
@@ -58,8 +90,19 @@ SITES = {
         "dkbor": "Bornholm", "dkrom": "Rømø", "dksam": "Samsø", "dksin": "Sindal",
         "dkste": "Stevns",
     },
+    # S32: ORD's location names and the files' PLC, spelled as the places
+    # are (PLC "Alhaurin Grande", "Buenavista Norte", "Castillo las Guardas",
+    # "Nijar", "SanSebastian").
+    "ES": {
+        "esahr": "Alhaurín el Grande", "esatn": "Artenara", "esbnv": "Buenavista del Norte",
+        "esclg": "Castillo de las Guardas", "esgld": "Gelida", "eslid": "Valladolid",
+        "esnjr": "Níjar", "espdg": "Perdiguera", "essft": "Sierra de Fuentes",
+        "essse": "San Sebastián", "estjv": "Torrejón de Velasco",
+    },
 }
-REQUESTS = {"list": 0, "range": 0}
+if any(c not in SITES for c in ONLY):
+    raise SystemExit(f"--only {ONLY}: not all of them are in {sorted(SITES)}")
+REQUESTS = {"list": 0, "range": 0, "get": 0}
 # The engine's file pattern (engine/src/providers/ord.rs `Listed::parse`).
 NAME = re.compile(r"^(?P<nod>[a-z]{5})@(?P<t>\d{8}T\d{4})@(?P<el>[-\d._]+)@(?P<q>[A-Z0-9_]+)\.h5$")
 
@@ -141,11 +184,15 @@ class Ranged(io.RawIOBase):
 def newest_readable(keys):
     """(key, nominal time) of the newest file the engine would read."""
     by_time = {}
-    for key in keys:
-        m = NAME.match(key.rsplit("/", 1)[1])
+    names = [(key, NAME.match(key.rsplit("/", 1)[1])) for key in keys]
+    with_th = any(m and "TH" in m["q"].split("_") for _, m in names)
+    for key, m in names:
         if not m:
             continue
         quantities = m["q"].split("_")
+        # AEMET's Doppler task (DBZH_VRADH at :x7): not read while TH files exist.
+        if with_th and "VRADH" in quantities and "TH" not in quantities:
+            continue
         rank = 0 if "DBZH" in quantities else 1 if "TH" in quantities else None
         if rank is None:
             continue
@@ -164,7 +211,7 @@ def regions():
     names = {}
     for line in open("data/raw/admin1CodesASCII.txt", encoding="utf-8"):
         code, name = line.split("\t")[:2]
-        names[code] = name
+        names[code] = REGION_LOCAL.get(code, name)
     places = []
     for line in open("data/raw/cities5000.txt", encoding="utf-8"):
         f = line.rstrip("\n").split("\t")
@@ -186,6 +233,8 @@ today = datetime.datetime.now(datetime.UTC)
 day = today.strftime("%Y/%m/%d")
 rows = []
 for cc, sites in SITES.items():
+    if ONLY and cc not in ONLY:
+        continue
     listed = sorted(p.rstrip("/").rsplit("/", 1)[1] for p in list_keys(f"{day}/{cc}/", "/"))
     if listed != sorted(sites):
         raise SystemExit(f"{cc}: the cache lists {listed}, this script {sorted(sites)}")
@@ -199,7 +248,17 @@ for cc, sites in SITES.items():
         stamps = [datetime.datetime.strptime(t, "%Y%m%dT%H%M") for t in times]
         gaps = [(b - a).total_seconds() / 60 for a, b in zip(stamps, stamps[1:])]
         cadence = statistics.median(gaps) if gaps else None
-        with h5py.File(Ranged(f"{CACHE}/{key}"), "r") as f:
+        if SAVE:
+            with urllib.request.urlopen(f"{CACHE}/{key}", timeout=60) as reply:
+                whole = reply.read()
+            REQUESTS["get"] += 1
+            path = os.path.join(SAVE, key.rsplit("/", 1)[1])
+            with open(path, "wb") as out:
+                out.write(whole)
+            source = io.BytesIO(whole)
+        else:
+            source = Ranged(f"{CACHE}/{key}")
+        with h5py.File(source, "r") as f:
             where = f["where"].attrs
             ids = dict(p.split(":", 1) for p in text(f["what"].attrs["source"]).split(",") if ":" in p)
             tilts = sorted(
@@ -209,6 +268,9 @@ for cc, sites in SITES.items():
             elangle, number, lowest = tilts[0]
             w = f[lowest]["where"].attrs
             nbins, rscale, rstart = int(w["nbins"]), float(w["rscale"]), float(w["rstart"])
+            # AEMET writes rstart in metres (engine/src/odim.rs `rstart_km`).
+            if rstart >= 50:
+                rstart /= 1000.0
             quantities = [text(f[lowest][d]["what"].attrs["quantity"]) for d in f[lowest] if d.startswith("data")]
             q = "DBZH" if "DBZH" in quantities else "TH"
             dtype = str(f[lowest][f"data{quantities.index(q) + 1}"]["data"].dtype)
@@ -248,16 +310,31 @@ for cc, sites in SITES.items():
 
 path = "engine/data/sites.json"
 table = json.load(open(path, encoding="utf-8"))
-table["sites"] = [s for s in table["sites"] if s.get("provider", "smhi") == "smhi"] + rows
+if ONLY:
+    # Keep every other row where it is; the refetched countries' rows take
+    # their old places, a new country goes last.
+    fresh = {r["id"]: r for r in rows}
+    kept = [fresh.pop(s["id"], s) for s in table["sites"]
+            if not (s.get("provider") == "ord" and s.get("country") in ONLY and s["id"] not in fresh)]
+    table["sites"] = kept + [r for r in rows if r["id"] in fresh]
+else:
+    table["sites"] = [s for s in table["sites"] if s.get("provider", "smhi") == "smhi"] + rows
+retrieved = {cc: today.date().isoformat() for cc in (ONLY or SITES)}
+old = re.search(r"retrieved (\d{4}-\d\d-\d\d)(?: \(ES (\d{4}-\d\d-\d\d)\))? by scripts/fetch-ord-sites", table["notes"])
+if ONLY and old:
+    retrieved = {"*": old[1], "ES": old[2] or old[1], **retrieved}
+nordic = retrieved.get("NO", retrieved.get("*", today.date().isoformat()))
 table["notes"] = re.sub(r" The ord rows.*$", "", table["notes"]) + (
-    " The ord rows (Norway, Finland, Denmark, DEC-13) come from EUMETNET Open Radar Data's"
-    " 24-hour S3 cache: id and nod are the ODIM node code, sourceId the cache path"
+    " The ord rows (Norway, Finland, Denmark, DEC-13; Spain, DEC-16) come from EUMETNET Open"
+    " Radar Data's 24-hour S3 cache: id and nod are the ODIM node code, sourceId the cache path"
     " <CC>/<nod>/<PVOL|SCAN>, lat/lon/altM the newest file's root /where, rangeKm the lowest"
-    " tilt's rstart + nbins x rscale, state the GeoNames admin-1 region of the nearest"
-    f" cities5000 place; retrieved {today.date().isoformat()} by scripts/fetch-ord-sites.sh."
+    " tilt's rstart + nbins x rscale (AEMET's rstart is in metres), state the GeoNames admin-1"
+    " region of the nearest cities5000 place (in the local language for Spain);"
+    f" retrieved {nordic} (ES {retrieved.get('ES', nordic)}) by scripts/fetch-ord-sites.sh."
 )
 with open(path, "w", encoding="utf-8") as out:
     json.dump(table, out, ensure_ascii=False, indent=2)
     out.write("\n")
-print(f"Wrote {path}: {len(rows)} ord rows; S3 requests: {REQUESTS['list']} listings, {REQUESTS['range']} ranges.")
+print(f"Wrote {path}: {len(rows)} ord rows; S3 requests: {REQUESTS['list']} listings,"
+      f" {REQUESTS['range']} ranges, {REQUESTS['get']} whole-file GETs.")
 PY

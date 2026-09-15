@@ -788,11 +788,12 @@ mod tests {
                 .sum()
         };
         // DESIGN.md measured about 116 k vertices for the 1:50m world; the
-        // Nordic 1:10m envelope measures about 61 k (was ~324 k for NEXRAD).
+        // Nordic 1:10m envelope measured about 61 k (was ~324 k for NEXRAD),
+        // with Iberia and the Canaries (S32) about 98 k.
         let v0 = vertices(&geography.sets[0]);
         let v1 = vertices(&geography.sets[1]);
         assert!((90_000..200_000).contains(&v0), "1:50m vertices {v0}");
-        assert!((40_000..100_000).contains(&v1), "1:10m vertices {v1}");
+        assert!((60_000..150_000).contains(&v1), "1:10m vertices {v1}");
         for scale in &geography.sets {
             for polyline in scale.layers.iter().flat_map(|l| &l.polylines) {
                 assert!(polyline.points.len() >= 2);
@@ -802,14 +803,27 @@ mod tests {
                 }
             }
         }
-        // Every 1:10m vertex sits in the envelope or next to one that does.
+        // Every 1:10m vertex sits in an envelope (build.rs: Nordic, Iberia,
+        // the Canaries) or next to one that does, and each envelope has lines.
+        let boxes = [
+            [3.0, 33.0, 53.0, 71.5],
+            [-11.0, 5.0, 34.0, 46.0],
+            [-19.5, -12.5, 25.5, 31.0],
+        ];
+        let mut per_box = [0usize; 3];
         for polyline in geography.sets[1].layers.iter().flat_map(|l| &l.polylines) {
             let inside: Vec<bool> = polyline
                 .points
                 .iter()
                 .map(|&(x, y)| {
                     let (lon, lat) = (f64::from(x) * QUANTUM, f64::from(y) * QUANTUM);
-                    (53.0..=71.5).contains(&lat) && (3.0..=33.0).contains(&lon)
+                    let hit = boxes
+                        .iter()
+                        .position(|&[w, e, s, n]| (s..=n).contains(&lat) && (w..=e).contains(&lon));
+                    if let Some(b) = hit {
+                        per_box[b] += 1;
+                    }
+                    hit.is_some()
                 })
                 .collect();
             for i in 0..inside.len() {
@@ -829,15 +843,57 @@ mod tests {
                 .iter()
                 .any(|p| p.name == "Oklahoma City" && p.class == "city" && p.rank == 3)
         );
-        // Natural Earth's Nordic misspellings are corrected (build.rs).
+        // Nordic 61 k, Iberia 18 k and the Canaries 500 (S32).
+        assert!(per_box[0] > 50_000, "{per_box:?}");
+        assert!(per_box[1] > 15_000 && per_box[2] > 300, "{per_box:?}");
+        // Natural Earth's Nordic and Iberian misspellings and exonyms are
+        // corrected (build.rs).
         let names: Vec<&str> = geography.places.iter().map(|p| p.name.as_str()).collect();
         for (wrong, right) in [
             ("Vannersborg", "Vänersborg"),
             ("Liepaga", "Liepāja"),
             ("Panevežys", "Panevėžys"),
+            ("Seville", "Sevilla"),
+            ("La Coruña", "A Coruña"),
+            ("Lisbon", "Lisboa"),
+            ("Granada\u{200e}", "Granada"),
         ] {
             assert!(names.contains(&right) && !names.contains(&wrong), "{right}");
         }
+    }
+
+    #[test]
+    fn place_search_finds_iberian_places_in_their_own_spelling() {
+        // S32: Spain, Portugal, Andorra and Gibraltar joined the gazetteer,
+        // in the local spelling, found with or without the accents.
+        let first = |q: &str| search_places(q, None, 1).into_iter().next();
+        for (query, name, country) in [
+            ("a coru", "A Coruña", "ES"),
+            ("coruna", "A Coruña", "ES"),
+            ("girona", "Girona", "ES"),
+            ("lleida", "Lleida", "ES"),
+            ("cordoba", "Córdoba", "ES"),
+            ("níjar", "Níjar", "ES"),
+            ("lisboa", "Lisboa", "PT"),
+            ("lisbon", "Lisboa", "PT"),
+            ("andorra la", "Andorra la Vella", "AD"),
+            ("gibraltar", "Gibraltar", "GI"),
+            ("las palmas de", "Las Palmas de Gran Canaria", "ES"),
+        ] {
+            let hit = first(query).unwrap_or_else(|| panic!("{query}: nothing"));
+            assert_eq!(
+                (hit.name.as_str(), hit.country.as_str()),
+                (name, country),
+                "{query}"
+            );
+        }
+        // The regions are GeoNames' admin-1 names, in Spanish where GeoNames
+        // gives them in English (build.rs `REGION_LOCAL`).
+        let sevilla = first("sevilla").expect("Sevilla");
+        assert_eq!(sevilla.region, "Andalucía");
+        assert_eq!(first("lleida").expect("Lleida").region, "Cataluña");
+        // Madeira and the Azores lie outside every box: no radar reaches them.
+        assert!(first("funchal").is_none());
     }
 
     #[test]

@@ -22,18 +22,20 @@
 //!   at the scan's own elevation and gates), and every texel takes, with no
 //!   averaging, the candidate the rule picks. `Rule` is the place for a new
 //!   rule (S30: nearest beam to a height).
-//! - **Timing** (`Schedule`, `poll`): scans keyed by nominal time (a scan's
-//!   start rounded to 5 minutes), a frame built once when every radar's scan
-//!   for T is in or at T + 7 minutes after 30 s without an arrival, missing
-//!   radars named in its provenance; radars polled only while `mymosaic` is
-//!   selected (`main.rs` starts `poll`), through S27's tilt store first.
+//! - **Timing** (`Schedule`, `poll`): scans keyed by nominal time (the
+//!   pollers' own rule, `nominal_ms`); a frame built when every radar's
+//!   scan for T is in, or at T + 8 minutes after 30 s without an arrival
+//!   (never with no scan at all), and once more for a late scan while it is
+//!   one of the newest two; missing radars named in its provenance; radars
+//!   polled only while `mymosaic` is selected (`main.rs` starts `poll`),
+//!   through S27's tilt store first.
 //!
 //! Relation to S29's reach slider: the same unit (ground km from the
 //! antenna), range (25 km to full) and meaning, but S29 clips one radar on
 //! a client's screen, while `reachKm` here is applied by the engine before
 //! combining, so a trimmed radar's area falls to its neighbours.
 
-use crate::composite::{Grid, MERCATOR_R, OFFSET, PIXEL_M, SCALE};
+use crate::composite::{Grid, MERCATOR_R, OFFSET, PIXEL_M, SCALE, mercator_lat, mercator_y};
 use crate::odim::Tilt as Which;
 use crate::products::{EARTH_M, Want};
 use crate::protocol::{Frame, FrameKind, FrameStatus, Geometry, SiteKind, Station};
@@ -43,7 +45,6 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::f64::consts::FRAC_PI_4;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{self, Sender};
@@ -63,12 +64,20 @@ pub const BACKFILL: usize = 12;
 const RADAR_DEPTH: usize = BACKFILL + 1;
 /// Every provider publishes a volume per radar every 5 minutes.
 pub const CADENCE_MS: i64 = 5 * 60 * 1000;
-/// The frame for T is due at T + 7 minutes (SMHI publishes 4–5 minutes
-/// after the valid time; ORD's cache about as fast)...
-pub const DUE_MS: i64 = 7 * 60 * 1000;
+/// The frame for T is due at T + 8 minutes (SMHI publishes 4–5 minutes
+/// after the valid time, its listing sometimes later: Vara's 01:05 volume
+/// came at T + 7:05 on 2026-09-15; ORD's cache about as fast)...
+pub const DUE_MS: i64 = 8 * 60 * 1000;
 /// ...and built then once no scan has arrived for this long, so a backfill
 /// still delivering is not cut short.
 pub const QUIET_MS: i64 = 30 * 1000;
+/// A scan for T that comes after T was built builds T once more, while T
+/// is one of the newest two frame times and younger than this.
+pub const LATE_MS: i64 = 12 * 60 * 1000;
+/// Between starting one radar's poller and the next, so a set's listings
+/// and backfills do not all begin at once. Each provider already reads one
+/// volume at a time, engine-wide (`smhi_live::FETCHER`, `ord`'s own).
+const STAGGER: Duration = Duration::from_secs(2);
 /// A radar whose scan reaches less than `SHORT` of its full range takes the
 /// gates past that scan's edge from its latest longer scan up to this much
 /// older (DMI's alternating 119.5 km Sindal scans, plan §S25).
@@ -318,6 +327,61 @@ pub fn station() -> Station {
     }
 }
 
+/// Where the engine keeps its set across restarts (review #11): under the
+/// cache root, beside the frame catalog and the tilt store.
+fn saved_path() -> Option<std::path::PathBuf> {
+    crate::osm::cache_root()
+        .ok()
+        .map(|root| root.join("mosaic.json"))
+}
+
+/// Keep `set` for the next live start; a failure is only logged.
+pub fn save(set: &Set) {
+    let Some(path) = saved_path() else { return };
+    let temp = path.with_extension("json.tmp");
+    let written = serde_json::to_vec(set)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| std::fs::write(&temp, bytes))
+        .and_then(|()| std::fs::rename(&temp, &path));
+    if let Err(e) = written {
+        log(format_args!("keeping the set: {e}"));
+    }
+}
+
+/// The set a previous live run kept, checked again against today's table
+/// (`choose`); empty when there is none or it no longer holds.
+pub fn load(sites: &[Station]) -> Set {
+    let Some(bytes) = saved_path().and_then(|p| std::fs::read(p).ok()) else {
+        return Set::default();
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return Set::default();
+    };
+    let args: Vec<SiteArg> = value["sites"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter_map(|s| {
+                    Some(SiteArg::Site {
+                        id: s["id"].as_str()?.to_owned(),
+                        reach_km: s.get("reachKm").cloned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    match choose(sites, &args, value["rule"].as_str()) {
+        Ok(set) => {
+            log(format_args!("kept set {} restored", set.variant()));
+            set
+        }
+        Err(e) => {
+            log(format_args!("the kept set no longer holds: {e}"));
+            Set::default()
+        }
+    }
+}
+
 const CADENCE: Duration = Duration::from_millis(CADENCE_MS as u64);
 
 /// The provider entry: a frame every 5 minutes, so SMHI's thresholds.
@@ -340,14 +404,6 @@ pub const SPEC: Spec = Spec {
 
 fn mercator_x(lon: f64) -> f64 {
     MERCATOR_R * lon.to_radians()
-}
-
-fn mercator_y(lat: f64) -> f64 {
-    MERCATOR_R * (FRAC_PI_4 + lat.to_radians() / 2.0).tan().ln()
-}
-
-fn mercator_lat(y: f64) -> f64 {
-    (y / MERCATOR_R).sinh().atan().to_degrees()
 }
 
 /// The point `d` metres from (`lat`, `lon`) along the initial bearing
@@ -685,7 +741,7 @@ pub fn combine(layout: &Layout, rule: Rule, inputs: &[Option<Input>]) -> (Vec<u8
                         if code == 1 {
                             continue;
                         }
-                        ((i64::from(height) + (1 << 24)) as u64) << 16 | d as u64
+                        lowest_key(height, d)
                     }
                     // Lower is better here too: measured by code, then
                     // below threshold, then no data.
@@ -704,6 +760,13 @@ pub fn combine(layout: &Layout, rule: Rule, inputs: &[Option<Input>]) -> (Vec<u8
         }
     }
     (codes, owner)
+}
+
+/// Lowest beam's order of two candidates: the lower beam centre (metres
+/// above sea level) first, then the nearer radar (distance units); the
+/// lower key wins, and an exact tie keeps the radar earlier in the set.
+fn lowest_key(height_m: i32, d: usize) -> u64 {
+    (((i64::from(height_m) + (1 << 24)) as u64) << 16) | d as u64
 }
 
 /// A built frame: the grid, and what names and credits it.
@@ -805,10 +868,12 @@ pub fn frame(template: &Frame, station: &Station, built: &Built) -> Frame {
 // Timing
 // ---------------------------------------------------------------------------
 
-/// The nominal time a scan starting at `start_ms` belongs to: the nearest
-/// multiple of 5 minutes (the lowest tilt starts seconds after it).
+/// The nominal time a scan starting at `start_ms` belongs to, by the
+/// pollers' own rule (`smhi_live::covered`: a start from 1 minute before
+/// the valid time to 4 minutes after it): the 5-minute mark at or before
+/// `start + 1 min`.
 pub fn nominal_ms(start_ms: i64) -> i64 {
-    (start_ms + CADENCE_MS / 2).div_euclid(CADENCE_MS) * CADENCE_MS
+    (start_ms + 60_000).div_euclid(CADENCE_MS) * CADENCE_MS
 }
 
 /// The newest frame time due at `now`: T + `DUE_MS` has passed.
@@ -870,19 +935,26 @@ pub struct Schedule {
     ranges: Vec<f64>,
     scans: BTreeMap<i64, Vec<Option<Have>>>,
     built: BTreeSet<i64>,
-    /// When a scan last arrived, or the schedule started.
-    last_arrival: i64,
+    /// Built frame times a late scan has come for: to build once more.
+    late: BTreeSet<i64>,
+    /// Frame times built that second time; never a third.
+    rebuilt: BTreeSet<i64>,
+    /// When a scan last arrived (or the tilt store gave some); `None`
+    /// before any: the quiet path needs one (review #1).
+    last_arrival: Option<i64>,
 }
 
 impl Schedule {
     /// `ranges`: each radar's full range in metres; `cached`: frame times
     /// this set's catalog already holds.
-    pub fn new(ranges: Vec<f64>, cached: &[i64], now: i64) -> Schedule {
+    pub fn new(ranges: Vec<f64>, cached: &[i64]) -> Schedule {
         Schedule {
             ranges,
             scans: BTreeMap::new(),
             built: cached.iter().copied().collect(),
-            last_arrival: now,
+            late: BTreeSet::new(),
+            rebuilt: BTreeSet::new(),
+            last_arrival: None,
         }
     }
 
@@ -902,18 +974,41 @@ impl Schedule {
         pending - OUTER_MS
     }
 
-    /// Radar `radar`'s scan at nominal `t`; `arrived` counts it as news
-    /// (a poller's event; the tilt store's start-up load is not). An older
-    /// scan than the schedule keeps is dropped.
+    /// Radar `radar`'s scan at nominal `t`; `arrived` counts it as news (a
+    /// poller's event; the tilt store's start-up load is `touch`). An older
+    /// scan than the schedule keeps is dropped. A scan a built frame went
+    /// without marks that frame for one more build (the decided timing
+    /// rule), while it is one of the newest two frame times and younger
+    /// than `LATE_MS`; never a third.
     pub fn add(&mut self, radar: usize, t: i64, have: Have, now: i64, arrived: bool) {
         if t < self.floor(now) || radar >= self.ranges.len() {
             return;
         }
         let n = self.ranges.len();
-        self.scans.entry(t).or_insert_with(|| vec![None; n])[radar] = Some(have);
-        if arrived {
-            self.last_arrival = now;
+        let slot = &mut self.scans.entry(t).or_insert_with(|| vec![None; n])[radar];
+        let new = slot.is_none();
+        *slot = Some(have);
+        if !arrived {
+            return;
         }
+        self.last_arrival = Some(now);
+        let recent = self
+            .built
+            .last()
+            .is_some_and(|&newest| t >= newest - CADENCE_MS);
+        if new
+            && recent
+            && now < t + LATE_MS
+            && self.built.contains(&t)
+            && !self.rebuilt.contains(&t)
+        {
+            self.late.insert(t);
+        }
+    }
+
+    /// Scans are in hand from the tilt store: the quiet clock starts.
+    pub fn touch(&mut self, now: i64) {
+        self.last_arrival.get_or_insert(now);
     }
 
     /// Whether radar `radar` has a scan at `t`.
@@ -935,17 +1030,39 @@ impl Schedule {
             .collect()
     }
 
-    /// Whether every radar's scan for `t` is in, and for a short scan the
-    /// longer one its far ring comes from: a backfill delivers newest
-    /// first, so a short scan's older long one may still be on its way.
+    /// Whether every radar's scan for `t` is in and ready to build with
+    /// (`settled`).
     fn complete(&self, t: i64) -> bool {
         self.scans.get(&t).is_some_and(|v| {
             v.iter().enumerate().all(|(radar, have)| {
-                have.as_ref().is_some_and(|h| {
-                    !self.short(radar, &h.sweep) || self.outer(radar, t, &h.sweep).is_some()
-                })
+                have.as_ref()
+                    .is_some_and(|h| self.settled(radar, t, &h.sweep))
             })
         })
+    }
+
+    /// Whether radar `radar`'s scan at `t` is ready to build with: one
+    /// that reaches its full range; a short one with the longer scan its
+    /// far ring comes from; or a short one once an older scan of the radar
+    /// is in hand and none of its scans in hand is longer (a radar that
+    /// always scans short, review #3). A short scan with no older one yet
+    /// waits: a backfill delivers newest first, and a long predecessor may
+    /// be on its way.
+    fn settled(&self, radar: usize, t: i64, sweep: &Sweep) -> bool {
+        if !self.short(radar, sweep) || self.outer(radar, t, sweep).is_some() {
+            return true;
+        }
+        let reach = edge_m(sweep);
+        let older = self
+            .scans
+            .range(t - OUTER_MS..t)
+            .any(|(_, v)| v[radar].is_some());
+        let longer = self.scans.values().any(|v| {
+            v[radar]
+                .as_ref()
+                .is_some_and(|o| edge_m(&o.sweep) > reach * 1.25)
+        });
+        older && !longer
     }
 
     /// A scan that reaches less than `SHORT` of its radar's full range.
@@ -969,14 +1086,22 @@ impl Schedule {
     }
 
     /// The frame times to build now, newest first: each of the last
-    /// `BACKFILL` due times not built whose scans are all in or which have
-    /// waited out the quiet, and any later time whose scans are all in.
+    /// `BACKFILL` due times not built whose scans are all in, or, once no
+    /// scan has arrived for `QUIET_MS`, of which at least one scan is in
+    /// (never one with none, review #1); any later time whose scans are
+    /// all in; and a built time a late scan came for, once all are in or
+    /// quiet.
     pub fn ready(&self, now: i64) -> Vec<i64> {
         let due = newest_due(now);
-        let quiet = now - self.last_arrival >= QUIET_MS;
+        let quiet = self.last_arrival.is_some_and(|at| now - at >= QUIET_MS);
+        let held = |t: i64| {
+            self.scans
+                .get(&t)
+                .is_some_and(|v| v.iter().any(Option::is_some))
+        };
         let mut ready: Vec<i64> = (Schedule::oldest(now)..=due)
             .step_by(CADENCE_MS as usize)
-            .filter(|t| !self.built.contains(t) && (quiet || self.complete(*t)))
+            .filter(|&t| !self.built.contains(&t) && (self.complete(t) || (quiet && held(t))))
             .collect();
         ready.extend(
             self.scans
@@ -984,7 +1109,14 @@ impl Schedule {
                 .copied()
                 .filter(|t| *t > due && !self.built.contains(t) && self.complete(*t)),
         );
+        ready.extend(
+            self.late
+                .iter()
+                .copied()
+                .filter(|&t| quiet || self.complete(t)),
+        );
         ready.sort_unstable_by(|a, b| b.cmp(a));
+        ready.dedup();
         ready
     }
 
@@ -997,7 +1129,16 @@ impl Schedule {
         self.built.contains(&t)
     }
 
+    /// Whether `t` is to be built again for a late scan.
+    pub fn is_late(&self, t: i64) -> bool {
+        self.late.contains(&t)
+    }
+
+    /// `t` was built and sent: the first time, or its one late rebuild.
     pub fn mark_built(&mut self, t: i64) {
+        if self.late.remove(&t) {
+            self.rebuilt.insert(t);
+        }
         self.built.insert(t);
     }
 
@@ -1034,6 +1175,8 @@ impl Schedule {
     pub fn prune(&mut self, now: i64) {
         let floor = self.floor(now);
         self.scans.retain(|t, _| *t >= floor);
+        self.late.retain(|t| *t >= floor);
+        self.rebuilt.retain(|t| *t >= floor);
     }
 }
 
@@ -1102,9 +1245,10 @@ fn log(message: impl std::fmt::Display) {
     );
 }
 
-/// Each radar's stored lowest scans from `floor` on, but not at `skip`
-/// times: the tilt store's copies (S27), no request.
-fn from_store(layout: &Layout, floor: i64, skip: &[i64]) -> Vec<(usize, i64, Sweep)> {
+/// Each radar's stored lowest scans from `floor` on: the tilt store's
+/// copies (S27), no request. Built frames' times too (review #2): a newer
+/// frame's far ring may come from them.
+fn from_store(layout: &Layout, floor: i64) -> Vec<(usize, i64, Sweep)> {
     let Some(store) = crate::tilts::shared() else {
         return Vec::new();
     };
@@ -1113,9 +1257,6 @@ fn from_store(layout: &Layout, floor: i64, skip: &[i64]) -> Vec<(usize, i64, Swe
         let id = &radar.station.id;
         let volumes = store.volumes(id).unwrap_or_default();
         for (t, source) in volumes.into_iter().filter(|(t, _)| *t >= floor) {
-            if skip.contains(&t) {
-                continue;
-            }
             let slot = crate::tilts::Slot {
                 store: store.clone(),
                 station: id.clone(),
@@ -1131,7 +1272,10 @@ fn from_store(layout: &Layout, floor: i64, skip: &[i64]) -> Vec<(usize, i64, Swe
 }
 
 /// Build the frame for `t` on the blocking pool and send it: as the live
-/// frame when it is the newest built, else as history.
+/// frame when it is the newest built, else as history. A late rebuild keeps
+/// its id, so the catalog and every client replace it. `t` is marked built
+/// only once sent (review #8), and a time with no scan at all is never
+/// built (review #1).
 async fn build_and_send(
     layout: &Arc<Layout>,
     schedule: &mut Schedule,
@@ -1139,8 +1283,11 @@ async fn build_and_send(
     events: &Sender<Event>,
 ) -> bool {
     let (owned, costs) = schedule.inputs(t);
-    let newest = schedule.newest_built().is_none_or(|n| t > n);
-    schedule.mark_built(t);
+    if owned.iter().all(Option::is_none) {
+        return true;
+    }
+    let again = schedule.is_late(t);
+    let newest = schedule.newest_built().is_none_or(|n| t >= n);
     let provenance = provenance(layout, t, &owned, &costs);
     let shared = layout.clone();
     let started = Instant::now();
@@ -1162,8 +1309,13 @@ async fn build_and_send(
         return true;
     };
     log(format_args!(
-        "{} built in {:.0?}, {} × {}; {provenance}",
+        "{} built{} in {:.0?}, {} × {}; {provenance}",
         utc(t, "%Y-%m-%dT%H:%MZ"),
+        if again {
+            " again, for a late scan,"
+        } else {
+            ""
+        },
         started.elapsed(),
         built.grid.width,
         built.grid.height
@@ -1184,7 +1336,11 @@ async fn build_and_send(
             provenance,
         }
     };
-    events.send(event).await.is_ok()
+    if events.send(event).await.is_err() {
+        return false;
+    }
+    schedule.mark_built(t);
+    true
 }
 
 /// Poll `set`'s radars and build My mosaic's frames until the task is
@@ -1196,10 +1352,21 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         return std::future::pending().await;
     }
     let started = Instant::now();
-    let layout = match spawn_blocking(move || Layout::new(&set, &sites)).await {
-        Ok(Ok(layout)) => Arc::new(layout),
-        Ok(Err(e)) => return log(format_args!("cannot place the set: {e}")),
-        Err(e) => return log(format_args!("placing the set failed: {e}")),
+    let placed = spawn_blocking(move || Layout::new(&set, &sites))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|placed| placed);
+    let layout = match placed {
+        Ok(layout) => Arc::new(layout),
+        Err(e) => {
+            // Said to the clients (review #7), once; then the task waits,
+            // so the engine does not start it again every second.
+            let reason = format!("My mosaic cannot place its radars: {e}");
+            log(&reason);
+            let site = STATION.to_owned();
+            let _ = events.send(Event::Offline { site, reason }).await;
+            return std::future::pending().await;
+        }
     };
     log(format_args!(
         "{} {}: {} radars on {} × {} texels, placed in {:.0?}",
@@ -1216,12 +1383,12 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         .map(|r| r.station.range_km * 1000.0)
         .collect();
     let now = now_ms();
-    let mut schedule = Schedule::new(ranges, &cached, now);
+    let mut schedule = Schedule::new(ranges, &cached);
     // The tilt store first: every stored lowest scan the frames still to
     // build can use, with no request.
-    let (floor, skip) = (schedule.floor(now), cached.clone());
+    let floor = schedule.floor(now);
     let shared = layout.clone();
-    let stored = spawn_blocking(move || from_store(&shared, floor, &skip))
+    let stored = spawn_blocking(move || from_store(&shared, floor))
         .await
         .unwrap_or_default();
     let from_the_store = stored.len();
@@ -1234,6 +1401,9 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
             },
         };
         schedule.add(radar, t, have, now, false);
+    }
+    if from_the_store > 0 {
+        schedule.touch(now);
     }
     log(format_args!(
         "{from_the_store} lowest scans from the tilt store; {} frames catalogued",
@@ -1249,7 +1419,8 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
     {
         return;
     }
-    // One lowest-scan poller per radar, reporting here.
+    // One lowest-scan poller per radar, reporting here, started `STAGGER`
+    // apart (review #5).
     let (tx, mut rx) = mpsc::channel::<Event>(64);
     let mut offline = vec![false; layout.radars.len()];
     let _pollers: Vec<crate::smhi_live::AbortOnDrop> = layout
@@ -1257,12 +1428,11 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         .iter()
         .enumerate()
         .map(|(i, radar)| {
-            crate::smhi_live::AbortOnDrop(tokio::spawn(crate::providers::poll_lowest(
-                radar.station.clone(),
-                tx.clone(),
-                schedule.known(i),
-                RADAR_DEPTH,
-            )))
+            let (station, tx, known) = (radar.station.clone(), tx.clone(), schedule.known(i));
+            crate::smhi_live::AbortOnDrop(tokio::spawn(async move {
+                tokio::time::sleep(STAGGER * i as u32).await;
+                crate::providers::poll_lowest(station, tx, known, RADAR_DEPTH).await;
+            }))
         })
         .collect();
     drop(tx);
@@ -1873,7 +2043,7 @@ mod tests {
         };
         let layout = Layout::new(&set, &sites).unwrap();
         let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS;
-        let mut schedule = Schedule::new(vec![237_500.0], &[], t);
+        let mut schedule = Schedule::new(vec![237_500.0], &[]);
         let have = |code, gates, start| Have {
             sweep: Arc::new(sweep(code, gates, 0.5, start)),
             cost: Cost::default(),
@@ -1911,14 +2081,14 @@ mod tests {
         assert!(provenance(&layout, t, &owned, &costs).contains("ra (far ring"));
         // A long scan needs no ring; neither does a short one with no long
         // scan within 10 minutes.
-        let mut lone = Schedule::new(vec![237_500.0], &[], t);
+        let mut lone = Schedule::new(vec![237_500.0], &[]);
         lone.add(0, t - 3 * CADENCE_MS, have(120, 475, 0), t, true);
         lone.add(0, t, have(90, 239, t), t, true);
         assert!(lone.inputs(t).0[0].as_ref().unwrap().1.is_none());
         // A backfill delivers newest first: a short scan whose long one is
         // not in yet does not make its frame complete; the long one does.
         let now = t + 60_000;
-        let mut order = Schedule::new(vec![237_500.0], &[], now);
+        let mut order = Schedule::new(vec![237_500.0], &[]);
         order.add(0, t, have(90, 239, t), now, true);
         assert!(!order.ready(now).contains(&t), "waiting for the far ring");
         order.add(0, t - CADENCE_MS, have(120, 475, t - CADENCE_MS), now, true);
@@ -1944,34 +2114,44 @@ mod tests {
         let s = |m: i64| t + m * 60_000;
         // Two radars; the catalog holds the hour before T.
         let cached: Vec<i64> = (1..=BACKFILL as i64).map(|k| t - k * CADENCE_MS).collect();
-        let mut schedule = Schedule::new(vec![5_000.0; 2], &cached, s(5));
+        let mut schedule = Schedule::new(vec![5_000.0; 2], &cached);
         schedule.add(0, t, have(), s(5), true);
         assert!(schedule.ready(s(6)).is_empty(), "one of two, not due");
         schedule.add(1, t, have(), s(6), true);
-        assert_eq!(schedule.ready(s(6)), [t], "all in: at once, before T + 7");
+        assert_eq!(schedule.ready(s(6)), [t], "all in: at once, before T + 8");
         schedule.mark_built(t);
         assert!(schedule.ready(s(6)).is_empty(), "built once");
-        // T + 5: radar 1 only; due at T + 12, then only after 30 s quiet.
+        // T + 5: radar 1 only; due at T + 13, then only after 30 s quiet.
         schedule.add(1, t + CADENCE_MS, have(), s(11), true);
         assert!(
-            schedule.ready(s(11) + 50_000).is_empty(),
-            "not due before T + 12"
+            schedule.ready(s(12) + 50_000).is_empty(),
+            "not due before T + 13"
         );
-        schedule.add(0, t - 20 * CADENCE_MS, have(), s(12), true); // too old: dropped
+        schedule.add(0, t - 20 * CADENCE_MS, have(), s(13), true); // too old: dropped
         assert!(!schedule.has(0, t - 20 * CADENCE_MS));
-        schedule.add(0, t - CADENCE_MS, have(), s(12), true); // kept: an arrival
+        schedule.add(0, t - CADENCE_MS, have(), s(13), true); // kept: an arrival
         assert!(
-            schedule.ready(s(12) + 10_000).is_empty(),
+            schedule.ready(s(13) + 10_000).is_empty(),
             "an arrival 10 s ago"
         );
         assert_eq!(
-            schedule.ready(s(12) + 31_000),
+            schedule.ready(s(13) + 31_000),
             [t + CADENCE_MS],
             "due and quiet"
         );
-        // With nothing catalogued, the whole hour, newest first.
-        let fresh = Schedule::new(vec![240_000.0; 2], &[], s(12));
-        let ready = fresh.ready(s(12) + 31_000);
+        // Review #1: with no scan in hand nothing is built, however quiet;
+        // with one radar's scans in, the quiet builds the hour, newest first.
+        let mut fresh = Schedule::new(vec![5_000.0; 2], &[]);
+        assert!(fresh.ready(s(13) + 31_000).is_empty(), "no scan, no frame");
+        fresh.touch(s(13));
+        assert!(
+            fresh.ready(s(13) + 31_000).is_empty(),
+            "quiet, still no scan"
+        );
+        for k in 0..BACKFILL as i64 {
+            fresh.add(0, t + CADENCE_MS - k * CADENCE_MS, have(), s(13), true);
+        }
+        let ready = fresh.ready(s(13) + 31_000);
         assert_eq!(ready.len(), BACKFILL);
         assert_eq!(ready[0], t + CADENCE_MS);
         assert!(ready.windows(2).all(|w| w[0] - w[1] == CADENCE_MS));
@@ -2012,6 +2192,172 @@ mod tests {
         assert!(known.contains(&t) && known.contains(&(t - CADENCE_MS)));
         assert_eq!(nominal_ms(t + 2 * 60_000 + 29_000), t);
         assert_eq!(nominal_ms(t - 3_000), t);
+    }
+
+    #[test]
+    fn a_radar_that_always_scans_short_needs_no_far_ring() {
+        // Review #3: once an older scan of the radar is in and none of its
+        // scans is longer, its short scan is complete.
+        let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS;
+        let now = t + 60_000;
+        let short = |start| Have {
+            sweep: Arc::new(sweep(90, 239, 0.5, start)),
+            cost: Cost::default(),
+        };
+        let mut s = Schedule::new(vec![237_500.0], &[]);
+        s.add(0, t, short(t), now, true);
+        assert!(
+            !s.ready(now).contains(&t),
+            "no older scan yet: it may alternate"
+        );
+        s.add(0, t - CADENCE_MS, short(t - CADENCE_MS), now, true);
+        assert!(
+            s.ready(now).contains(&t),
+            "short twice: no far ring to wait for"
+        );
+        assert!(s.inputs(t).0[0].as_ref().unwrap().1.is_none());
+    }
+
+    #[test]
+    fn a_late_scan_rebuilds_one_of_the_newest_two_frames_once() {
+        let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS;
+        let m = |x: i64| t + x * 60_000;
+        let have = || Have {
+            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+            cost: Cost::default(),
+        };
+        let cached: Vec<i64> = (1..=BACKFILL as i64).map(|k| t - k * CADENCE_MS).collect();
+        let mut s = Schedule::new(vec![5_000.0; 3], &cached);
+        s.add(0, t, have(), m(6), true);
+        // Due at T + 8, quiet 30 s after the last arrival: radar 0 alone.
+        assert!(s.ready(m(8) - 1_000).is_empty(), "not due before T + 8");
+        assert_eq!(s.ready(m(8) + 31_000), [t]);
+        s.mark_built(t);
+        // Radar 1's scan for T at T + 9: T is built once more, after the
+        // quiet (radar 2 may still come).
+        s.add(1, t, have(), m(9), true);
+        assert!(s.is_late(t));
+        assert!(s.ready(m(9)).is_empty());
+        assert_eq!(s.ready(m(9) + 31_000), [t]);
+        s.mark_built(t);
+        assert!(!s.is_late(t) && s.ready(m(9) + 31_000).is_empty());
+        // Radar 2's at T + 10: no third build.
+        s.add(2, t, have(), m(10), true);
+        assert!(!s.is_late(t) && s.ready(m(10) + 31_000).is_empty());
+        // A late scan for a frame older than the newest two builds nothing,
+        // nor one that comes after T + 12.
+        s.add(1, t - 2 * CADENCE_MS, have(), m(10), true);
+        assert!(!s.is_late(t - 2 * CADENCE_MS));
+        let mut old = Schedule::new(vec![5_000.0; 2], &cached);
+        old.add(0, t, have(), m(6), true);
+        old.mark_built(t);
+        old.add(1, t, have(), m(12) + 1_000, true);
+        assert!(!old.is_late(t));
+    }
+
+    #[test]
+    fn a_farther_radar_with_a_lower_beam_wins_and_a_tie_goes_to_the_nearer() {
+        // The order itself: the lower beam first, then the nearer radar.
+        assert!(
+            lowest_key(500, 100) < lowest_key(500, 200),
+            "a tie: the nearer"
+        );
+        assert!(
+            lowest_key(499, 900) < lowest_key(500, 100),
+            "lower beats nearer"
+        );
+        assert!(
+            lowest_key(-20, 5) < lowest_key(0, 5),
+            "below sea level still orders"
+        );
+        // A 35 km west of B. Ten km east of A (25 km from B), B's 0.5° beam
+        // centre is ~0.36 km up; A's is ~1.6 km with A on a 1,500 m
+        // mountain, or ~0.8 km with A at 100 m scanning 4°. B wins both,
+        // though farther.
+        let b = radar("rb", 58.0, 12.6, 100.0);
+        let mountain = Station {
+            alt_m: 1500.0,
+            ..radar("ra", 58.0, 12.0, 100.0)
+        };
+        for (a, deg_a) in [(mountain, 0.5f32), (radar("ra", 58.0, 12.0, 100.0), 4.0)] {
+            let sites = vec![a.clone(), b.clone()];
+            let set = Set {
+                sites: vec![
+                    SiteReach {
+                        id: "ra".into(),
+                        reach_km: 100.0,
+                    },
+                    SiteReach {
+                        id: "rb".into(),
+                        reach_km: 100.0,
+                    },
+                ],
+                rule: Rule::Lowest,
+            };
+            let layout = Layout::new(&set, &sites).unwrap();
+            let (sa, sb) = (sweep(100, 200, deg_a, 0), sweep(150, 200, 0.5, 0));
+            let inputs = [
+                Some(Input {
+                    primary: &sa,
+                    outer: None,
+                }),
+                Some(Input {
+                    primary: &sb,
+                    outer: None,
+                }),
+            ];
+            let (codes, owner) = combine(&layout, Rule::Lowest, &inputs);
+            let (lat, lon) = destination(a.lat, a.lon, 90.0, 10_000.0);
+            let (c, r) = locate(&layout, lat, lon);
+            let i = (r * layout.width + c) as usize;
+            assert_eq!(
+                (codes[i], owner[i]),
+                (150, 1),
+                "A at {} m, {deg_a}°",
+                a.alt_m
+            );
+            // And 5 km west of A, 40 km from B: A is lower there at 0.5°
+            // from sea level only; on the mountain B still wins.
+            let (lat, lon) = destination(a.lat, a.lon, 270.0, 5_000.0);
+            let (c, r) = locate(&layout, lat, lon);
+            let i = (r * layout.width + c) as usize;
+            let expect = if a.alt_m > 1000.0 { 1 } else { 0 };
+            assert_eq!(owner[i], expect, "west of A at {} m, {deg_a}°", a.alt_m);
+        }
+        // An exact tie (two radars on one mast, same angle): the first in
+        // the set keeps the texel.
+        let sites = vec![
+            radar("ra", 58.0, 12.0, 100.0),
+            radar("rb", 58.0, 12.0, 100.0),
+        ];
+        let set = Set {
+            sites: vec![
+                SiteReach {
+                    id: "ra".into(),
+                    reach_km: 100.0,
+                },
+                SiteReach {
+                    id: "rb".into(),
+                    reach_km: 100.0,
+                },
+            ],
+            rule: Rule::Lowest,
+        };
+        let layout = Layout::new(&set, &sites).unwrap();
+        let (sa, sb) = (sweep(100, 200, 0.5, 0), sweep(150, 200, 0.5, 0));
+        let inputs = [
+            Some(Input {
+                primary: &sa,
+                outer: None,
+            }),
+            Some(Input {
+                primary: &sb,
+                outer: None,
+            }),
+        ];
+        let (codes, owner) = combine(&layout, Rule::Lowest, &inputs);
+        assert!(owner.iter().all(|&o| o == 0 || o == u8::MAX));
+        assert!(codes.contains(&100) && !codes.contains(&150));
     }
 
     #[test]

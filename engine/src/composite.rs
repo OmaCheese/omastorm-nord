@@ -302,11 +302,13 @@ impl Stereographic {
     }
 }
 
-fn mercator_y(lat: f64) -> f64 {
+/// Web Mercator y of a latitude, metres (EPSG:3857).
+pub fn mercator_y(lat: f64) -> f64 {
     MERCATOR_R * (FRAC_PI_4 + lat.to_radians() / 2.0).tan().ln()
 }
 
-fn mercator_lat(y: f64) -> f64 {
+/// The latitude of Web Mercator y, degrees.
+pub fn mercator_lat(y: f64) -> f64 {
     (y / MERCATOR_R).sinh().atan().to_degrees()
 }
 

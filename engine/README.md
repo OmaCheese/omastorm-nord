@@ -155,12 +155,16 @@ the chosen radars) and S24b (the vertical products on `sweden`/`nordic`):
   (`Slot::compose(Want::Lowest, …)`, no request), then runs one
   `providers::poll_lowest` per radar (the provider's own poller, through
   the store, `BACKFILL + 1` deep via `Config.depth`) on a private channel.
-  Scans are keyed by `nominal_ms` (the start rounded to 5 minutes).
+  Scans are keyed by `nominal_ms` (the pollers' own rule: the
+  5-minute mark at or before the start plus 1 minute).
   `Schedule` decides when: a frame time is built once, as soon as every
   radar has it (a short scan together with the longer scan its far ring
-  comes from), or once it is `DUE_MS` (7 min) old and no scan has arrived
+  comes from), or once it is `DUE_MS` (8 min) old and no scan has arrived
   for `QUIET_MS` (30 s); the newest `BACKFILL` (12) due times the catalog
-  lacks, newest first. Frames go to `main.rs` as `Scan::Mosaic` events and
+  lacks, newest first. A time with no scan in hand is never
+  built; a scan that comes after its frame was built builds it once more
+  (`LATE_MS`: one of the newest two, under 12 min old). A live engine keeps
+  its set in `<cache>/mosaic.json` across restarts (`save`, `load`). Frames go to `main.rs` as `Scan::Mosaic` events and
   are catalogued like a composite's (code texture included). The log says
   `Mosaic mymosaic: … built in … ms` with the frame's provenance (radars
   used, missing, far rings, and the summed `N range requests, B of T bytes`

@@ -117,7 +117,13 @@ function rank(sites, query, lat, lon, limit, metric) {
     var mine = s => s.provider === "mosaic" ? 1 : 0;
     all.sort((a, b) => a.tier - b.tier || order(a.group) - order(b.group) || (a.group < b.group ? -1 : a.group > b.group ? 1 : 0)
              || mine(a.site) - mine(b.site) || a.km - b.km || (a.site.id < b.site.id ? -1 : 1));
-    var rows = all.slice(0, limit);
+    // My mosaic takes none of the `limit` rows (S25 review #6).
+    var rows = [], counted = 0;
+    for (var row of all) {
+        if (counted >= limit) break;
+        rows.push(row);
+        if (!mine(row.site)) counted++;
+    }
     for (var j = 0; j < rows.length; j++) rows[j].groupStart = j > 0 && rows[j].group !== rows[j - 1].group;
     return { rows: rows, total: all.length };
 }

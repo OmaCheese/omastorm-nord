@@ -827,7 +827,9 @@ combine `rules` in the order a chooser lists them, with display names.
   with its canonical `id` and the reach in force (`rangeKm` for full,
   otherwise to 0.1 km), and `rule`. The same radars again, in any order,
   with the same reaches and rule, change nothing. The set is engine state,
-  shared by that engine's clients like the station. A client remembers its
+  shared by that engine's clients like the station, and a live engine keeps
+  it across restarts (`$XDG_CACHE_HOME/omastorm-se/mosaic.json`, checked
+  against the station table again at start). A client also remembers its
   last set and sends it again when it connects to an engine whose
   `state.mosaic.sites` is empty.
 - While `mymosaic` is selected, a new set shows its own history at once
@@ -856,8 +858,8 @@ them as it draws `sweden`:
   names the rule and the radars, for display and debugging.
 
 **How a frame is made.** For each chosen radar, its lowest scan at T: the
-volume whose nominal time is T (a scan's start rounded to the nearest 5
-minutes). Each texel centre is placed from each radar as the lookup rule
+volume whose nominal time is T (the 5-minute mark at or before its start
+plus 1 minute, the pollers' own rule). Each texel centre is placed from each radar as the lookup rule
 places a screen cell: the great-circle ground distance `s` and bearing on
 the 6,371 km sphere, the slant range `r = R sin(s/R) / cos(e + s/R)` on the
 4/3 earth at the scan's own elevation `e`, the gate `round((r −
@@ -880,18 +882,23 @@ and the gate is one of its gates. Then, with no averaging:
   past that scan's edge from its latest longer scan up to 10 minutes older,
   so the far ring does not blink every other frame; the provenance says so.
 
-**Timing and cost.** The frame for T is built once: as soon as every
-chosen radar's scan for T is in (with, for a short DMI scan, the longer
-scan its far ring comes from), or else from the scans that have arrived
-once it is T + 7 minutes and no scan has come in for 30 seconds. A radar
-missing from a frame is named in its provenance, and its area is nodata
-there unless another radar covers it. A missing scan that arrives later
-does not rebuild the frame. Selecting `mymosaic` shows the set's
+**Timing and cost.** The frame for T is built as soon as every chosen
+radar's scan for T is in (a short DMI scan together with the longer scan
+its far ring comes from, once an older scan of that radar shows it
+alternates), or else from the scans that have arrived once it is T + 8
+minutes and no scan has come in for 30 seconds; a time with no scan at all
+is never built. A radar missing from a frame is named in its provenance,
+and its area is nodata there unless another radar covers it. A missing
+scan that arrives later builds the frame once more, under the same `id`
+(the catalog and the clients replace it), when T is one of the two newest
+frame times and less than 12 minutes old; older frames are never rebuilt.
+Selecting `mymosaic` shows the set's
 catalogued frames at once, then builds the newest 12 frame times the
 catalog lacks (an hour), newest first: each radar's lowest scans come from
 the tilt store where it has them (no request) and are otherwise fetched
-as that radar's own lowest scan is, under its provider's budget. After that
-one frame every 5 minutes. The radars are polled only while `mymosaic` is
+as that radar's own lowest scan is, under its provider's budget. The
+radars' pollers start 2 seconds apart, and each provider reads one volume
+at a time, engine-wide. After that one frame every 5 minutes. The radars are polled only while `mymosaic` is
 selected, and never kept warm (`OMASTORM_WARM` does not accept
 `mymosaic`). A Swedish radar's lowest scan is about 7 range requests and
 100 KB, a Norwegian one about 1 request and 0.4 MB (the file read whole), a

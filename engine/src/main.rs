@@ -990,6 +990,10 @@ impl Shared {
                 .join(",")
         );
         self.state.mosaic = set;
+        // Kept across restarts (review #11); an archived start keeps none.
+        if self.state.source == Source::Live {
+            mosaic::save(&self.state.mosaic);
+        }
         let shown = self
             .sites
             .iter()
@@ -1198,8 +1202,13 @@ impl Shared {
             self.frame_ms = Some(entry.start_ms);
         }
         self.link(&entry);
-        let shown = if self.timeline.insert(entry) {
+        // A frame built again (My mosaic's late rebuild, S25) that is on
+        // screen shows its new files.
+        let on_screen = self.state.frame.id == entry.id;
+        let shown = if self.timeline.insert(entry.clone()) {
             self.show_position(0)
+        } else if on_screen {
+            self.show_entry(&entry)
         } else {
             Ok(())
         };
@@ -2243,6 +2252,12 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         last_broadcast: String::new(),
         logged_condition: None,
     }));
+    // My mosaic's set as the last live run left it (S25, review #11).
+    if source == Source::Live {
+        let mut held = shared.lock().unwrap();
+        let kept = mosaic::load(&held.sites);
+        held.state.mosaic = kept;
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()

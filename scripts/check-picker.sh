@@ -27,8 +27,8 @@ for _ in {1..50}; do [[ $(call matches) != '[]' ]] && break; sleep .1; done
 m=$(call matches)
 [[ $m == '["sweden",'* ]] || fail "Empty query did not list the composite first: $m"
 m=$(jq -c 'map(select(. != "sweden" and . != "nordic" and . != "mymosaic"))' <<< "$m")
-# Four rows: with My mosaic (S25) the three composites leave room for Vara alone.
-[[ $m == '["vara"'* ]] || fail "Empty query did not list the nearest stations after the composites: $m"
+# My mosaic (S25) takes none of the four rows.
+[[ $m == '["vara","atvidaberg"'* || $m == '["vara","angelholm"'* ]] || fail "Empty query did not list the nearest stations after the composites: $m"
 # 44: SMHI's 12 radars, ORD's 29 (NO, FI, DK: S15), the national composite (protocol v2, S8), OPERA's Nordic one (S16) and My mosaic (S25).
 expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":44,"focused":true}' "$(call status)"
 call open vara

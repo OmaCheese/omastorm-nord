@@ -1369,7 +1369,11 @@ pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached:
             .chain(live.newest.iter())
             .map(|v| v.valid_ms)
             .max();
+        // S31 review SF1: only a round whose listing answered says anything
+        // about silence (as ORD's and OPERA's pollers judge it); a failed one
+        // leaves the last word, so an SMHI outage is `offline`, never silent.
         let quiet_since = match latest_ms {
+            _ if failed.is_some() => None,
             Some(ms) if (cfg.now_ms)() - ms >= SILENT_AFTER_MS => Some(Some(ms)),
             None if lists_nothing => Some(None),
             _ => None,
@@ -1389,7 +1393,9 @@ pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached:
                 return;
             }
         }
-        silent = quiet_since.is_some();
+        if failed.is_none() {
+            silent = quiet_since.is_some();
+        }
 
         if backfilling.is_none()
             && caught_up
@@ -2263,6 +2269,56 @@ mod tests {
     /// Another product backfills an hour (S26: a product volume costs ~39
     /// requests), and every read that decoded the lowest scan on the way
     /// sends it too, as a second event, from the same volume.
+    /// The test clock of `a_failed_listing_never_says_silent`.
+    static CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    fn clocked() -> i64 {
+        CLOCK.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Review SF1: after one good round, SMHI stops answering its listing
+    /// and 40 minutes pass: the radar is offline, never silent (a silent
+    /// one would be left out of a mosaic, and remembered so for an hour).
+    #[test]
+    fn a_failed_listing_never_says_silent() {
+        CLOCK.store(recorded(), std::sync::atomic::Ordering::SeqCst);
+        let listings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let inner = smhi("vara", VARA, VARA_DAY);
+        let count = listings.clone();
+        let handler: Handler = Arc::new(move |request: &Request| {
+            if request.path.ends_with("/qcvol.json") {
+                let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n > 0 {
+                    // SMHI down from the second listing on, and at once
+                    // 40 minutes later than the volumes dealt with.
+                    if n == 1 {
+                        CLOCK.fetch_add(40 * 60_000, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    return Response::new(503, "down");
+                }
+            }
+            inner(request)
+        });
+        let seen = runtime().block_on(async {
+            let (base, _served) = serve(handler).await;
+            let (tx, mut rx) = mpsc::channel(16);
+            let cfg = Config {
+                now_ms: clocked,
+                ..config(base)
+            };
+            let poller = tokio::spawn(poll_with(cfg, "vara".into(), tx, Vec::new()));
+            let mut seen: Vec<String> = Vec::new();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+            while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+                seen.push(describe(&event));
+            }
+            poller.abort();
+            seen
+        });
+        assert_eq!(seen[0], "sweep 2026-09-13 16:40Z true", "{seen:?}");
+        assert!(seen.iter().any(|s| s.starts_with("offline")), "{seen:?}");
+        assert!(!seen.iter().any(|s| s.starts_with("silent")), "{seen:?}");
+    }
+
     /// S31: before it fetches, the backfill says how many earlier frames it
     /// will bring (for `state.loading`), and when it has ended; every
     /// planned frame comes between the two.

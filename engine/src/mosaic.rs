@@ -194,6 +194,27 @@ fn remember_silent(id: &str, silent: bool, now: i64) {
     }
 }
 
+/// S31: radar `id` (index `radar` in the schedule) was called silent by its
+/// poller: not waited for, and remembered for the next fill; unless its feed
+/// is offline (review SF1), which says nothing about what it publishes.
+/// True when taken as silent.
+fn take_silent(
+    schedule: &mut Schedule,
+    radar: Option<usize>,
+    id: &str,
+    offline: bool,
+    now: i64,
+) -> bool {
+    if offline {
+        return false;
+    }
+    if let Some(i) = radar {
+        schedule.set_silent(i, true);
+    }
+    remember_silent(id, true, now);
+    true
+}
+
 /// S31: minutes since radar `id` was called silent, within `SILENT_MEMORY_MS`.
 fn remembered_silent(id: &str, now: i64) -> Option<i64> {
     let known = SILENT
@@ -3057,13 +3078,19 @@ async fn run(
                         site: radar,
                         reason,
                     } => {
-                        log_for(&site, format_args!("{radar}: {reason}; not waited for"));
                         // S31: no frame time waits for it, and the
-                        // progress leaves it out.
-                        if let Some(i) = index(&radar) {
-                            schedule.set_silent(i, true);
-                        }
-                        remember_silent(&radar, true, now);
+                        // progress leaves it out; a radar whose feed is
+                        // offline is not silent, and is not remembered so
+                        // (review SF1).
+                        let i = index(&radar);
+                        let offline = i.is_some_and(|i| offline[i]);
+                        let taken = take_silent(&mut schedule, i, &radar, offline, now);
+                        let what = if taken {
+                            "not waited for"
+                        } else {
+                            "offline, so not taken as silent"
+                        };
+                        log_for(&site, format_args!("{radar}: {reason}; {what}"));
                     }
                     _ => {}
                 }
@@ -3682,6 +3709,21 @@ mod tests {
         assert!(!order.ready(now).contains(&t), "waiting for the far ring");
         order.add(0, t - CADENCE_MS, have(120, 475, t - CADENCE_MS), now, true);
         assert!(order.ready(now).contains(&t), "the far ring is in");
+    }
+
+    /// Review SF1: a radar whose feed is offline is not taken as silent,
+    /// nor remembered so; one that is heard from is.
+    #[test]
+    fn an_offline_radar_is_not_taken_as_silent() {
+        let now = 1_800_000_000_000;
+        let mut s = Schedule::new(vec![5_000.0; 2], &[]);
+        assert!(!take_silent(&mut s, Some(0), "s31-test-offline", true, now));
+        assert_eq!(remembered_silent("s31-test-offline", now), None);
+        assert!(!s.silent[0]);
+        assert!(take_silent(&mut s, Some(1), "s31-test-quiet", false, now));
+        assert!(s.silent[1]);
+        assert_eq!(remembered_silent("s31-test-quiet", now), Some(0));
+        remember_silent("s31-test-quiet", false, now);
     }
 
     #[test]

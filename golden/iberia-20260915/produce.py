@@ -9,7 +9,7 @@ projection code, so `engine/src/composite.rs` is checked against an
 independent implementation:
 
     uv run --no-project --with h5py --with numpy --with pyproj \
-        python golden/iberia-20260915/produce.py data/raw/opera_iberia_202609151900.h5
+        python golden/iberia-20260915/produce.py data/raw/opera_iberia_202609151700.h5
 
 The contract it encodes (docs/protocol.md, grid texture; DEC-14):
 

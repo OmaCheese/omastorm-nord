@@ -1111,8 +1111,8 @@ mod tests {
                 north: b["north"].as_f64().unwrap(),
             }
         );
-        // Portugal's three mainland radars and Spain's nine mainland ones
-        // (reference-radars.json) fall inside it.
+        // Portugal's three mainland radars and three of Spain's, at the
+        // box's south, north and east (reference-radars.json), fall inside.
         for (lat, lon) in [
             (40.845, -8.2797),
             (39.0714, -8.4001),

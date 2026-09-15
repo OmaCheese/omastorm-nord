@@ -46,9 +46,11 @@
 //! a client's screen, while `reachKm` here is applied by the engine before
 //! combining, so a trimmed radar's area falls to its neighbours.
 
-use crate::composite::{Grid, MERCATOR_R, OFFSET, PIXEL_M, SCALE, mercator_lat, mercator_y};
+use crate::composite::{
+    Grid, LonLatBox, MERCATOR_R, OFFSET, PIXEL_M, SCALE, mercator_lat, mercator_y,
+};
 use crate::odim::Tilt as Which;
-use crate::products::{Above, EARTH_M, Tilt, Want, elevation_to, nearest_beam};
+use crate::products::{Above, EARTH_M, Legend, Tilt, TiltInfo, Want, elevation_to, nearest_beam};
 use crate::protocol::{Frame, FrameKind, FrameStatus, Geometry, SiteKind, Station};
 use crate::providers::{Event, ProviderId, Scan, Spec, Staleness};
 use crate::sweep::Sweep;
@@ -80,6 +82,64 @@ pub const BACKFILL: usize = 12;
 pub const HEIGHT_BACKFILL: usize = 6;
 /// Range requests an SMHI whole volume costs, for the first-fill estimate.
 const SMHI_VOLUME_REQUESTS: usize = 39;
+/// ...and its lowest scan alone, or the one or two of its clear beams.
+const SMHI_LOWEST_REQUESTS: usize = 7;
+
+/// The engine's environment variable that lowers how far a composite's
+/// products build back (S24b, `grid_backfill`): 1 to `BACKFILL` frame times.
+pub const GRID_BACKFILL_ENV: &str = "OMASTORM_GRID_BACKFILL";
+
+/// Frame times a composite's product builds back (S24b, `docs/protocol.md`,
+/// the composites' products): `LOWB`, which reads only the scans of each
+/// radar's clear beams, `BACKFILL`; the products that read whole volumes
+/// S30's `HEIGHT_BACKFILL` (both composites have SMHI radars; the plan's 12
+/// predates S30's rule). `OMASTORM_GRID_BACKFILL` lowers either.
+pub fn grid_backfill(want: Want) -> usize {
+    let base = if want == Want::LowestBeam {
+        BACKFILL
+    } else {
+        HEIGHT_BACKFILL
+    };
+    let cap = std::env::var(GRID_BACKFILL_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| (1..=BACKFILL).contains(n));
+    cap.map_or(base, |n| base.min(n))
+}
+
+/// SMHI's composite's box, the lon/lat extent of its stereographic grid
+/// (`golden/sweden-20260913`): `sweden`'s products are drawn over it.
+pub const SWEDEN_BOX: LonLatBox = LonLatBox {
+    west: 5.323_958_486,
+    east: 29.829_999_437,
+    south: 53.701_215_354,
+    north: 70.033_941_791,
+};
+
+/// The radars a composite's products are made from (S24b): `sweden` from
+/// SMHI's twelve, `nordic` (OPERA's) from every radar in the table.
+pub fn grid_radars(station: &Station, sites: &[Station]) -> Vec<Station> {
+    sites
+        .iter()
+        .filter(|s| {
+            s.kind == SiteKind::Polar
+                && match station.provider {
+                    ProviderId::Opera => true,
+                    provider => s.provider == provider,
+                }
+        })
+        .cloned()
+        .collect()
+}
+
+/// The box a composite's products are drawn over: its composite's own.
+fn grid_box(station: &Station) -> Option<LonLatBox> {
+    match (station.kind, station.provider) {
+        (SiteKind::Grid, ProviderId::Opera) => Some(crate::providers::opera::NORDIC),
+        (SiteKind::Grid, ProviderId::Smhi) => Some(SWEDEN_BOX),
+        _ => None,
+    }
+}
 
 /// Requests one whole volume of this radar costs (S24a review #2): an SMHI
 /// volume ~`SMHI_VOLUME_REQUESTS` range requests; a per-angle ORD station
@@ -567,6 +627,30 @@ pub struct Radar {
     az: Vec<u16>,
 }
 
+/// What a layout is made for (S24b): My mosaic's set, or a provider
+/// composite's product, made from every radar of its network.
+#[derive(Clone)]
+pub enum Job {
+    Mine,
+    Grid { station: Station, want: Want },
+}
+
+/// How a frame's texels are chosen.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Make {
+    /// My mosaic's lowest-scan rules (`combine`).
+    Scan(Rule),
+    /// A slice at the set's height (`combine_height`): My mosaic's (S30) or
+    /// a composite's `CAPPI` (S24b).
+    Height,
+    /// A composite's `CMAX`, `ETOP` or `VIL`: each radar's own product,
+    /// then the maximum (`max_radar`).
+    Max(Want),
+    /// A composite's `LOWB`: each radar's lowest clear beam, then the lowest
+    /// (`clear_radar`).
+    Clear,
+}
+
 /// The texture of one set and every radar's placement on it.
 pub struct Layout {
     pub width: u32,
@@ -582,6 +666,8 @@ pub struct Layout {
     /// edge (x = `.0` × `PIXEL_M`, y = `.1` × `PIXEL_M`): where the terrain
     /// grid's texels (`terrain.rs`, the same lattice) meet this texture's.
     pub lattice: (i64, i64),
+    /// My mosaic, or a composite's product (S24b).
+    pub job: Job,
 }
 
 impl Layout {
@@ -589,6 +675,51 @@ impl Layout {
     /// box of their reach circles, whole `PIXEL_M` texels on the Mercator
     /// lattice.
     pub fn new(set: &Set, sites: &[Station]) -> Result<Layout, String> {
+        Layout::place(set, sites, None, Job::Mine)
+    }
+
+    /// A composite's product (S24b): every radar of its network
+    /// (`grid_radars`) at its full range, placed on the composite's own box
+    /// (`grid_box`) on the same lattice.
+    pub fn grid(station: &Station, want: Want, sites: &[Station]) -> Result<Layout, String> {
+        let bbox = grid_box(station).ok_or_else(|| format!("{} has no products", station.id))?;
+        let radars = grid_radars(station, sites);
+        let (height_m, above) = match want {
+            Want::Cappi(_, m) => (Some(m), Some(Above::Sea)),
+            Want::CappiGround(_, m, _) => (Some(m), Some(Above::Ground)),
+            _ => (None, None),
+        };
+        let set = Set {
+            sites: radars
+                .iter()
+                .map(|s| SiteReach {
+                    id: s.id.clone(),
+                    reach_km: s.range_km,
+                })
+                .collect(),
+            rule: if height_m.is_some() {
+                Rule::Height
+            } else {
+                Rule::Lowest
+            },
+            height_m,
+            above,
+        };
+        let job = Job::Grid {
+            station: station.clone(),
+            want,
+        };
+        Layout::place(&set, sites, Some(bbox), job)
+    }
+
+    /// `new`'s placement over `bbox` when given, else over the box of the
+    /// radars' reach circles; a radar is placed over its part of the box.
+    fn place(
+        set: &Set,
+        sites: &[Station],
+        bbox: Option<LonLatBox>,
+        job: Job,
+    ) -> Result<Layout, String> {
         let mut placed: Vec<(Station, f64, MercBox)> = Vec::new();
         for site in &set.sites {
             let station = crate::providers::resolve(sites, &site.id)
@@ -602,16 +733,26 @@ impl Layout {
         if placed.is_empty() {
             return Err("no radars".into());
         }
-        let x0 = placed.iter().map(|p| p.2.x0).fold(f64::INFINITY, f64::min);
-        let x1 = placed
-            .iter()
-            .map(|p| p.2.x1)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let y0 = placed.iter().map(|p| p.2.y0).fold(f64::INFINITY, f64::min);
-        let y1 = placed
-            .iter()
-            .map(|p| p.2.y1)
-            .fold(f64::NEG_INFINITY, f64::max);
+        let (x0, x1, y0, y1) = match bbox {
+            Some(b) => (
+                mercator_x(b.west),
+                mercator_x(b.east),
+                mercator_y(b.south),
+                mercator_y(b.north),
+            ),
+            None => (
+                placed.iter().map(|p| p.2.x0).fold(f64::INFINITY, f64::min),
+                placed
+                    .iter()
+                    .map(|p| p.2.x1)
+                    .fold(f64::NEG_INFINITY, f64::max),
+                placed.iter().map(|p| p.2.y0).fold(f64::INFINITY, f64::min),
+                placed
+                    .iter()
+                    .map(|p| p.2.y1)
+                    .fold(f64::NEG_INFINITY, f64::max),
+            ),
+        };
         let mx_west = (x0 / PIXEL_M).floor() * PIXEL_M;
         let my_north = (y1 / PIXEL_M).ceil() * PIXEL_M;
         let width = ((x1 - mx_west) / PIXEL_M).ceil() as u32;
@@ -694,14 +835,93 @@ impl Layout {
             south: mercator_lat(my_north - f64::from(height) * PIXEL_M),
             radars,
             set: set.clone(),
+            job,
         })
+    }
+
+    /// The station the frames are for: `mymosaic`, or the composite.
+    pub fn station_id(&self) -> &str {
+        match &self.job {
+            Job::Mine => STATION,
+            Job::Grid { station, .. } => &station.id,
+        }
+    }
+
+    /// What names the frames in the provenance and `sourceProjdef`.
+    fn name(&self) -> String {
+        match &self.job {
+            Job::Mine => "My mosaic".to_owned(),
+            Job::Grid { station, .. } => station.name.clone(),
+        }
+    }
+
+    /// The last part of the frame ids and the catalog ring: the set's, or a
+    /// composite product's own (`cmax`, `lowb`, `cappi2000`, …).
+    pub fn variant(&self) -> String {
+        match &self.job {
+            Job::Mine => self.set.variant(),
+            Job::Grid { want, .. } => want.variant(),
+        }
+    }
+
+    /// `frame.product` and `productName`.
+    pub fn product(&self) -> (&'static str, String) {
+        match &self.job {
+            Job::Mine => self.set.product(),
+            Job::Grid { want, .. } => want.product(),
+        }
+    }
+
+    /// How the texels are chosen.
+    pub fn make(&self) -> Make {
+        match (&self.job, self.set.rule) {
+            (_, Rule::Height) => Make::Height,
+            (Job::Mine, rule) => Make::Scan(rule),
+            (
+                Job::Grid {
+                    want: Want::LowestBeam,
+                    ..
+                },
+                _,
+            ) => Make::Clear,
+            (Job::Grid { want, .. }, _) => Make::Max(*want),
+        }
+    }
+
+    /// Whether the frames are made from the tilt store (a height set, S30;
+    /// every composite product, S24b) rather than the lowest scans in hand.
+    pub fn stored(&self) -> bool {
+        !matches!(self.make(), Make::Scan(_))
+    }
+
+    /// What `station`'s poller reads for this layout: the lowest scan; every
+    /// scan for a height or a column product (every height needs nearly
+    /// every scan, and one read then serves every other product from the
+    /// store); for `LOWB` the scans its clear beams need (`Want::Hybrid`,
+    /// where the engine has a blockage table), else the lowest. A radar with
+    /// no known angles gives its lowest scan.
+    pub fn read_want(&self, station: &Station) -> Want {
+        if crate::products::nominal_angles(station).is_empty() {
+            return Want::Lowest;
+        }
+        match self.make() {
+            Make::Scan(_) => Want::Lowest,
+            Make::Height | Make::Max(_) => Want::ColMax,
+            Make::Clear => {
+                crate::products::blockage(&station.id).map_or(Want::Lowest, Want::Hybrid)
+            }
+        }
     }
 
     /// Frame times this set builds back (review #8): `BACKFILL`, or
     /// `HEIGHT_BACKFILL` for a height set with a radar whose whole volume
     /// costs more than one request: SMHI's ~39 range requests, an FMI
     /// radar's file per angle (S24a review #2). A one-file ORD volume is 1.
+    /// A composite's product: `grid_backfill` (S24b).
     pub fn backfill(&self) -> usize {
+        if let Job::Grid { want, .. } = &self.job {
+            return grid_backfill(*want);
+        }
         let costly = self.radars.iter().any(|r| volume_requests(&r.station) > 1);
         if self.set.rule == Rule::Height && costly {
             HEIGHT_BACKFILL
@@ -710,8 +930,12 @@ impl Layout {
         }
     }
 
-    /// The middle of the texture's box, (lat, lon): `frame.site`.
+    /// The middle of the texture's box, (lat, lon): `frame.site`; a
+    /// composite's product is sited as the composite's frames (S24b).
     pub fn centre(&self) -> (f64, f64) {
+        if let Job::Grid { station, .. } = &self.job {
+            return (station.lat, station.lon);
+        }
         let y = (mercator_y(self.north) + mercator_y(self.south)) / 2.0;
         (mercator_lat(y), (self.west + self.east) / 2.0)
     }
@@ -1011,11 +1235,17 @@ pub fn combine_height(
     ground: bool,
     inputs: &[Option<Volumes>],
 ) -> (Vec<u8>, Vec<u8>) {
-    let width = layout.width as usize;
-    let n = width * layout.height as usize;
-    let mut codes = vec![1u8; n];
-    let mut owner = vec![u8::MAX; n];
-    let mut best = vec![u64::MAX; n];
+    let mut pick = Pick::new(layout);
+    let terrain = terrain_for(ground);
+    for (index, (radar, input)) in layout.radars.iter().zip(inputs).enumerate() {
+        let Some(input) = input else { continue };
+        height_radar(&mut pick, layout, index, radar, *input, height_m, terrain);
+    }
+    (pick.codes, pick.owner)
+}
+
+/// The terrain grid for a height above the ground; `None` above sea level.
+fn terrain_for(ground: bool) -> Option<&'static crate::terrain::Grid> {
     let terrain = if ground { crate::terrain::grid() } else { None };
     if ground && terrain.is_none() {
         // Never with the embedded grid (terrain.rs parses it in its tests).
@@ -1025,73 +1255,339 @@ pub fn combine_height(
         );
         log("the terrain grid did not load: this frame is above sea level, not the ground");
     }
-    for (index, (radar, input)) in layout.radars.iter().zip(inputs).enumerate() {
-        let Some(input) = input else { continue };
-        if input.primary.is_empty() {
-            continue;
+    terrain
+}
+
+/// Every texel's choice so far: its code, the radar that gave it
+/// (`u8::MAX` for none) and that choice's key, the lower the better.
+struct Pick {
+    codes: Vec<u8>,
+    owner: Vec<u8>,
+    best: Vec<u64>,
+}
+
+impl Pick {
+    fn new(layout: &Layout) -> Pick {
+        let n = layout.width as usize * layout.height as usize;
+        Pick {
+            codes: vec![1; n],
+            owner: vec![u8::MAX; n],
+            best: vec![u64::MAX; n],
         }
-        // The target above this antenna, before the ground under a texel.
-        let base = f64::from(height_m) - radar.station.alt_m;
-        let primary = Stack::new(input.primary, radar.reach_m);
-        let outer = input
-            .outer
-            .filter(|o| !o.is_empty())
-            .map(|o| Stack::new(o, radar.reach_m));
-        let units = (radar.reach_m / UNIT_M).round() as usize + 1;
-        let flat: [Vec<u8>; 2] = match terrain {
-            None => [
-                primary.picks(base, units),
-                outer
-                    .as_ref()
-                    .map_or_else(Vec::new, |o| o.picks(base, units)),
-            ],
-            Some(_) => [Vec::new(), Vec::new()],
-        };
-        for rr in 0..radar.h {
-            let row = radar.r0 + rr;
-            let north = layout.lattice.1 - row as i64;
-            for cc in 0..radar.w {
-                let k = rr * radar.w + cc;
-                if radar.dist[k] == NONE {
-                    continue;
+    }
+
+    /// Radar `index` offers `code` at texel `t` under `key`: the lower key
+    /// wins, and an exact tie keeps the radar earlier in the layout.
+    fn offer(&mut self, t: usize, key: u64, code: u8, index: usize) {
+        if key < self.best[t] {
+            self.best[t] = key;
+            self.codes[t] = code;
+            self.owner[t] = index as u8;
+        }
+    }
+}
+
+/// One radar's part of a slice at `height_m` (S30's `combine_height`; a
+/// composite's `CAPPI`, S24b): per texel the scan the height rule picks; no
+/// such scan, or no data there, is no candidate; the beam centre nearest
+/// the height wins, then the nearer radar (`height_key`).
+fn height_radar(
+    pick: &mut Pick,
+    layout: &Layout,
+    index: usize,
+    radar: &Radar,
+    input: Volumes,
+    height_m: u32,
+    terrain: Option<&crate::terrain::Grid>,
+) {
+    if input.primary.is_empty() {
+        return;
+    }
+    let width = layout.width as usize;
+    // The target above this antenna, before the ground under a texel.
+    let base = f64::from(height_m) - radar.station.alt_m;
+    let primary = Stack::new(input.primary, radar.reach_m);
+    let outer = input
+        .outer
+        .filter(|o| !o.is_empty())
+        .map(|o| Stack::new(o, radar.reach_m));
+    let units = (radar.reach_m / UNIT_M).round() as usize + 1;
+    let flat: [Vec<u8>; 2] = match terrain {
+        None => [
+            primary.picks(base, units),
+            outer
+                .as_ref()
+                .map_or_else(Vec::new, |o| o.picks(base, units)),
+        ],
+        Some(_) => [Vec::new(), Vec::new()],
+    };
+    for rr in 0..radar.h {
+        let row = radar.r0 + rr;
+        let north = layout.lattice.1 - row as i64;
+        for cc in 0..radar.w {
+            let k = rr * radar.w + cc;
+            if radar.dist[k] == NONE {
+                continue;
+            }
+            let d = usize::from(radar.dist[k]);
+            let (stack, side) = match &outer {
+                Some(o) if d >= primary.edge => (o, 1),
+                _ => (&primary, 0),
+            };
+            let (chosen, target) = match terrain {
+                None => (flat[side][d], base),
+                Some(grid) => {
+                    let col = layout.lattice.0 + (radar.c0 + cc) as i64;
+                    let target = base + grid.texel(col, north);
+                    (stack.pick(d, target), target)
                 }
-                let d = usize::from(radar.dist[k]);
-                let (stack, side) = match &outer {
-                    Some(o) if d >= primary.edge => (o, 1),
-                    _ => (&primary, 0),
-                };
-                let (pick, target) = match terrain {
-                    None => (flat[side][d], base),
-                    Some(grid) => {
-                        let col = layout.lattice.0 + (radar.c0 + cc) as i64;
-                        let target = base + grid.texel(col, north);
-                        (stack.pick(d, target), target)
-                    }
-                };
-                if pick == u8::MAX {
-                    continue;
-                }
-                let beam = &stack.beams[usize::from(pick)];
-                let ray = beam.rows[usize::from(radar.az[k])];
-                let code = if ray == NONE {
-                    1
-                } else {
-                    beam.sweep.rays[usize::from(ray)].codes[usize::from(beam.gate[d])]
-                };
-                if code == 1 {
-                    continue;
-                }
-                let key = height_key((beam.height[d] - target).abs(), d);
-                let t = row * width + radar.c0 + cc;
-                if key < best[t] {
-                    best[t] = key;
-                    codes[t] = code;
-                    owner[t] = index as u8;
-                }
+            };
+            if chosen == u8::MAX {
+                continue;
+            }
+            let beam = &stack.beams[usize::from(chosen)];
+            let ray = beam.rows[usize::from(radar.az[k])];
+            let code = if ray == NONE {
+                1
+            } else {
+                beam.sweep.rays[usize::from(ray)].codes[usize::from(beam.gate[d])]
+            };
+            if code == 1 {
+                continue;
+            }
+            let key = height_key((beam.height[d] - target).abs(), d);
+            pick.offer(row * width + radar.c0 + cc, key, code, index);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The composites' products (S24b)
+// ---------------------------------------------------------------------------
+
+/// Offer one radar's codes over its part of the texture from its lookups:
+/// `near` up to its scan's far edge, `far` (a short scan's far ring from its
+/// longer predecessor) past it. `key(code, beam centre above sea level,
+/// distance unit)` orders a candidate; `None` is no candidate.
+fn place(
+    pick: &mut Pick,
+    layout: &Layout,
+    index: usize,
+    radar: &Radar,
+    near: &Lookup,
+    far: Option<&Lookup>,
+    key: impl Fn(u8, i32, usize) -> Option<u64>,
+) {
+    let width = layout.width as usize;
+    for rr in 0..radar.h {
+        let row_base = (radar.r0 + rr) * width + radar.c0;
+        for cc in 0..radar.w {
+            let k = rr * radar.w + cc;
+            let d = radar.dist[k];
+            if d == NONE {
+                continue;
+            }
+            let d = usize::from(d);
+            let lookup = match far {
+                Some(o) if d >= near.edge => o,
+                _ => near,
+            };
+            let Some((code, height)) = lookup.at(d, radar.az[k]) else {
+                continue;
+            };
+            if let Some(key) = key(code, height, d) {
+                pick.offer(row_base + cc, key, code, index);
             }
         }
     }
-    (codes, owner)
+}
+
+/// The maximum's order, the lower key the better: a measured code by its
+/// value (a storm height by its top, and of two equal tops the exact one, an
+/// even code, over the "at least" one), then below threshold; no data is no
+/// candidate (`docs/protocol.md`, the composites' products).
+fn max_key(code: u8, etop: bool) -> Option<u64> {
+    match code {
+        1 => None,
+        0 => Some(u64::MAX - 1),
+        c if etop => {
+            let top = u64::from(c - 2) / 2;
+            let exact = u64::from(c % 2 == 0);
+            Some(1_000 - (2 * top + exact))
+        }
+        c => Some(255 - u64::from(c)),
+    }
+}
+
+/// One radar's part of a composite's `CMAX`, `ETOP` or `VIL`: its own
+/// product, made exactly as its radar frame is (`products::compose`, on its
+/// lowest scan's rays and gates; a short volume's far ring from its longer
+/// predecessor's), placed at that frame's elevation; the maximum wins.
+fn max_radar(
+    pick: &mut Pick,
+    layout: &Layout,
+    index: usize,
+    radar: &Radar,
+    want: Want,
+    volumes: RadarVolumes,
+) {
+    let alt = radar.station.alt_m;
+    // A storm height is above sea level: each radar's own antenna.
+    let own = match want {
+        Want::EchoTop(_) => Want::EchoTop(alt),
+        other => other,
+    };
+    let (primary, outer) = volumes;
+    let Ok(near) = crate::products::compose(own, primary) else {
+        return;
+    };
+    let far = outer
+        .filter(|o| !o.is_empty())
+        .and_then(|o| crate::products::compose(own, o).ok());
+    let near = Lookup::new(&near, alt, radar.reach_m);
+    let far = far.as_ref().map(|s| Lookup::new(s, alt, radar.reach_m));
+    let etop = matches!(own, Want::EchoTop(_));
+    place(pick, layout, index, radar, &near, far.as_ref(), |code, _, _| {
+        max_key(code, etop)
+    });
+}
+
+/// A volume's beams for `LOWB`, in its order (ascending by angle), and per
+/// degree of azimuth the index of its clear beam: the blockage table's pick
+/// (`products::hybrid_pick`), or its lowest scan without a table.
+fn clear_beams<'a>(
+    tilts: &'a [Tilt],
+    table: Option<&crate::products::Blockage>,
+    reach_m: f64,
+) -> (Vec<Beam<'a>>, [u8; 360]) {
+    let beams: Vec<Beam> = tilts.iter().map(|t| Beam::new(t, reach_m)).collect();
+    let infos: Vec<TiltInfo> = tilts.iter().map(Tilt::info).collect();
+    let lowest = (0..infos.len())
+        .min_by(|&a, &b| infos[a].elangle.total_cmp(&infos[b].elangle))
+        .unwrap_or(0);
+    let mut picks = [lowest as u8; 360];
+    if let Some(table) = table {
+        for (degree, chosen) in picks.iter_mut().enumerate() {
+            *chosen = crate::products::hybrid_pick(&infos, table.tenths[degree]) as u8;
+        }
+    }
+    (beams, picks)
+}
+
+/// One radar's part of a composite's `LOWB`: per texel the scan of its
+/// lowest clear beam at the texel's bearing (the degree `floor(bearing)`),
+/// placed at that scan's own angle; a candidate where that gate is not no
+/// data; the lowest beam centre above sea level wins, then the nearer radar
+/// (`lowest_key`, My mosaic's `lowest` rule).
+fn clear_radar(
+    pick: &mut Pick,
+    layout: &Layout,
+    index: usize,
+    radar: &Radar,
+    primary: &[Tilt],
+    outer: Option<&[Tilt]>,
+) {
+    if primary.is_empty() {
+        return;
+    }
+    let table = crate::products::blockage(&radar.station.id);
+    let (near, near_picks) = clear_beams(primary, table, radar.reach_m);
+    let far = outer
+        .filter(|o| !o.is_empty())
+        .map(|o| clear_beams(o, table, radar.reach_m));
+    // Past the lowest scan's edge a short volume's far ring comes from the
+    // longer one (as `Stack`).
+    let edge = near
+        .iter()
+        .min_by(|a, b| a.deg.total_cmp(&b.deg))
+        .map_or(0, |b| b.edge);
+    let (alt, width) = (radar.station.alt_m, layout.width as usize);
+    for rr in 0..radar.h {
+        let row_base = (radar.r0 + rr) * width + radar.c0;
+        for cc in 0..radar.w {
+            let k = rr * radar.w + cc;
+            if radar.dist[k] == NONE {
+                continue;
+            }
+            let d = usize::from(radar.dist[k]);
+            let (beams, picks) = match &far {
+                Some((beams, picks)) if d >= edge => (beams, picks),
+                _ => (&near, &near_picks),
+            };
+            let az = radar.az[k];
+            let beam = &beams[usize::from(picks[usize::from(az / 10) % 360])];
+            let (Some(&g), ray) = (beam.gate.get(d), beam.rows[usize::from(az)]) else {
+                continue;
+            };
+            if g == NONE || ray == NONE {
+                continue;
+            }
+            let code = beam.sweep.rays[usize::from(ray)].codes[usize::from(g)];
+            if code == 1 {
+                continue;
+            }
+            let height = (alt + beam.height[d]).round() as i32;
+            pick.offer(row_base + cc, lowest_key(height, d), code, index);
+        }
+    }
+}
+
+/// One radar's volumes for a composite's frame, owned: its volume at T,
+/// scans ascending by angle, and a short volume's longer predecessor.
+pub type RadarVolumes = (Vec<Tilt>, Option<Vec<Tilt>>);
+
+/// A composite's product at every texel.
+pub struct Combined {
+    pub codes: Vec<u8>,
+    /// Which radar gave each texel, `u8::MAX` for none.
+    pub owner: Vec<u8>,
+    /// Each radar's latest scan end; `None` when it was not used.
+    pub ends: Vec<Option<i64>>,
+}
+
+/// A composite's product (S24b, `docs/protocol.md`, the composites'
+/// products), radar by radar: `load(i)` gives radar `i`'s volumes (`None`:
+/// missing), held only while that radar is combined, so a Nordic frame
+/// never holds 41 decoded volumes at once.
+pub fn combine_grid(
+    layout: &Layout,
+    mut load: impl FnMut(usize) -> Option<RadarVolumes>,
+) -> Combined {
+    let mut pick = Pick::new(layout);
+    let mut ends = vec![None; layout.radars.len()];
+    let make = layout.make();
+    let height_m = layout
+        .set
+        .height_m
+        .unwrap_or(crate::products::HEIGHT_DEFAULT_M);
+    let terrain = terrain_for(make == Make::Height && layout.set.above == Some(Above::Ground));
+    for (index, radar) in layout.radars.iter().enumerate() {
+        let Some((primary, outer)) = load(index) else {
+            continue;
+        };
+        if primary.is_empty() {
+            continue;
+        }
+        ends[index] = primary.iter().map(|t| t.sweep.end_ms).max();
+        match make {
+            Make::Height => {
+                let input = Volumes {
+                    primary: &primary,
+                    outer: outer.as_deref(),
+                };
+                height_radar(&mut pick, layout, index, radar, input, height_m, terrain);
+            }
+            Make::Max(want) => max_radar(&mut pick, layout, index, radar, want, (primary, outer)),
+            Make::Clear => clear_radar(&mut pick, layout, index, radar, &primary, outer.as_deref()),
+            // My mosaic's lowest-scan rules are `combine`'s.
+            Make::Scan(_) => {}
+        }
+    }
+    Combined {
+        codes: pick.codes,
+        owner: pick.owner,
+        ends,
+    }
 }
 
 /// The height rule's order of two radars: the beam centre nearer the
@@ -1113,6 +1609,22 @@ pub struct Built {
     pub attribution: String,
     /// (lat, lon) of the box's middle: `frame.site`.
     pub centre: (f64, f64),
+    /// The product's own legend and coding when not the reflectivity's
+    /// (S24b: a composite's `ETOP` and `VIL`).
+    pub legend: Option<&'static Legend>,
+    pub scale: f32,
+    pub offset: f32,
+}
+
+/// A product's own legend and coding (S24a's storm height and rain mass),
+/// else the reflectivity's.
+fn coding(product: &str) -> (Option<&'static Legend>, f32, f32) {
+    use crate::products as p;
+    match product {
+        p::ETOP => (Some(&p::ETOP_LEGEND), p::ETOP_SCALE, p::ETOP_OFFSET),
+        p::VIL => (Some(&p::VIL_LEGEND), p::VIL_SCALE, p::VIL_OFFSET),
+        _ => (None, SCALE, OFFSET),
+    }
 }
 
 /// The frame for T from each radar's `inputs` (layout order; `None` for a
@@ -1152,7 +1664,8 @@ pub fn build_height(layout: &Layout, t_ms: i64, inputs: &[Option<Volumes>]) -> B
 /// A frame of `codes`, credited to the radars that had a scan (`ends`,
 /// each one's latest end).
 fn built(layout: &Layout, t_ms: i64, codes: Vec<u8>, ends: &[Option<i64>]) -> Built {
-    let (product, product_name) = layout.set.product();
+    let (product, product_name) = layout.product();
+    let (legend, scale, offset) = coding(product);
     let mut owners: Vec<&str> = Vec::new();
     let mut used = Vec::new();
     let mut end_ms = t_ms;
@@ -1177,9 +1690,9 @@ fn built(layout: &Layout, t_ms: i64, codes: Vec<u8>, ends: &[Option<i64>]) -> Bu
             east: layout.east,
             north: layout.north,
             south: layout.south,
-            source_projdef: format!("My mosaic, {product_name}: {}", used.join(", ")),
+            source_projdef: format!("{}, {product_name}: {}", layout.name(), used.join(", ")),
         },
-        variant: layout.set.variant(),
+        variant: layout.variant(),
         product,
         product_name,
         // A height above the ground credits the terrain too (S30).
@@ -1189,6 +1702,9 @@ fn built(layout: &Layout, t_ms: i64, codes: Vec<u8>, ends: &[Option<i64>]) -> Bu
             owners.join("; ")
         },
         centre: layout.centre(),
+        legend,
+        scale,
+        offset,
     }
 }
 
@@ -1217,7 +1733,10 @@ pub fn frame(template: &Frame, station: &Station, built: &Built) -> Frame {
             built.product.to_owned()
         },
         product_name: built.product_name.clone(),
-        units: template.units.clone(),
+        // S24b: a composite's storm height and rain mass bring their own.
+        units: built
+            .legend
+            .map_or_else(|| template.units.clone(), |l| l.units.to_owned()),
         elevation_deg: 0.0,
         scan_time: utc(grid.start_ms, "%Y-%m-%dT%H:%M:%SZ"),
         sweep_end: utc(grid.end_ms, "%Y-%m-%dT%H:%M:%SZ"),
@@ -1228,15 +1747,20 @@ pub fn frame(template: &Frame, station: &Station, built: &Built) -> Frame {
         gates: 0,
         first_gate_m: 0,
         gate_spacing_m: 0,
-        scale: SCALE,
-        offset: OFFSET,
+        scale: built.scale,
+        offset: built.offset,
         site: Geometry {
             lat: built.centre.0,
             lon: built.centre.1,
             alt_m: 0.0,
         },
-        palette: template.palette.clone(),
-        bounds: template.bounds.clone(),
+        palette: built.legend.map_or_else(
+            || template.palette.clone(),
+            |l| l.palette.iter().map(|&c| c.to_owned()).collect(),
+        ),
+        bounds: built
+            .legend
+            .map_or_else(|| template.bounds.clone(), |l| l.bounds.to_vec()),
         attribution: built.attribution.clone(),
         grid: Some(grid.placement()),
     }
@@ -1642,9 +2166,10 @@ fn provenance(
         }
     }
     let mut text = format!(
-        "My mosaic {} {}, {} of {} radars at {}: {}",
-        layout.set.variant(),
-        layout.set.product().1,
+        "{} {} {}, {} of {} radars at {}: {}",
+        layout.name(),
+        layout.variant(),
+        layout.product().1,
         parts.len(),
         layout.radars.len(),
         utc(t_ms, "%H:%MZ"),
@@ -1671,28 +2196,48 @@ fn now_ms() -> i64 {
 }
 
 fn log(message: impl std::fmt::Display) {
+    log_for(STATION, message);
+}
+
+/// An engine.log line for the mosaic of `site`: `mymosaic`, or a composite
+/// whose product is being made (S24b).
+fn log_for(site: &str, message: impl std::fmt::Display) {
     eprintln!(
-        "{} Mosaic {STATION}: {message}",
+        "{} Mosaic {site}: {message}",
         utc(now_ms(), "%Y-%m-%dT%H:%M:%SZ")
     );
 }
 
+/// A scan the schedule keeps without its rays (S24b): a composite's frame
+/// reads its volumes back from the tilt store when it is built, so only a
+/// scan's geometry and times are needed until then (41 radars' lowest scans
+/// over 13 frame times would hold about 100 MB).
+fn geometry(sweep: Sweep) -> Sweep {
+    Sweep {
+        rays: Vec::new(),
+        ..sweep
+    }
+}
+
 /// Each radar's stored lowest scans from `floor` on: the tilt store's
 /// copies (S27), no request. Built frames' times too (review #2): a newer
-/// frame's far ring may come from them. With `whole` (a height set, S30),
-/// only volumes the store holds every scan of, for a radar whose provider
-/// publishes whole volumes; its poller reads the rest.
-fn from_store(layout: &Layout, floor: i64, whole: bool) -> Vec<(usize, i64, Sweep)> {
+/// frame's far ring may come from them. When a radar's poller reads more
+/// than its lowest scan (`Layout::read_want`: a height set's whole volumes,
+/// S30; a composite product's, S24b), only volumes the store holds every
+/// scan of that read; its poller reads the rest. A composite's are kept as
+/// their geometry alone (`geometry`).
+fn from_store(layout: &Layout, floor: i64) -> Vec<(usize, i64, Sweep)> {
     let Some(store) = crate::tilts::shared() else {
         return Vec::new();
     };
+    let grid = matches!(layout.job, Job::Grid { .. });
     let mut out = Vec::new();
     for (index, radar) in layout.radars.iter().enumerate() {
         let id = &radar.station.id;
         let volumes = store.volumes(id).unwrap_or_default();
-        let every = whole && !crate::products::nominal_angles(&radar.station).is_empty();
+        let want = layout.read_want(&radar.station);
         for (t, source) in volumes.into_iter().filter(|(t, _)| *t >= floor) {
-            if every && !stored_whole(&store, id, t) {
+            if !want.is_lowest() && !stored_has(&store, id, t, want) {
                 continue;
             }
             let slot = crate::tilts::Slot {
@@ -1702,23 +2247,24 @@ fn from_store(layout: &Layout, floor: i64, whole: bool) -> Vec<(usize, i64, Swee
                 source,
             };
             if let Ok(Some(Scan::Polar(sweep))) = slot.compose(Want::Lowest, radar.which) {
-                out.push((index, t, sweep));
+                out.push((index, t, if grid { geometry(sweep) } else { sweep }));
             }
         }
     }
     out
 }
 
-/// Whether the tilt store holds every scan of `station`'s volume at `t`
-/// (S30: a height frame reads them all).
-fn stored_whole(store: &crate::tilts::Store, station: &str, t: i64) -> bool {
+/// Whether the tilt store holds every scan `want` reads of `station`'s
+/// volume at `t` (S30: a height frame reads them all; S24b: `LOWB` the
+/// scans of its clear beams).
+fn stored_has(store: &crate::tilts::Store, station: &str, t: i64, want: Want) -> bool {
     let Ok(Some(volume)) = store.volume(station, t) else {
         return false;
     };
     let Some(angles) = &volume.angles else {
         return false;
     };
-    crate::products::needed(Want::ColMax, angles)
+    crate::products::needed(want, angles)
         .iter()
         .all(|k| volume.tilts.iter().any(|s| s.dataset == *k))
 }
@@ -1799,6 +2345,37 @@ fn assemble_height(
     (Some(build_height(layout, t, &inputs)), unread)
 }
 
+/// A composite's frame for `t` (S24b) from the volumes `store` holds of
+/// each radar's `owned` scans, read back radar by radar, with the radars
+/// whose volume it lacks; `None` when it holds none of them.
+fn assemble_grid(
+    layout: &Layout,
+    t: i64,
+    owned: &Owned,
+    store: Option<&crate::tilts::Store>,
+) -> (Option<Built>, Vec<String>) {
+    let mut unread = Vec::new();
+    let combined = combine_grid(layout, |i| {
+        let (_, outer) = owned.get(i)?.as_ref()?;
+        let id = &layout.radars[i].station.id;
+        let Some(primary) = store.and_then(|s| volume_of(s, id, t)) else {
+            unread.push(id.clone());
+            return None;
+        };
+        let outer = outer
+            .as_ref()
+            .and_then(|(_, when)| store.and_then(|s| volume_of(s, id, *when)));
+        Some((primary, outer))
+    });
+    if combined.ends.iter().all(Option::is_none) {
+        return (None, unread);
+    }
+    (
+        Some(built(layout, t, combined.codes, &combined.ends)),
+        unread,
+    )
+}
+
 /// Build the frame for `t` on the blocking pool and send it: as the live
 /// frame when it is the newest built, else as history. A late rebuild keeps
 /// its id, so the catalog and every client replace it. `t` is marked built
@@ -1819,8 +2396,15 @@ async fn build_and_send(
     let newest = schedule.newest_built().is_none_or(|n| t >= n);
     let shared = layout.clone();
     let started = Instant::now();
+    let site = layout.station_id().to_owned();
     let built = spawn_blocking(move || {
-        if shared.set.rule == Rule::Height {
+        if let Job::Grid { .. } = shared.job {
+            // S24b: every composite product is made from the tilt store,
+            // radar by radar.
+            let store = crate::tilts::shared();
+            let (built, unread) = assemble_grid(&shared, t, &owned, store.as_deref());
+            (built, owned, unread)
+        } else if shared.set.rule == Rule::Height {
             let store = crate::tilts::shared();
             let (built, unread) = assemble_height(&shared, t, &owned, store.as_deref());
             (built, owned, unread)
@@ -1840,13 +2424,13 @@ async fn build_and_send(
     })
     .await;
     let Ok((built, owned, unread)) = built else {
-        log(format_args!("building {} failed", utc(t, "%H:%MZ")));
+        log_for(&site, format_args!("building {} failed", utc(t, "%H:%MZ")));
         return true;
     };
     let Some(built) = built else {
         // Review #6: every volume gone from the store; nothing is sent, and
         // the time is given up rather than tried every second.
-        log(format_args!(
+        log_for(&site, format_args!(
             "{} built with no radar: the tilt store holds none of its volumes ({}); not sent",
             utc(t, "%Y-%m-%dT%H:%MZ"),
             unread.join(", ")
@@ -1856,13 +2440,16 @@ async fn build_and_send(
     };
     let provenance = provenance(layout, t, &owned, &costs, &unread);
     if !unread.is_empty() {
-        log(format_args!(
-            "{}: the tilt store no longer holds {}'s volume",
-            utc(t, "%H:%MZ"),
-            unread.join(", ")
-        ));
+        log_for(
+            &site,
+            format_args!(
+                "{}: the tilt store no longer holds {}'s volume",
+                utc(t, "%H:%MZ"),
+                unread.join(", ")
+            ),
+        );
     }
-    log(format_args!(
+    log_for(&site, format_args!(
         "{} built{} in {:.0?}, {} × {}; {provenance}",
         utc(t, "%Y-%m-%dT%H:%MZ"),
         if again {
@@ -1875,7 +2462,6 @@ async fn build_and_send(
         built.grid.height
     ));
     let sweep = Scan::Mosaic(Box::new(built));
-    let site = STATION.to_owned();
     let event = if newest {
         Event::Sweep {
             site,
@@ -1905,8 +2491,37 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
     if set.is_empty() {
         return std::future::pending().await;
     }
+    let place = move || Layout::new(&set, &sites);
+    run(STATION.to_owned(), "My mosaic".into(), place, events, cached).await;
+}
+
+/// A composite's product (S24b): `main.rs` starts it while `station`
+/// (`sweden`, `nordic`) is selected showing `want`, and aborts it on any
+/// switch. Its radars are polled and its frames built as My mosaic's, from
+/// the tilt store; the frames are the composite's.
+pub async fn poll_grid(
+    station: Station,
+    want: Want,
+    sites: Vec<Station>,
+    events: Sender<Event>,
+    cached: Vec<i64>,
+) {
+    let (site, name) = (station.id.clone(), station.name.clone());
+    let place = move || Layout::grid(&station, want, &sites);
+    run(site, name, place, events, cached).await;
+}
+
+/// Place the radars, then poll them and build the frames of `site` (named
+/// `name` in words) until aborted.
+async fn run(
+    site: String,
+    name: String,
+    place: impl FnOnce() -> Result<Layout, String> + Send + 'static,
+    events: Sender<Event>,
+    cached: Vec<i64>,
+) {
     let started = Instant::now();
-    let placed = spawn_blocking(move || Layout::new(&set, &sites))
+    let placed = spawn_blocking(place)
         .await
         .map_err(|e| e.to_string())
         .and_then(|placed| placed);
@@ -1915,30 +2530,34 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         Err(e) => {
             // Said to the clients (review #7), once; then the task waits,
             // so the engine does not start it again every second.
-            let reason = format!("My mosaic cannot place its radars: {e}");
-            log(&reason);
-            let site = STATION.to_owned();
+            let reason = format!("{name} cannot place its radars: {e}");
+            log_for(&site, &reason);
             let _ = events.send(Event::Offline { site, reason }).await;
             return std::future::pending().await;
         }
     };
-    log(format_args!(
-        "{} {}: {} radars on {} × {} texels, placed in {:.0?}",
-        layout.set.variant(),
-        layout.set.rule.name(),
-        layout.radars.len(),
-        layout.width,
-        layout.height,
-        started.elapsed()
-    ));
-    // A height set's frames are made from the tilt store (S30).
-    let height = layout.set.rule == Rule::Height;
+    log_for(
+        &site,
+        format_args!(
+            "{} {}: {} radars on {} × {} texels, placed in {:.0?}",
+            layout.variant(),
+            layout.product().1,
+            layout.radars.len(),
+            layout.width,
+            layout.height,
+            started.elapsed()
+        ),
+    );
+    // A height set's frames (S30) and a composite product's (S24b) are made
+    // from the tilt store.
+    let height = layout.stored();
+    let grid = matches!(layout.job, Job::Grid { .. });
     if height && crate::tilts::shared().is_none() {
-        let reason = "My mosaic's heights are made from the tilt store, which is off \
-                      (OMASTORM_TILTS_MB=0)"
-            .to_owned();
-        log(&reason);
-        let site = STATION.to_owned();
+        let reason = format!(
+            "{name}'s {} is made from the tilt store, which is off (OMASTORM_TILTS_MB=0)",
+            layout.product().1
+        );
+        log_for(&site, &reason);
         let _ = events.send(Event::Offline { site, reason }).await;
         return std::future::pending().await;
     }
@@ -1955,35 +2574,45 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
     // request.
     let floor = schedule.floor(now);
     let shared = layout.clone();
-    let stored = spawn_blocking(move || from_store(&shared, floor, height))
+    let stored = spawn_blocking(move || from_store(&shared, floor))
         .await
         .unwrap_or_default();
     let from_the_store = stored.len();
     if height {
         // What the first fill should cost (review #8): per radar the volumes
-        // of its depth the store lacks; an SMHI volume ~39 range requests,
-        // an FMI volume a file per angle, any other ORD volume 1 file
-        // (`volume_requests`); listings besides.
+        // of its depth the store lacks; an SMHI whole volume ~39 range
+        // requests (its lowest scans ~7), an FMI volume a file per angle,
+        // any other ORD volume 1 file (`volume_requests`); listings besides.
         let mut held = vec![0usize; layout.radars.len()];
         for (radar, _, _) in &stored {
             held[*radar] += 1;
         }
-        let (mut smhi, mut ord, mut ord_files) = (0usize, 0usize, 0usize);
+        let (mut smhi, mut smhi_requests, mut ord, mut ord_files) = (0, 0, 0, 0);
         for (radar, have) in layout.radars.iter().zip(&held) {
             let missing = (depth + 1).saturating_sub(*have);
+            let whole = layout.read_want(&radar.station) == Want::ColMax;
             if radar.station.provider == ProviderId::Smhi {
                 smhi += missing;
+                smhi_requests += missing
+                    * if whole {
+                        SMHI_VOLUME_REQUESTS
+                    } else {
+                        SMHI_LOWEST_REQUESTS
+                    };
             } else {
                 ord += missing;
-                ord_files += missing * volume_requests(&radar.station);
+                ord_files += missing * if whole { volume_requests(&radar.station) } else { 1 };
             }
         }
-        log(format_args!(
-            "first fill: about {} requests ({smhi} SMHI volumes × ~{SMHI_VOLUME_REQUESTS} range \
-             requests, {ord} ORD volumes in {ord_files} files) plus listings; \
-             {from_the_store} volumes already in the tilt store",
-            smhi * SMHI_VOLUME_REQUESTS + ord_files
-        ));
+        log_for(
+            &site,
+            format_args!(
+                "first fill: about {} requests ({smhi} SMHI volumes in ~{smhi_requests} range \
+                 requests, {ord} ORD volumes in {ord_files} files) plus listings; \
+                 {from_the_store} volumes already in the tilt store",
+                smhi_requests + ord_files
+            ),
+        );
     }
     for (radar, t, sweep) in stored {
         let have = Have {
@@ -1998,20 +2627,21 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
     if from_the_store > 0 {
         schedule.touch(now);
     }
-    log(format_args!(
-        "{from_the_store} {} from the tilt store; {} frames catalogued; building back {depth}",
-        if height {
-            "whole volumes"
-        } else {
-            "lowest scans"
-        },
-        cached.len()
-    ));
+    log_for(
+        &site,
+        format_args!(
+            "{from_the_store} {} from the tilt store; {} frames catalogued; building back {depth}",
+            if height {
+                "volumes"
+            } else {
+                "lowest scans"
+            },
+            cached.len()
+        ),
+    );
     if schedule.caught_up(now)
         && events
-            .send(Event::Current {
-                site: STATION.to_owned(),
-            })
+            .send(Event::Current { site: site.clone() })
             .await
             .is_err()
     {
@@ -2027,16 +2657,13 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         .enumerate()
         .map(|(i, radar)| {
             let (station, tx, known) = (radar.station.clone(), tx.clone(), schedule.known(i));
-            // A height set reads each whole volume of a radar whose angles
-            // the engine knows (every height needs nearly every scan, so
-            // every later height is free); for an FMI radar that is all
-            // five of a time's per-angle files, read as one volume (S24a).
-            // A radar with no known angles gives its lowest scan.
-            let want = if height && !crate::products::nominal_angles(&station).is_empty() {
-                Want::ColMax
-            } else {
-                Want::Lowest
-            };
+            // A height set, or a composite's column product, reads each
+            // whole volume of a radar whose angles the engine knows (every
+            // height needs nearly every scan, so every later height or
+            // product is free); for an FMI radar that is all five of a
+            // time's per-angle files, read as one volume (S24a). `LOWB`
+            // reads its clear beams' scans (S24b). `Layout::read_want`.
+            let want = layout.read_want(&station);
             crate::smhi_live::AbortOnDrop(tokio::spawn(async move {
                 tokio::time::sleep(STAGGER * i as u32).await;
                 // One volume further back than the mosaic, as its newest is
@@ -2048,7 +2675,7 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
     drop(tx);
     loop {
         match timeout(Duration::from_secs(1), rx.recv()).await {
-            Ok(None) => return log("every radar's poller ended"),
+            Ok(None) => return log_for(&site, "every radar's poller ended"),
             Ok(Some(event)) => {
                 let now = now_ms();
                 let index = |site: &str| layout.radars.iter().position(|r| r.station.id == site);
@@ -2077,18 +2704,24 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
                         } else {
                             if live {
                                 let late = (now - t) / 1000;
-                                log(format_args!(
-                                    "{site} {} in at T + {}:{:02}{}",
-                                    utc(t, "%H:%MZ"),
-                                    late / 60,
-                                    late % 60,
-                                    if schedule.is_built(t) {
-                                        ", after its frame was built"
-                                    } else {
-                                        ""
-                                    }
-                                ));
+                                log_for(
+                                    layout.station_id(),
+                                    format_args!(
+                                        "{site} {} in at T + {}:{:02}{}",
+                                        utc(t, "%H:%MZ"),
+                                        late / 60,
+                                        late % 60,
+                                        if schedule.is_built(t) {
+                                            ", after its frame was built"
+                                        } else {
+                                            ""
+                                        }
+                                    ),
+                                );
                             }
+                            // A composite's frame reads its volumes back
+                            // from the store: only the geometry is kept.
+                            let sweep = if grid { geometry(sweep) } else { sweep };
                             let have = Have {
                                 sweep: Arc::new(sweep),
                                 cost: Cost::of(&provenance),
@@ -2096,22 +2729,28 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
                             schedule.add(i, t, have, now, true);
                         }
                     }
-                    Event::Offline { site, reason } => {
-                        log(format_args!("{site}: {reason}"));
-                        if let Some(i) = index(&site) {
+                    Event::Offline {
+                        site: radar,
+                        reason,
+                    } => {
+                        log_for(&site, format_args!("{radar}: {reason}"));
+                        if let Some(i) = index(&radar) {
                             offline[i] = true;
                         }
                         if offline.iter().all(|o| *o) {
                             let event = Event::Offline {
-                                site: STATION.to_owned(),
-                                reason: format!("every chosen radar is offline ({reason})"),
+                                site: site.clone(),
+                                reason: format!("every radar is offline ({reason})"),
                             };
                             if events.send(event).await.is_err() {
                                 return;
                             }
                         }
                     }
-                    Event::Silent { site, reason } => log(format_args!("{site}: {reason}")),
+                    Event::Silent {
+                        site: radar,
+                        reason,
+                    } => log_for(&site, format_args!("{radar}: {reason}")),
                     _ => {}
                 }
             }
@@ -3422,8 +4061,9 @@ mod tests {
         // B: only its lowest scan. C: nothing.
         let vb = volume(&[(0.5, 31), (1.5, 32), (4.0, 33)], 240);
         save("rb", t, &vb, &[0]);
-        assert!(stored_whole(&store, "ra", t) && stored_whole(&store, "ra", t - CADENCE_MS));
-        assert!(!stored_whole(&store, "rb", t) && !stored_whole(&store, "rc", t));
+        let whole = |id: &str, t: i64| stored_has(&store, id, t, Want::ColMax);
+        assert!(whole("ra", t) && whole("ra", t - CADENCE_MS));
+        assert!(!whole("rb", t) && !whole("rc", t));
         assert_eq!(volume_of(&store, "rb", t).map(|v| v.len()), Some(1));
         assert!(volume_of(&store, "rc", t).is_none());
         let scan = || Arc::new(sweep(11, 100, 0.5, t));

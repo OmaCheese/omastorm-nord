@@ -686,6 +686,10 @@ struct Shared {
     /// The angle `state.product` names in degrees, when it is one angle,
     /// so a switch (through a composite, too) keeps the nearest (S20).
     product_deg: Option<f64>,
+    /// While a grid station is selected (S24b), the choice the next radar
+    /// gets, with its angle: the one before the grid station, or one chosen
+    /// on it. `state.product` then says what the grid station shows.
+    aside: Option<(products::Choice, Option<f64>)>,
 }
 impl Shared {
     fn snapshot(&mut self) -> String {
@@ -825,6 +829,16 @@ impl Shared {
                 self.events.clone(),
                 cached,
             ))
+        } else if station.kind == SiteKind::Grid && !want.is_lowest() {
+            // A composite's product (S24b): made from its radars, only
+            // while it is shown.
+            tokio::spawn(mosaic::poll_grid(
+                station,
+                want,
+                self.sites.clone(),
+                self.events.clone(),
+                cached,
+            ))
         } else {
             tokio::spawn(providers::poll(
                 station,
@@ -887,7 +901,8 @@ impl Shared {
             Some(newest) => self.show_entry(newest).map(|()| Some(newest.start_ms)),
             None => {
                 let mut frame = empty_frame(&self.template, station);
-                if station.kind == SiteKind::Polar && !want.is_lowest() {
+                // A radar's product, or a composite's (S24b).
+                if !want.is_lowest() {
                     let (id, name) = want.product();
                     (frame.product, frame.product_name) = (id.to_owned(), name);
                     // S24a: and the product's own legend, before its frame.
@@ -937,13 +952,16 @@ impl Shared {
             .iter()
             .find(|s| s.id == self.state.site.id)
             .cloned();
+        // S24b: a provider's composite offers the products the engine makes
+        // from its radars; My mosaic has none (its set's rule).
+        let offers = |s: &Station| s.kind == SiteKind::Polar || !products::for_station(s).0.is_empty();
         let station = match station {
-            Some(s) if self.state.source == Source::Live && s.kind == SiteKind::Polar => s,
+            Some(s) if self.state.source == Source::Live && offers(&s) => s,
             Some(s) if s.kind == SiteKind::Grid => {
                 return (
                     false,
                     Some(format!(
-                        "{} is a composite; it has no products to choose.",
+                        "{} has no products to choose; its set's rule says what it shows.",
                         s.name
                     )),
                 );
@@ -985,6 +1003,10 @@ impl Shared {
             want.variant()
         );
         self.product_deg = products::angle_deg(&station, &choice);
+        // On a grid station (S24b) the choice is also the next radar's.
+        if station.kind == SiteKind::Grid {
+            self.aside = Some((choice.clone(), None));
+        }
         self.state.product = choice;
         self.state.connection.status = ConnectionStatus::Loading;
         self.restart_live("polling the new product", false);
@@ -1107,16 +1129,31 @@ impl Shared {
             );
         };
         // The product carries over (S20): an angle to the nearest, a product
-        // the radar cannot make to the lowest scan; a composite keeps it.
-        let choice = products::carry(&self.state.product, self.product_deg, &station);
-        let want = products::want_for(&station, &choice).unwrap_or(Want::Lowest);
+        // the radar cannot make to the lowest scan. A grid station (S24b)
+        // opens on its composite, and keeps the choice before it aside for
+        // the next radar (one chosen on the grid station replaces it).
+        let (held, held_deg) = self
+            .aside
+            .clone()
+            .unwrap_or_else(|| (self.state.product.clone(), self.product_deg));
+        let (choice, want) = if station.kind == SiteKind::Grid {
+            (products::Choice::default(), Want::Lowest)
+        } else {
+            let choice = products::carry(&held, held_deg, &station);
+            let want = products::want_for(&station, &choice).unwrap_or(Want::Lowest);
+            (choice, want)
+        };
         if let Err(message) = self.open_catalog(&station, want) {
             return (false, Some(message));
         }
-        if station.kind == SiteKind::Polar {
+        if station.kind == SiteKind::Grid {
+            self.aside = Some((held, held_deg));
+            self.product_deg = None;
+        } else {
+            self.aside = None;
             self.product_deg = products::angle_deg(&station, &choice);
-            self.state.product = choice;
         }
+        self.state.product = choice;
         self.state.site.id = station.id;
         self.state.source = Source::Live;
         self.state.connection.status = ConnectionStatus::Loading;
@@ -1509,10 +1546,11 @@ fn encode_scan(scan: &Scan, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>, Vec<
         Scan::Mosaic(built) => {
             let started = Instant::now();
             let encoded = encode_grid(&built.grid, frame)?;
+            // My mosaic's, or a composite's product (S24b): the id names it.
             eprintln!(
                 "{} Mosaic {}: {} encoded in {:.0?}, texture {} KB, codes {} KB",
                 iso(now_ms()),
-                mosaic::STATION,
+                frame.id.split('-').next().unwrap_or(mosaic::STATION),
                 frame.id,
                 started.elapsed(),
                 encoded.0.len() / 1000,
@@ -2282,6 +2320,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         warm,
         warm_pollers: HashMap::new(),
         product_deg: None,
+        aside: None,
         last_live_restart: Instant::now(),
         events,
         frame_ms,

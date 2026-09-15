@@ -167,12 +167,37 @@ pub const BASE_ENV: &str = "OMASTORM_ORD_BASE";
 /// about 5 minutes after the nominal time.
 pub const ES_CADENCE: Duration = Duration::from_secs(10 * 60);
 
+/// A station's cadence: its country's (S32: Spain's 10 minutes), else the
+/// provider's 5.
+pub fn cadence_for(station: &Station) -> Duration {
+    match station.country.as_str() {
+        "ES" => ES_CADENCE,
+        _ => CADENCE,
+    }
+}
+
+/// Between listing polls for a Spanish station (review N3): its files come
+/// every 10 minutes, so a listing every 2 halves its requests and adds at
+/// most a minute to a file's wait (it lands ~5 min after its time: 7 min at
+/// worst, inside the mosaic's `DUE_MS` 8 and the 20-min `stale`).
+pub const ES_POLL: Duration = Duration::from_secs(2 * 60);
+
+/// The listing poll for `station`: `ES_POLL` for AEMET's instead of the
+/// provider's `POLL`; any other interval (a test's) stays as it is.
+pub fn poll_for(station: &Station, poll: Duration) -> Duration {
+    if poll == POLL && station.country == "ES" {
+        ES_POLL
+    } else {
+        poll
+    }
+}
+
 /// A station's staleness thresholds: its country's cadence (S32: a Spanish
 /// frame is 15 minutes old just before the next lands, so `SPEC`'s 15-minute
 /// `stale` would flash every cycle), else the provider's.
 pub fn staleness_for(station: &Station) -> Staleness {
     match station.country.as_str() {
-        "ES" => Staleness::from_cadence(ES_CADENCE),
+        "ES" => Staleness::from_cadence(cadence_for(station)),
         _ => SPEC.staleness,
     }
 }
@@ -231,10 +256,14 @@ pub struct Listed {
 /// angles and gate size frame by frame, so while the listing holds a file
 /// with `TH`, the Doppler task's files (`Listed::doppler`) are left out. No
 /// other radar is affected: MET Norway's VRADH files hold no reflectivity
-/// (`Listed::parse` drops them), FMI's and DMI's hold `TH` too.
+/// (`Listed::parse` drops them), FMI's and DMI's hold `TH` too. AEMET's
+/// (`es…` node codes) are left out always (review S1): with the long-range
+/// task down the station goes stale, rather than showing a 150 km scan.
 fn one_task(listed: &[Listed]) -> impl Iterator<Item = &Listed> {
     let with_th = listed.iter().any(|f| f.quantities().contains(&"TH"));
-    listed.iter().filter(move |f| !(with_th && f.doppler()))
+    listed
+        .iter()
+        .filter(move |f| !((with_th || f.aemet()) && f.doppler()))
 }
 
 /// Whether a station's files hold one scan each (FMI's `SCAN`, S24a): any
@@ -343,6 +372,14 @@ impl Listed {
     fn doppler(&self) -> bool {
         let q = self.quantities();
         q.contains(&"VRADH") && !q.contains(&"TH")
+    }
+
+    /// Whether it is one of AEMET's (Spain: the node code starts `es`).
+    fn aemet(&self) -> bool {
+        self.key
+            .rsplit('/')
+            .next()
+            .is_some_and(|n| n.starts_with("es"))
     }
 
     /// Whether this file is the better one to read for its time.
@@ -1016,6 +1053,8 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
     let cfg = Config {
         angles_per_set: per_angle(&source)
             .then(|| crate::products::nominal_angles(&station).len().max(1)),
+        // Review N3: Spain's 10-minute files are listed every 2 minutes.
+        poll: poll_for(&station, cfg.poll),
         ..cfg
     };
     let sets = cfg.sets();
@@ -1464,8 +1503,24 @@ mod tests {
             times(choose_sets(&listed)),
             [utc(15, 9, 20), utc(15, 9, 30)]
         );
-        // A Doppler file listed alone, with no TH file to prefer, is still read.
-        assert_eq!(choose(&[es(27, "0.5_1.5@DBZH_VRADH")]).len(), 1);
+        // Review S1: AEMET's Doppler file is not read even alone (the
+        // long-range task down: the station goes stale instead); another
+        // network's, with no TH file to prefer, still is (the generic rule).
+        assert!(choose(&[es(27, "0.5_1.5@DBZH_VRADH")]).is_empty());
+        assert!(choose_sets(&[es(27, "0.5_1.5@DBZH_VRADH")]).is_empty());
+        assert_eq!(choose(&[file(27, "DBZH_VRADH", "0.5_1.5")]).len(), 1);
+        // Review N3: Spain's listings every 2 minutes; a test's interval and
+        // every other country's stay.
+        let station = |country: &str| Station {
+            country: country.into(),
+            ..Station::default()
+        };
+        assert_eq!(poll_for(&station("ES"), POLL), ES_POLL);
+        assert_eq!(poll_for(&station("NO"), POLL), POLL);
+        let quick = Duration::from_millis(40);
+        assert_eq!(poll_for(&station("ES"), quick), quick);
+        assert_eq!(cadence_for(&station("ES")), ES_CADENCE);
+        assert_eq!(cadence_for(&station("FI")), CADENCE);
         // FMI's DBZH_TH_VRADH scans are no Doppler task: all three kept.
         assert!(!file(35, "DBZH_TH_VRADH", "0.5").doppler());
     }

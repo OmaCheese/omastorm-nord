@@ -1183,7 +1183,9 @@ reason).
   the tilt store with no request. They build back the newest **3** frame
   times (a quarter of an hour; the first fill reads four volumes a radar).
 - `LOWB` reads only the scans its clear beams need (for most radars the
-  lowest one or two; an FMI radar its lowest file) and builds back the
+  lowest one or two; an FMI radar its lowest file): an SMHI volume's clear
+  beams cost about 25 range requests instead of 39, while a MET Norway or
+  DMI file is read whole as for `CMAX`. It builds back the
   newest **6** (half an hour).
 - `OMASTORM_GRID_BACKFILL` (1–12, the engine's environment) lowers both
   depths, for an engine with less to spend; it never raises them.

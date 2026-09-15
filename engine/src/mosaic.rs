@@ -82,8 +82,12 @@ pub const BACKFILL: usize = 12;
 pub const HEIGHT_BACKFILL: usize = 6;
 /// Range requests an SMHI whole volume costs, for the first-fill estimate.
 const SMHI_VOLUME_REQUESTS: usize = 39;
-/// ...and its lowest scan alone, or the one or two of its clear beams.
-const SMHI_LOWEST_REQUESTS: usize = 7;
+/// ...and the scans of its clear beams (`LOWB`, `Want::Hybrid`), read like
+/// any product but the lowest scan through `smhi_live::PRODUCT_PLAN`'s 16 KiB
+/// blocks: about 25 range requests for one or two tilts (review S4; one
+/// other angle alone is 25 there). A radar without a blockage table reads
+/// its lowest scan, ~7; every SMHI radar has one.
+const SMHI_CLEAR_REQUESTS: usize = 25;
 
 /// The engine's environment variable that lowers how far a composite's
 /// products build back (S24b, `grid_backfill`): 1 to `BACKFILL` frame times.
@@ -2609,7 +2613,7 @@ async fn run(
     if height {
         // What the first fill should cost (review #8): per radar the volumes
         // of its depth the store lacks; an SMHI whole volume ~39 range
-        // requests (its lowest scans ~7), an FMI volume a file per angle,
+        // requests (its clear beams' scans ~25), an FMI volume a file per angle,
         // any other ORD volume 1 file (`volume_requests`); listings besides.
         let mut held = vec![0usize; layout.radars.len()];
         for (radar, _, _) in &stored {
@@ -2625,7 +2629,7 @@ async fn run(
                     * if whole {
                         SMHI_VOLUME_REQUESTS
                     } else {
-                        SMHI_LOWEST_REQUESTS
+                        SMHI_CLEAR_REQUESTS
                     };
             } else {
                 ord += missing;

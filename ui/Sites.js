@@ -113,8 +113,10 @@ function rank(sites, query, lat, lon, limit, metric) {
                    idHits: m.idHits, placeHits: m.placeHits, place: place(site) });
     }
     var order = g => g === "" ? -1 : nearest[g];
+    // My mosaic (S25) after the providers' composites.
+    var mine = s => s.provider === "mosaic" ? 1 : 0;
     all.sort((a, b) => a.tier - b.tier || order(a.group) - order(b.group) || (a.group < b.group ? -1 : a.group > b.group ? 1 : 0)
-             || a.km - b.km || (a.site.id < b.site.id ? -1 : 1));
+             || mine(a.site) - mine(b.site) || a.km - b.km || (a.site.id < b.site.id ? -1 : 1));
     var rows = all.slice(0, limit);
     for (var j = 0; j < rows.length; j++) rows[j].groupStart = j > 0 && rows[j].group !== rows[j - 1].group;
     return { rows: rows, total: all.length };

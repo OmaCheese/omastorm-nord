@@ -26,10 +26,10 @@ for _ in {1..50}; do [[ $(call matches) != '[]' ]] && break; sleep .1; done
 # The composites first (S17), then Vara and the next-nearest SMHI sites (Åtvidaberg, Ängelholm, …).
 m=$(call matches)
 [[ $m == '["sweden",'* ]] || fail "Empty query did not list the composite first: $m"
-m=$(jq -c 'map(select(. != "sweden" and . != "nordic"))' <<< "$m")
+m=$(jq -c 'map(select(. != "sweden" and . != "nordic" and . != "mymosaic"))' <<< "$m")
 [[ $m == '["vara","atvidaberg"'* || $m == '["vara","angelholm"'* ]] || fail "Empty query did not list the nearest stations after the composites: $m"
-# 43: SMHI's 12 radars, ORD's 29 (NO, FI, DK: S15), the national composite (protocol v2, S8) and OPERA's Nordic one (S16).
-expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":43,"focused":true}' "$(call status)"
+# 44: SMHI's 12 radars, ORD's 29 (NO, FI, DK: S15), the national composite (protocol v2, S8), OPERA's Nordic one (S16) and My mosaic (S25).
+expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":44,"focused":true}' "$(call status)"
 call open vara
 expect 'ID prefix ranks first' '"vara"' "$(call matches | cut -d, -f1 | tr -d '[]')"
 call open ostersund

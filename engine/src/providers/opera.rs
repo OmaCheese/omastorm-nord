@@ -491,6 +491,40 @@ async fn list_between(
 // Fetching
 // ---------------------------------------------------------------------------
 
+/// One read cut to `areas`, the reader's own box first (S33). When that
+/// read cannot be decoded and it served other boxes too, the own box alone
+/// is read once more (review SF1), so a fault in another box's chunks never
+/// costs the reader its frame; a network failure (`net_failed`) is not
+/// retried here, the poller backs off. Returns the grids (only the own
+/// box's after a retry), the traffic of the read that served, and the
+/// first read's fault when there was a retry.
+fn cut_boxes(
+    mut open: impl FnMut() -> std::io::Result<RangeReader>,
+    areas: &[LonLatBox],
+    net_failed: impl Fn() -> bool,
+) -> Result<(Vec<Grid>, String, Option<String>), String> {
+    let mut read = |areas: &[LonLatBox]| -> Result<(Vec<Grid>, String), String> {
+        let reader = open().map_err(|e| e.to_string())?;
+        let traffic = reader.traffic();
+        let grids = decode(reader, areas)?;
+        let read = format!(
+            "{} range requests, {} of {} bytes",
+            traffic.requests(),
+            traffic.bytes(),
+            traffic.total()
+        );
+        Ok((grids, read))
+    };
+    match read(areas) {
+        Ok((grids, traffic)) => Ok((grids, traffic, None)),
+        Err(fault) if areas.len() > 1 && !net_failed() => {
+            let (grids, traffic) = read(&areas[..1])?;
+            Ok((grids, traffic, Some(fault)))
+        }
+        Err(fault) => Err(fault),
+    }
+}
+
 enum Failure {
     /// The cache failed to answer: back off.
     Net(Fail),
@@ -526,28 +560,39 @@ async fn fetch(
         )));
     }
     let failure = Arc::new(Mutex::new(None));
-    let source = HttpRanges {
-        http: http.clone(),
-        url: volume.url.clone(),
-        runtime: Handle::current(),
-        failure: failure.clone(),
-    };
+    let (http, url, runtime, net) = (
+        http.clone(),
+        volume.url.clone(),
+        Handle::current(),
+        failure.clone(),
+    );
     let (shared, key, reader_site) = (hub.clone(), volume.key.clone(), site.to_owned());
     let joined = spawn_blocking(move || {
         let _permit = permit;
-        let reader = RangeReader::open_planned(Box::new(source), PLAN, LENGTH_PAUSE)
-            .map_err(|e| e.to_string())?;
-        let traffic = reader.traffic();
+        let open = || {
+            let source = HttpRanges {
+                http: http.clone(),
+                url: url.clone(),
+                runtime: runtime.clone(),
+                failure: net.clone(),
+            };
+            RangeReader::open_planned(Box::new(source), PLAN, LENGTH_PAUSE)
+        };
         let areas: Vec<LonLatBox> = boxes.iter().map(|c| c.area).collect();
-        let mut grids = decode(reader, &areas)?.into_iter();
+        let (grids, read, fault) = cut_boxes(open, &areas, || net.lock().unwrap().is_some())?;
+        let mut grids = grids.into_iter();
         let own = grids.next().ok_or("the read gave no grid")?;
-        let read = format!(
-            "{} range requests, {} of {} bytes",
-            traffic.requests(),
-            traffic.bytes(),
-            traffic.total()
-        );
-        let names: Vec<&str> = boxes.iter().map(|c| c.id).collect();
+        let mut names: Vec<&str> = boxes.iter().map(|c| c.id).collect();
+        if let Some(fault) = fault {
+            log(
+                &reader_site,
+                format_args!(
+                    "{key}: the read for {} failed ({fault}); read again for {reader_site} alone",
+                    names.join(" and ")
+                ),
+            );
+            names.truncate(1);
+        }
         // The other boxes' cuts wait in the hub before the permit goes, so
         // a poller waiting for it finds them.
         for (other, grid) in boxes[1..].iter().zip(grids) {
@@ -1044,6 +1089,65 @@ mod tests {
         let radars = crate::mosaic::grid_radars(&nordic, &with_spain);
         assert_eq!(radars.len(), polar);
         assert!(radars.iter().all(|s| s.id != "estjv"));
+    }
+
+    /// A composite served from memory in ranges.
+    struct Served(Vec<u8>);
+    impl crate::smhi_live::RangeSource for Served {
+        fn get(&mut self, offset: u64, len: u64) -> std::io::Result<(Vec<u8>, Option<u64>)> {
+            let start = (offset as usize).min(self.0.len());
+            let end = (start + len as usize).min(self.0.len());
+            Ok((self.0[start..end].to_vec(), Some(self.0.len() as u64)))
+        }
+    }
+
+    fn iberian_fixture() -> Vec<u8> {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../data/raw/opera_iberia_202609151700.h5"
+        );
+        std::fs::read(path).expect("run bash scripts/extract-fixtures.sh first")
+    }
+
+    #[test]
+    fn a_fault_in_another_boxs_chunks_never_costs_the_readers_frame() {
+        // Review SF1: the Iberian fixture with chunk (5, 1), which only
+        // iberia needs, spoiled in the middle of its deflate stream.
+        let golden: serde_json::Value =
+            serde_json::from_str(include_str!("../../../golden/iberia-20260915/grid.json"))
+                .unwrap();
+        let chunk = golden["allocatedChunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["row"] == 5 && c["col"] == 1)
+            .unwrap();
+        let (at, size) = (
+            chunk["address"].as_u64().unwrap() as usize,
+            chunk["size"].as_u64().unwrap() as usize,
+        );
+        let good = iberian_fixture();
+        let mut bad = good.clone();
+        for b in &mut bad[at + size / 3..at + size / 3 + 256] {
+            *b ^= 0x5a;
+        }
+        let opener = |bytes: &Vec<u8>| {
+            let bytes = bytes.clone();
+            move || RangeReader::open_planned(Box::new(Served(bytes.clone())), PLAN, Duration::ZERO)
+        };
+        // Sound: one read, both grids, no retry.
+        let (grids, _, fault) = cut_boxes(opener(&good), &[NORDIC, IBERIA], || false).unwrap();
+        assert_eq!((grids.len(), fault), (2, None));
+        // Spoiled: iberia's own read fails...
+        assert!(cut_boxes(opener(&bad), &[IBERIA], || false).is_err());
+        // ...nordic's read cut for iberia too fails on iberia's chunk, so
+        // nordic's box is read again alone and nordic keeps its frame.
+        let (grids, _, fault) = cut_boxes(opener(&bad), &[NORDIC, IBERIA], || false).unwrap();
+        assert_eq!(grids.len(), 1);
+        assert_eq!((grids[0].width, grids[0].height), (1670, 2297));
+        assert!(fault.is_some());
+        // A network failure is not read again: the poller backs off.
+        assert!(cut_boxes(opener(&bad), &[NORDIC, IBERIA], || true).is_err());
     }
 
     fn a_grid(start_ms: i64) -> Grid {

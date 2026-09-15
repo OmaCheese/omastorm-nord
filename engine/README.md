@@ -269,6 +269,51 @@ A radar also kept warm (`OMASTORM_WARM`) is polled twice while the mosaic
 shows (its listings; its volumes come from the tilt store once either
 poller has read them). `OMASTORM_WARM` refuses `mymosaic` itself.
 
+### The composites' products (S24b)
+
+`sweden` and `nordic` offer `LOWB`, `CAPPI`, `CMAX`, `ETOP` and `VIL` besides
+`REF` (the provider's own composite). `mosaic.rs` makes them from every radar
+of the network (`Layout::grid`, `Job::Grid`; `sweden` SMHI's twelve, `nordic`
+all 41), each at its full range, on the composite's box on the 2 km lattice
+(`nordic` 1671 × 2297, `sweden` 1365 × 1984). `main.rs` starts
+`mosaic::poll_grid` in place of the composite's poller while the station
+shows a product (`restart_live`). A grid station always opens on `REF`, the
+choice before it kept aside for the next radar (`Shared::aside`), so a client
+older than S24b, which hides the chooser on a composite, never starts one.
+
+- **Per radar** (`combine_grid`, one radar's volumes decoded at a time):
+  `CMAX`, `ETOP` and `VIL` compose the radar's own product
+  (`products::compose`) and place it at its frame's elevation, the maximum
+  winning (`max_radar`, `max_key`; of two equal storm heights the exact one
+  over the "at least"); `CAPPI` is S30's height rule (`height_radar`, shared
+  with `combine_height`); `LOWB` takes each radar's clear beam per degree of
+  bearing (`clear_radar`: `products::hybrid_pick` with the blockage table,
+  else the lowest scan), the lowest beam centre above sea level winning, the
+  nearer radar on a tie.
+- **Reads**: every scan (`Want::ColMax`) for `CMAX`, `ETOP`, `VIL` and
+  `CAPPI`, so one read serves the four and `LOWB`; `LOWB` alone reads its
+  clear beams' scans (`Want::Hybrid`; an FMI radar its lowest file). They
+  build back 6 and 12 frame times; `OMASTORM_GRID_BACKFILL=n` (1–12) lowers
+  both. The frames are built from the tilt store, so it must be on; the
+  schedule keeps only each scan's geometry (`geometry`), not its rays.
+- **Cost** (S24b live run, 2026-09-15): the first whole-volume fill of
+  `nordic` read two volumes a radar: SMHI 1,105 requests and 18.1 MB (about
+  46 a volume with the listings), ORD 314 requests and 50.2 MB, in four
+  minutes. A release build of a real frame from the store took 2.2–2.8 s for
+  33 radars and 2.5–4.1 s for 39 (measured beside a headless browser; `VIL`'s
+  4.1 s before its Z table); about 2 s of that is the tilt store's
+  per-tilt `used_ms` commit (S27's `Store::tilt`, 5.6 ms each). Without the
+  store, 41 synthetic radars: placement 0.25 s, `CMAX` 0.40 s, `ETOP` 0.52 s,
+  `VIL` 1.30 s, `LOWB` 0.30 s, `CAPPI` 0.31 s (`cargo test --release
+  mosaic::tests::the_nordic -- --nocapture`). A frame's PNGs: texture 130–810
+  KB, code texture 50–390 KB.
+- **Rollback**: an engine older than S24b lists no products for the
+  composites and makes none; its `variant_of` (S24a review #3) keeps
+  catalogued `sweden-…-cmax`, `-etop`, `-vil`, `-cappi…`, `-lowb` frames in
+  rings of their own, so they never join the composite's loop. To drop them:
+  `DELETE FROM frames WHERE (id LIKE 'sweden-%' OR id LIKE 'nordic-%') AND
+  id NOT LIKE '%-e0'`, and their PNGs.
+
 The station table's source, retrieval date, and caveats are in `data/sites.json`
 and hello. It includes archived and test sites; membership does not imply live
 availability. An archived scan retains its measured coordinates.

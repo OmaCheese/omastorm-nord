@@ -540,15 +540,30 @@ fn reach_m(tilts: &[Tilt]) -> f64 {
         .fold(0.0, f64::max)
 }
 
+/// How far a stored volume's scans reach, slant metres, from the store's
+/// index alone (review N1: no file is read to measure it).
+fn stored_reach_m(store: &crate::tilts::Store, station: &str, t: i64) -> Option<f64> {
+    let volume = store.volume(station, t).ok()??;
+    volume
+        .tilts
+        .iter()
+        .map(|s| {
+            f64::from(s.info.first_gate_m)
+                + f64::from(s.info.gates) * f64::from(s.info.gate_spacing_m)
+        })
+        .reduce(f64::max)
+}
+
 /// The newest stored volume of `station` before `t`, up to `OUTER_MS`
-/// older, that reaches farther than `than` metres.
+/// older, that reaches farther than `than` metres; only that one is read.
 fn longer(store: &crate::tilts::Store, station: &str, t: i64, than: f64) -> Option<Vec<Tilt>> {
     let volumes = store.volumes(station).ok()?;
     volumes
         .into_iter()
         .map(|(when, _)| when)
         .filter(|&when| when < t && when >= t - OUTER_MS)
-        .find_map(|when| volume_of(store, station, when).filter(|v| reach_m(v) > than + 1000.0))
+        .find(|&when| stored_reach_m(store, station, when).is_some_and(|r| r > than + 1000.0))
+        .and_then(|when| volume_of(store, station, when))
 }
 
 // ---------------------------------------------------------------------------

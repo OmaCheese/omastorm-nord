@@ -217,6 +217,8 @@ float polarLight(vec4 t, float gate, float azimuth, float groundM, float cellM) 
     float s = max(1.0, floor(stepM / gateSpacingM + .5));
     float r = max(groundM, stepM);
     float da = max(360.0 / float(rays), degrees(stepM / r));
+    // A whole number of rays, so the step is the one the rows read (review N1).
+    da = ceil(da * float(rays) / 360.0 - 1e-3) * 360.0 / float(rays);
     bool past = reachM > 0.0 && groundM + s * gateSpacingM > reachM;
     float lo = gate - s, hi = gate + s;
     float rm = lutRow(azimuth - da), rc = lutRow(azimuth), rp = lutRow(azimuth + da);

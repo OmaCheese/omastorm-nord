@@ -987,7 +987,7 @@ mosaic texel is exactly one terrain texel), over the box of every Nordic
 radar's reach, in steps of 10 m, sea and below-sea land as 0. Made once,
 offline, by `scripts/terrain-grid.py` from the Terrarium tiles `HYBRID`'s
 blockage tables use (zoom 8, about 300 m a pixel at 60° N, averaged over
-each texel); sources and licence in `engine/data/README.md`. Outside the
+each texel); sources and licence in `data/README.md`. Outside the
 box the terrain is 0 (sea level). A point is looked up by the texel that
 contains it, nearest, with no interpolation: at 60° N a texel is about
 1 km across, finer than the beam is thick.

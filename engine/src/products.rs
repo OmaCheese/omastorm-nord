@@ -1129,7 +1129,7 @@ pub fn mark_texture(product: &str, pixels: &mut [u8]) {
     if product != ETOP {
         return;
     }
-    for texel in pixels.chunks_exact_mut(4) {
+    for texel in pixels.as_chunks_mut::<4>().0 {
         if texel[0] > 0 && texel[2] >= 2 && texel[2] % 2 == 1 {
             texel[1] |= AT_LEAST;
         }
@@ -1141,8 +1141,7 @@ pub fn mark_texture(product: &str, pixels: &mut [u8]) {
 pub fn scans_of<R: std::io::Read + std::io::Seek + Send + 'static>(
     reader: R,
 ) -> Result<Vec<Tilt>, String> {
-    crate::odim::decode_tilts(reader, |infos| (0..infos.len()).collect())
-        .map_err(|e| e.to_string())
+    crate::odim::decode_tilts(reader, |infos| (0..infos.len()).collect()).map_err(|e| e.to_string())
 }
 
 /// What `want` makes of one volume assembled from several files' scans
@@ -1831,7 +1830,10 @@ mod tests {
         );
         assert_eq!(carry(&choice("ETOP", 0), None, &finland), choice("ETOP", 0));
         // A product a radar cannot make falls back to the lowest scan.
-        assert_eq!(carry(&choice("HYBRID", 0), None, &finland), Choice::default());
+        assert_eq!(
+            carry(&choice("HYBRID", 0), None, &finland),
+            Choice::default()
+        );
         // A composite keeps the choice for the next radar.
         assert_eq!(carry(&choice("REF", 4), Some(2.5), &grid), choice("REF", 4));
         assert_eq!(carry(&Choice::default(), None, &smhi), Choice::default());
@@ -2177,7 +2179,10 @@ mod tests {
                 other => panic!("{other}"),
             };
             let mut expected = Vec::new();
-            let gz = format!("{ROOT}golden/fikor-20260915/{}", product["file"].as_str().unwrap());
+            let gz = format!(
+                "{ROOT}golden/fikor-20260915/{}",
+                product["file"].as_str().unwrap()
+            );
             flate2::read::GzDecoder::new(std::fs::File::open(gz).unwrap())
                 .read_to_end(&mut expected)
                 .unwrap();
@@ -2198,25 +2203,42 @@ mod tests {
                     (expected.len(), 0),
                     "{variant} {order:?}"
                 );
-                let lowest = crate::odim::decode_lowest(open(&files[0]), crate::odim::Tilt::Lowest)
-                    .unwrap();
-                assert!(free.rays.iter().zip(&lowest.rays).all(|(a, b)| a.codes == b.codes));
+                let lowest =
+                    crate::odim::decode_lowest(open(&files[0]), crate::odim::Tilt::Lowest).unwrap();
+                assert!(
+                    free.rays
+                        .iter()
+                        .zip(&lowest.rays)
+                        .all(|(a, b)| a.codes == b.codes)
+                );
             }
         }
         let at_least = key["products"]["etop"]["atLeast"].as_u64().unwrap();
         assert!(at_least > 0, "the fixture has 'at least' tops");
         // Their texels carry G bit 8; exact tops and other products none.
-        let Scan::Product(sweep, ..) = assemble(Want::EchoTop(alt_m), scans(&[0, 1, 2, 3, 4])).unwrap()
+        let Scan::Product(sweep, ..) =
+            assemble(Want::EchoTop(alt_m), scans(&[0, 1, 2, 3, 4])).unwrap()
         else {
             panic!()
         };
         let mut pixels = sweep.texture(ETOP_LEGEND.bounds, ETOP_LEGEND.palette.len());
         mark_texture(ETOP, &mut pixels);
-        let flagged = pixels.chunks_exact(4).filter(|t| t[1] & AT_LEAST != 0).count();
+        let flagged = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|t| t[1] & AT_LEAST != 0)
+            .count();
         assert_eq!(flagged as u64, at_least);
         let mut other = sweep.texture(ETOP_LEGEND.bounds, ETOP_LEGEND.palette.len());
         mark_texture(CMAX, &mut other);
-        assert!(other.chunks_exact(4).all(|t| t[1] & AT_LEAST == 0));
+        assert!(
+            other
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|t| t[1] & AT_LEAST == 0)
+        );
     }
 
     /// The storm height and the rain mass of one column, by hand
@@ -2226,17 +2248,29 @@ mod tests {
         let dbz = |d: f64| (d * 2.0 + 66.0) as u8;
         // 30 dBZ at 1 and 4 km, 10 dBZ at 7 km: the top is the 4 km beam,
         // 4.164 km above sea level -> 4.2 km, code 44; not "at least".
-        let column = [(dbz(30.0), 1000.0), (dbz(30.0), 4000.0), (dbz(10.0), 7000.0)];
+        let column = [
+            (dbz(30.0), 1000.0),
+            (dbz(30.0), 4000.0),
+            (dbz(10.0), 7000.0),
+        ];
         assert_eq!(echo_top_code(&column, 164.0), 44);
         // The same with no data above: the top beam still holds 18 dBZ.
         let open_top = [(dbz(30.0), 1000.0), (dbz(30.0), 4000.0), (1, 7000.0)];
         assert_eq!(echo_top_code(&open_top, 164.0), 45, "at least 4.2 km");
-        assert_eq!(echo_top_code(&[(dbz(30.0), 4000.0)], 0.0), 43, "one scan: at least");
+        assert_eq!(
+            echo_top_code(&[(dbz(30.0), 4000.0)], 0.0),
+            43,
+            "one scan: at least"
+        );
         // 17.5 dBZ nowhere reaches 18; no readings at all is no data.
         assert_eq!(echo_top_code(&[(dbz(17.5), 1000.0), (0, 2000.0)], 0.0), 0);
         assert_eq!(echo_top_code(&[(1, 1000.0)], 0.0), 1);
         assert_eq!(echo_top_code(&[], 0.0), 1);
-        assert_eq!(echo_top_code(&[(dbz(60.0), 90_000.0)], 0.0), 255, "capped, at least");
+        assert_eq!(
+            echo_top_code(&[(dbz(60.0), 90_000.0)], 0.0),
+            255,
+            "capped, at least"
+        );
         // VIL: 40 dBZ from 1 to 3 km (Z = 10^4): 3.44e-6 · 10^(16/7) · 2000
         // = 1.328 kg/m², code 2 + round(2.656) = 5.
         let steady = [(dbz(40.0), 1000.0), (dbz(40.0), 3000.0)];
@@ -2257,7 +2291,11 @@ mod tests {
         assert_eq!(vil_code(&[(dbz(40.0), 1000.0)]), 2, "one reading: no gap");
         assert_eq!(vil_code(&[(0, 1000.0), (0, 2000.0), (1, 3000.0)]), 0);
         assert_eq!(vil_code(&[(1, 1000.0)]), 1);
-        assert_eq!(vil_code(&[(dbz(56.0), 0.0), (dbz(56.0), 40_000.0)]), 255, "capped");
+        assert_eq!(
+            vil_code(&[(dbz(56.0), 0.0), (dbz(56.0), 40_000.0)]),
+            255,
+            "capped"
+        );
     }
 
     /// CAPPI, CMAX and HYBRID carry the lowest scan they read (S26): the

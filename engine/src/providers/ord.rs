@@ -719,11 +719,17 @@ async fn fetch_set(
             let table: Vec<crate::products::TiltInfo> =
                 tilts.iter().map(crate::products::Tilt::info).collect();
             let refs: Vec<(usize, &crate::products::Tilt)> = tilts.iter().enumerate().collect();
-            if let Err(e) =
-                slot.store
-                    .save(&slot.station, slot.time_ms, &slot.source, Some(&table), &refs)
-            {
-                live_log(&slot.station, format_args!("{}: not stored: {e}", slot.source));
+            if let Err(e) = slot.store.save(
+                &slot.station,
+                slot.time_ms,
+                &slot.source,
+                Some(&table),
+                &refs,
+            ) {
+                live_log(
+                    &slot.station,
+                    format_args!("{}: not stored: {e}", slot.source),
+                );
             }
         }
         crate::products::assemble(want, tilts).map(|scan| (scan, requests, bytes, total))
@@ -1087,7 +1093,12 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
 /// lacks, newest first, with no request and no pacing (S27); then each
 /// remaining target (`backfill_targets` of `chosen`) in turn, newest
 /// first, as `Event::Backfill`. A network failure ends the backfill; a
-/// file that does not decode is skipped.
+/// file that does not decode is skipped. `sets`: the poller reads a
+/// per-angle station's files as one volume (S24a).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the poller's state at the fork; S24a's `sets` is the eighth"
+)]
 async fn backfill(
     cfg: Config,
     http: Http,
@@ -1826,6 +1837,239 @@ mod tests {
             FILES as u64 * 4,
             "the fixture's four tilts a file"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// S24a: Korppoo's five one-angle files every 5 minutes from `from` to
+    /// `to` (inclusive), as ORD's cache names them.
+    fn fikor_keys(from: i64, to: i64) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut t = from;
+        while t <= to {
+            let (day, stamp) = (format_ms(t, "%Y/%m/%d"), format_ms(t, "%Y%m%dT%H%M"));
+            for angle in ["0.5", "0.7", "1.5", "3.0", "5.0"] {
+                keys.push(format!(
+                    "{day}/FI/fikor/SCAN/fikor@{stamp}@{angle}@DBZH_TH_VRADH.h5"
+                ));
+            }
+            t += CADENCE_MS;
+        }
+        keys.sort();
+        keys
+    }
+
+    /// The fixture file of a key's angle (S24a), whatever its time: every
+    /// time's scans start 2026-09-15 00:00.
+    fn fikor_file(key: &str) -> Vec<u8> {
+        let angle = key.split('@').nth(2).unwrap().replace('.', "");
+        std::fs::read(format!(
+            "{}/../data/raw/ord_fikor_202609150000_scan{angle}.h5",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
+    }
+
+    fn korppoo() -> Station {
+        let s = crate::providers::table()
+            .sites
+            .into_iter()
+            .find(|s| s.id == "fikor")
+            .unwrap();
+        assert_eq!(s.source, "FI/fikor/SCAN");
+        s
+    }
+
+    #[test]
+    fn a_set_is_every_angle_of_a_time_and_waits_for_them() {
+        let key = |m: u32, angle: &str, q: &str| {
+            format!("2026/09/15/FI/fikor/SCAN/fikor@20260915T00{m:02}@{angle}@{q}.h5")
+        };
+        let mut keys = vec![
+            key(0, "0.5", "DBZH_TH_VRADH"),
+            key(0, "0.7", "TH"),
+            key(0, "0.7", "DBZH_TH_VRADH"),
+            key(0, "1.5", "DBZH_TH_VRADH"),
+            key(0, "5.0", "VRADH"),
+            key(5, "0.5", "DBZH_TH_VRADH"),
+            key(5, "0.7", "DBZH_TH_VRADH"),
+            key(5, "1.5", "DBZH_TH_VRADH"),
+            key(10, "0.5", "DBZH_TH_VRADH"),
+            key(10, "0.7", "DBZH_TH_VRADH"),
+        ];
+        let sets = |keys: &[String]| {
+            choose_sets(
+                &keys
+                    .iter()
+                    .filter_map(|k| Listed::parse(k))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let chosen = sets(&keys);
+        assert_eq!(chosen.len(), 2, "00:10 has 2 angles of 3 so far");
+        for set in &chosen {
+            let angles: Vec<f64> = set.parts.iter().map(|p| p.lowest_deg).collect();
+            assert_eq!(angles, [0.5, 0.7, 1.5], "a VRADH-only file is no part");
+            assert!(set.parts.iter().all(|p| p.rank == 0), "DBZH before TH");
+            assert_eq!(set.key, set.parts[0].key, "the lowest file names the set");
+        }
+        keys.push(key(10, "1.5", "DBZH_TH_VRADH"));
+        assert_eq!(sets(&keys).len(), 3, "complete now");
+        let at = |i: usize| sets(&keys)[i].valid_ms;
+        assert_eq!((at(0), at(2)), (utc(15, 0, 0), utc(15, 0, 10)));
+        // The set's name in the tilt store, and what names one.
+        let first = &keys[0];
+        assert_eq!(
+            set_source(first),
+            "2026/09/15/FI/fikor/SCAN/fikor@20260915T0000"
+        );
+        assert!(is_set_source(&set_source(first)) && !is_set_source(first));
+        assert!(per_angle("FI/fikor/SCAN") && !per_angle("NO/nohur/PVOL"));
+    }
+
+    /// S24a's exit for FMI, offline, through the real decoder and a tilt
+    /// store: Storm height reads each time's five files once and keeps them
+    /// as one volume, and every frame is `products::assemble` of the five
+    /// fixture files; Rain mass then reads no file at all; the lowest scan
+    /// reads its one live file and makes the rest from the stored sets.
+    /// Every key serves its angle's fixture file, whose scans start 00:00,
+    /// so 00:00 counts as catalogued once any is read: 8 times of 9.
+    #[test]
+    fn per_angle_files_are_read_as_one_volume() {
+        use std::collections::HashSet;
+        let dir = std::env::temp_dir().join(format!("omastorm-ord-sets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Arc::new(crate::tilts::Store::open(dir.clone(), u64::MAX).unwrap());
+        let keys = fikor_keys(utc(15, 0, 0), utc(15, 0, 40));
+        fn clock() -> i64 {
+            utc(15, 0, 46)
+        }
+        const TIMES: usize = 8;
+        let station = korppoo();
+        let expected = |want: Want| -> Vec<u8> {
+            let tilts: Vec<crate::products::Tilt> = ["05", "07", "15", "30", "50"]
+                .iter()
+                .flat_map(|a| {
+                    crate::products::scans_of(std::io::Cursor::new(fikor_file(&format!(
+                        "x@y@{a}@z"
+                    ))))
+                    .unwrap()
+                })
+                .collect();
+            let Scan::Product(sweep, ..) = crate::products::assemble(want, tilts).unwrap() else {
+                panic!()
+            };
+            sweep.rays.iter().flat_map(|r| r.codes.clone()).collect()
+        };
+        let provenance = |e: &Event| match e {
+            Event::Sweep { provenance, .. } | Event::Backfill { provenance, .. } => {
+                provenance.clone()
+            }
+            _ => String::new(),
+        };
+        for (i, want) in [Want::EchoTop(station.alt_m), Want::Vil]
+            .into_iter()
+            .enumerate()
+        {
+            let (events, served) = run_station(
+                station.clone(),
+                (want, decode, Some(store.clone()), fikor_file),
+                keys.clone(),
+                None,
+                clock,
+                Vec::new(),
+                |events| events.len() >= 2 * TIMES,
+                Duration::from_millis(300),
+            );
+            let label = want.variant();
+            assert_eq!(
+                events.len(),
+                2 * TIMES,
+                "{label}: a product and its lowest scan each"
+            );
+            let codes = expected(want);
+            let mut products = 0;
+            for event in &events {
+                let (Event::Sweep { sweep, .. } | Event::Backfill { sweep, .. }) = event else {
+                    panic!("{label}: {}", describe(event))
+                };
+                if let Scan::Product(sweep, w, _) = sweep {
+                    assert_eq!(*w, want);
+                    let got: Vec<u8> = sweep.rays.iter().flat_map(|r| r.codes.clone()).collect();
+                    assert!(got == codes, "{label}: the assembled volume's codes");
+                    // Fetched: the set's five files named; from the store
+                    // (the second run's backfill): the set's source.
+                    let named = if i == 0 {
+                        format!("(5 files) [{label}]")
+                    } else {
+                        format!("[{label}]")
+                    };
+                    assert!(provenance(event).contains(&named), "{}", provenance(event));
+                    products += 1;
+                }
+            }
+            assert_eq!(products, TIMES, "{label}");
+            let gets: Vec<&String> = served.iter().filter(|s| s.starts_with("get")).collect();
+            let files: HashSet<&str> = gets.iter().map(|g| g.split(' ').nth(1).unwrap()).collect();
+            if i == 0 {
+                assert_eq!(files.len(), 5 * TIMES, "every angle of every time, once");
+            } else {
+                assert!(gets.is_empty(), "{label}: {gets:?}");
+                // Every product from the stored sets (their lowest scans
+                // ride along under S26's own provenance).
+                let stored = events
+                    .iter()
+                    .filter(|e| {
+                        matches!(
+                            e,
+                            Event::Sweep {
+                                sweep: Scan::Product(..),
+                                ..
+                            } | Event::Backfill {
+                                sweep: Scan::Product(..),
+                                ..
+                            }
+                        ) && provenance(e).contains(crate::tilts::FROM_STORE)
+                    })
+                    .count();
+                assert_eq!(stored, TIMES, "{label}");
+            }
+        }
+        let volumes = store.volumes("fikor").unwrap();
+        assert_eq!(volumes.len(), TIMES);
+        assert!(volumes.iter().all(|(_, source)| is_set_source(source)));
+        let one = store.volume("fikor", volumes[0].0).unwrap().unwrap();
+        assert_eq!(one.angles.map(|a| a.len()), Some(5));
+        assert_eq!(one.tilts.len(), 5);
+        // The lowest scan, as before S24a: one file for the live time; the
+        // rest from the stored sets, no request.
+        let (events, served) = run_station(
+            station,
+            (Want::Lowest, decode, Some(store.clone()), fikor_file),
+            keys,
+            None,
+            clock,
+            Vec::new(),
+            |events| events.len() >= TIMES,
+            Duration::from_millis(300),
+        );
+        assert_eq!(
+            events.len(),
+            TIMES,
+            "{:?}",
+            events.iter().map(describe).collect::<Vec<_>>()
+        );
+        let files: HashSet<&str> = served
+            .iter()
+            .filter(|s| s.starts_with("get"))
+            .map(|g| g.split(' ').nth(1).unwrap())
+            .collect();
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(files.iter().all(|f| f.contains("T0040@0.5@")), "{files:?}");
+        let stored = events
+            .iter()
+            .filter(|e| provenance(e).contains(crate::tilts::FROM_STORE))
+            .count();
+        assert_eq!(stored, TIMES - 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 

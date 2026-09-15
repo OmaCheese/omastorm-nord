@@ -956,7 +956,17 @@ impl Sections {
             changed |= self.empty_section(state, Status::Empty, message, template);
             return (None, changed);
         }
+        // What the newest frame needs: profiles answered, or the section cut
+        // for it (a new line, a newer frame, another frame at the same time).
+        // A section already cut needs no grid: it is not kept for it.
+        let cut = format!("{}|{}", job.key, job.frame_id);
+        let need_cut = self.line.is_some() && self.cut_for.as_deref() != Some(cut.as_str());
+        if self.waiting.is_empty() && !need_cut {
+            return (None, changed);
+        }
         if let Some(held) = &mut self.held {
+            // Used: a profile answered or a cut made; `KEEP` after its last
+            // use the grid is dropped, a section on screen or not.
             held.used = Instant::now();
             // Another frame at the same time (a product switch: the same
             // radars and volumes) keeps the grid; what is cut names it.
@@ -968,18 +978,18 @@ impl Sections {
                 let profile = Profile::of(&held.grid, &held.job, w.lat, w.lon);
                 let _ = w.reply.try_send(crate::line(&Message::Profile(&profile)));
             }
-            if let Some(line) = &self.line
-                && self.cut_for.as_deref() != Some(held.job.frame_id.as_str())
-            {
-                self.cut_for = Some(held.job.frame_id.clone());
+            if need_cut && let Some(line) = &self.line {
+                self.cut_for = Some(cut);
                 *state = Some(cut_section(held, line, dir, template));
                 changed = true;
             }
             return (None, changed);
         }
-        // No grid for this frame yet: say so, and build one unless one is
-        // on its way (a build for another frame finishes first).
-        if let Some(line) = &self.line
+        // No grid for this frame yet: say so when the section waits on it,
+        // and build one unless one is on its way (a build for another frame
+        // finishes first).
+        if need_cut
+            && let Some(line) = &self.line
             && state.as_ref().is_none_or(|s| s.status != Status::Building)
         {
             *state = Some(section(
@@ -1653,6 +1663,24 @@ mod tests {
         sections.pass(Ok(Some(job("twrb-e0"))), &dir, &template, &mut state);
         let reply: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
         assert_eq!(reply["frameId"], "twrb-e0");
+        // Unused for `KEEP` (a section already cut uses nothing): dropped,
+        // and not built again for it; the section stays as it was cut.
+        sections.held.as_mut().unwrap().used = Instant::now() - KEEP;
+        let before = state.clone();
+        let (rebuilt, changed) =
+            sections.pass(Ok(Some(job("twrb-e0"))), &dir, &template, &mut state);
+        assert!(!sections.holds(), "dropped when unused");
+        assert!(
+            rebuilt.is_none() && !changed,
+            "no build for a section already cut"
+        );
+        assert_eq!(state, before);
+        // A profile needs one again; the section is left as it is.
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        sections.ask(9, tx, 59.25, 14.2);
+        let (asked, changed) = sections.pass(Ok(Some(job("twrb-e0"))), &dir, &template, &mut state);
+        assert!(asked.is_some() && !changed);
+        assert_eq!(state.unwrap().status, Status::Ready);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

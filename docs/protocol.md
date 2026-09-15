@@ -1108,7 +1108,10 @@ and code texture formats), so a client draws them as it draws `REF`:
   `nordic` 3–33° E, 53–71.5° N, 1671 × 2297 texels (its composite 1670 ×
   2297); `sweden` SMHI's composite box, 5.32–29.83° E, 53.70–70.03° N,
   1365 × 1984. The west and north edges move out to the lattice, at most
-  one texel, so a product frame may sit up to a texel off the composite's.
+  one texel. Nothing is misregistered: every frame carries its own grid
+  bounds (`frame.grid`), the composite's unsnapped (3° E, 71.5° N for
+  `nordic`) and a product's on the lattice, so a client places each where
+  it belongs; only their texel boundaries differ, by under 2 km.
 - `id` is `<station>-<T compact>-<product>`, the product part as a radar's
   (`cmax`, `etop`, `vil`, `cappi2000`, `cappi1000g`) or `lowb`; catalogued
   per product like a radar's (the composite is the `-e0` ring, and at most

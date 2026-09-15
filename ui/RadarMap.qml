@@ -95,7 +95,9 @@ Item {
             out.push(top > 0 && top < data ? {km: top, strong: true, what: "top", deg: e} : {km: data, strong: true, what: "data"});
         } else {
             out.push({km: data, strong: true, what: "data"});
-            var low = groundKmAt(e, lowBeamM);
+            // Storm height and rain mass use every beam, so the lowest
+            // beam's 2 km ring means nothing on them (S24a review #6).
+            var low = id === "ETOP" || id === "VIL" ? 0 : groundKmAt(e, lowBeamM);
             if (low > 0 && low < data) out.push({km: low, strong: false, what: "low", deg: e});
         }
         if (reachShownKm > 0) {

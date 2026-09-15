@@ -2463,7 +2463,7 @@ async fn build_and_send(
     log_for(
         &site,
         format_args!(
-            "{} built{} in {:.0?}, {} × {}; {provenance}",
+            "{} built{} in {:.2?}, {} × {}; {provenance}",
             utc(t, "%Y-%m-%dT%H:%MZ"),
             if again {
                 " again, for a late scan,"

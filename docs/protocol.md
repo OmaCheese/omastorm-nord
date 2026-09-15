@@ -40,7 +40,9 @@ Each station has a `kind`. `polar` is a single radar. `grid` is a
 composite (`sweden`), which covers many radars at once. A grid station's
 `lat` and `lon` mark the middle of its coverage, for the picker and for
 centring the map. It has no antenna, so a client draws no station marker,
-range ring, or coverage circle for it.
+range ring, or coverage circle for it. Since S24b the provider composites
+(`sweden`, `nordic`) also offer products the engine makes from their radars'
+volumes ([The composites' products](#the-composites-products)).
 
 Every station also carries the following fields, always sent (S14). They
 are additive, so the version stays 2 and an older client ignores them:
@@ -467,7 +469,7 @@ the circle. A complete 0.5° or 1° cut needs no blank row.
 | Channel | Meaning |
 | --- | --- |
 | R | palette class + 1; 0 means nothing to draw |
-| G | status bits: 1 range folded, 2 below threshold, 4 outside coverage; 8 (S24a, `ETOP` only, with R above 0) the storm height is "at least" this ([Storm height and rain mass](#storm-height-and-rain-mass)) |
+| G | status bits: 1 range folded, 2 below threshold, 4 outside coverage; 8 (S24a, `ETOP` only, with R above 0; S24b also in an `ETOP` grid texture) the storm height is "at least" this ([Storm height and rain mass](#storm-height-and-rain-mass)) |
 | B | moment byte in the Level II convention (ODIM DBZH requantized, `code = dBZ × 2 + 66`), for cursor inspection and the weak-return floor; for `ETOP` and `VIL` their own code (value = (code − `offset`) / `scale` in `units`) |
 | A | 255 |
 
@@ -495,7 +497,10 @@ as "no radar at this height", as the grid texture's G bit 4 allows); otherwise, 
 `scale` in `units`, the class is the number of `bounds` at or below value,
 minus one, kept within 0 to `palette.length` − 1, and the texel is class + 1
 with no status bits, exactly what the engine writes to the grid texture
-(composites have no folded gates). Its stable name is
+(composites have no folded gates). In an `ETOP` grid frame (S24b) an odd
+measured code is an "at least" top, which the grid texture marks with G
+bit 8 like the sweep texture; a client drawing the code texture may hatch
+those texels the same way. Its stable name is
 `tex/codes-<frame id>-<tag>.png`, published and retired with the entry's
 other files.
 
@@ -653,16 +658,24 @@ Additive since S20 (still version 2). A radar volume holds several scan
 angles (SMHI 10, from 0.5° to 40°; MET Norway two alternating sets of 12
 and 10; FMI's cache 5; DMI 10). A radar's frame shows one **product**
 made from them; the lowest angle (`REF`, elevation index 0) is what every
-frame was before S20, and stays the default. Composites have none: their
-frame is the composite, whatever product is chosen.
+frame was before S20, and stays the default. On a composite `REF` is the
+provider's composite itself; since S24b `sweden` and `nordic` also offer
+products made from their radars ([The composites'
+products](#the-composites-products)). My mosaic has none: its set's rule
+says what it shows.
 
 `hello.products` is the vocabulary, in the order a chooser lists them:
 
 ```json
 "products":[{"id":"REF","name":"Lowest scan"},{"id":"HYBRID","name":"Clear view"},
+            {"id":"LOWB","name":"Lowest beam"},
             {"id":"CAPPI","name":"Height","above":["sea","ground"]},{"id":"CMAX","name":"Column max"},
             {"id":"ETOP","name":"Storm height","units":"km"},{"id":"VIL","name":"Rain mass","units":"kg/m²"}]
 ```
+
+`LOWB` "Lowest beam" (S24b) is offered only by the composites `sweden` and
+`nordic` ([The composites' products](#the-composites-products)); no radar
+lists it. An engine older than S24b does not send it.
 
 `units` (S24a) is sent only on products whose frames are not in dBZ:
 `ETOP` in km, `VIL` in kg/m² ([Storm height and rain mass](#storm-height-and-rain-mass)).
@@ -681,8 +694,9 @@ Each `hello.sites[]` entry names what the station can show and its angles:
 "elevations":[{"deg":0.5,"beamKm50":0.6,"beamKm100":1.5},{"deg":1.0,"beamKm50":1.0,"beamKm100":2.3}]
 ```
 
-- `products`: a subset of `hello.products`' ids, in that order; `[]` for a
-  grid station. Every radar can make `REF`. `CAPPI`, `CMAX`, `ETOP` and
+- `products`: a subset of `hello.products`' ids, in that order. Since S24b
+  `sweden` and `nordic` list `["REF","LOWB","CAPPI","CMAX","ETOP","VIL"]`
+  (before S24b, `[]`), and `mymosaic` `[]`. Every radar can make `REF`. `CAPPI`, `CMAX`, `ETOP` and
   `VIL` are offered wherever the engine knows the radar's angles: SMHI's,
   MET Norway's and DMI's radars (one file holds every angle) and, since
   S24a, FMI's, whose files hold one angle each in ORD's cache: the engine
@@ -717,6 +731,7 @@ screen:
 | `CMAX` | `Column max` | per gate, the strongest return of any angle above it | the lowest angle (placement only) |
 | `ETOP` | `Storm height` | per gate, the height above sea level of the highest beam with 18 dBZ or more, in km; "at least" where the highest beam that reaches it still holds that much | the lowest angle (placement only) |
 | `VIL` | `Rain mass` | per gate, the water in the column, kg/m², from every angle | the lowest angle (placement only) |
+| `LOWB` | `Lowest beam` | composites only (S24b): per texel, the radar whose lowest clear beam is lowest there | 0 |
 
 A client shows an angle beside the product only for `REF`. The texture
 format is the same for every product. `REF`, `HYBRID`, `CAPPI` and `CMAX`
@@ -736,8 +751,8 @@ sea level. The aliases `CAPPI1` and `CAPPI2` are `CAPPI` at 1,000 and
 ignored), so a client that still offers them keeps working; `state.product`
 then says `CAPPI`.
 It is answered with an `error`, and nothing changes, when the id is neither
-in `hello.products` nor an alias, no station or a grid station is selected,
-the selected station cannot make it, `elevationIndex` is not an index of its
+in `hello.products` nor an alias, no station or `mymosaic` is selected,
+the selected station cannot make it (not in its `hello.sites[].products`), `elevationIndex` is not an index of its
 `elevations` (any index but 0 with another product), `heightM` is outside
 500–12,000, not a multiple of 500, or sent with a product other than `CAPPI`,
 or `above` is neither `sea` nor `ground` or is sent with another product.
@@ -753,8 +768,13 @@ changes nothing.
 hand-off. A single angle maps to the new radar's angle nearest in degrees;
 a product the new radar cannot make falls back to `REF` index 0; a height
 stays the same height above sea level, so over a radar on higher ground it
-reaches less far; either way `state.product` says what is in effect. While a grid station is
-selected `state.product` keeps the choice for the next radar.
+reaches less far; either way `state.product` says what is in effect.
+Selecting a grid station (S24b) always shows its composite:
+`state.product` becomes `REF` index 0, and the choice before it is kept
+for the next radar, as before S24b. A `set_product` while `sweden` or
+`nordic` is selected picks one of its products, and that choice is then the
+one the next radar gets (`LOWB`, which no radar makes, falls back to `REF`
+index 0). Selecting `mymosaic` keeps the choice for the next radar too.
 
 **History.** The catalog keeps each radar's frames per product. After a
 switch the lowest scan backfills its 60 frames as before; any other
@@ -1061,6 +1081,117 @@ the store must be on (`OMASTORM_TILTS_MB` above 0); with it off, a
 provider publishes one file per angle (FMI) takes part with its lowest scan
 alone, which holds a height only where that one beam does.
 
+## The composites' products
+
+Additive since S24b (still version 2). `REF` on `sweden` and `nordic` stays
+the provider's own composite (SMHI's, EUMETNET OPERA's). Their other
+products are made by the engine from the radars' volumes, like My mosaic
+but with every radar of the composite's network at its full range: `sweden`
+from the 12 SMHI radars, `nordic` from every radar in `hello.sites` (41: 12
+SMHI, 12 MET Norway, 12 FMI, 5 DMI). `mymosaic` offers none.
+
+**Choosing.** `hello.sites[].products` of both is
+`["REF","LOWB","CAPPI","CMAX","ETOP","VIL"]`, `elevations` `[]`. A grid
+station always opens on its composite (`state.product` `REF` index 0; see
+[Products](#products), station switches), so a product is shown only after
+a `set_product` while the station is selected: `CAPPI` with `heightM` and
+`above` as for a radar, `CMAX`, `ETOP`, `VIL`, or `LOWB`; any
+`elevationIndex` but 0, or `HYBRID`, is refused. `REF` goes back to the
+composite. A client older than S24b hides the product chooser on a grid
+station, so it only ever sees the composite there.
+
+**Frames.** Grid frames like a composite's (`frame.kind` `grid`, the grid
+and code texture formats), so a client draws them as it draws `REF`:
+
+- The texture is the composite's box on the Web Mercator lattice of 2,000 m
+  texels counted from x = 0 and y = 0 (My mosaic's and the terrain grid's):
+  `nordic` 3–33° E, 53–71.5° N, 1671 × 2297 texels (its composite 1670 ×
+  2297); `sweden` SMHI's composite box, 5.32–29.83° E, 53.70–70.03° N,
+  1365 × 1984. The west and north edges move out to the lattice, at most
+  one texel, so a product frame may sit up to a texel off the composite's.
+- `id` is `<station>-<T compact>-<product>`, the product part as a radar's
+  (`cmax`, `etop`, `vil`, `cappi2000`, `cappi1000g`) or `lowb`; catalogued
+  per product like a radar's (the composite is the `-e0` ring, and at most
+  two products are kept besides).
+- `product` and `productName` as a radar's (`LOWB` "Lowest beam", `CMAX`
+  "Column max", `ETOP` "Storm height", `VIL` "Rain mass", `CAPPI` "Height
+  2 km", "Height 1 km above ground"); `ETOP` and `VIL` bring their own
+  `units`, `palette`, `bounds`, `scale` and `offset` ([Storm height and rain
+  mass](#storm-height-and-rain-mass)), the others the reflectivity's. An
+  `ETOP` grid texture marks "at least" texels with G bit 8.
+- `scanTime` is the nominal time T (a multiple of 5 minutes), `sweepEnd`
+  the end of the latest scan used, `elevationDeg` 0, `site` the station's
+  position (as its composite's frames).
+- `attribution` names the owner of every radar the frame drew on, joined by
+  `; ` (`SMHI, CC BY 4.0; MET Norway, CC BY 4.0; FMI, CC BY 4.0; DMI, CC BY
+  4.0`), plus the terrain credit above the ground; `grid.sourceProjdef`
+  names the product and the radars used.
+
+**How a texel is made.** Each radar is placed on the texture exactly as in
+My mosaic (great-circle ground distance `s` and bearing on the 6,371 km
+sphere, slant range and gate on the 4/3 earth at the scan's own elevation,
+the ray nearest the bearing within 0.75°); a radar is a *candidate* where
+`s` is within its `rangeKm` and the gate is one of its gates. No averaging:
+
+- `CMAX`, `ETOP`, `VIL`: each radar's own product, exactly as its radar
+  frame is made ([Products](#products), [Storm height and rain
+  mass](#storm-height-and-rain-mass)), drawn on its lowest scan's rays and
+  gates and placed at that frame's `elevationDeg`; then the **maximum** over
+  the candidates. `CMAX` and `VIL`: the highest measured code (2 and up).
+  `ETOP`: the highest top, and of two equal tops the exact one (an even
+  code) over the "at least" one (an odd code): one radar saw above it. None
+  measured: 0 if any candidate is 0, else 1.
+- `CAPPI` at `heightM` above `sea` or `ground`: My mosaic's `height` rule
+  over the composite's radars (each radar's scan by `CAPPI`'s height rule,
+  then the radar whose beam centre is nearest the height, the nearer radar
+  on a tie; none: code 1).
+- `LOWB`, "Lowest beam", the mosaic's answer to rain near the ground: per
+  radar the scan of its lowest **clear** beam at the texel's bearing. With a
+  blockage table (`engine/data/blockage.json`, the one `HYBRID` uses:
+  SMHI's, MET Norway's and DMI's radars) it is `HYBRID`'s pick for the
+  degree `floor(bearing)`: the lowest scan whose angle, rounded to tenths,
+  is at or above the table's entry, else the highest; without one (FMI's
+  radars) the lowest scan. Its gate at the texel is placed at that scan's
+  own angle, and the radar is a candidate there when that gate is not no
+  data (code 1). Of the candidates, the one whose beam centre is lowest
+  above sea level (`altM + R cos(e) / cos(e + s/R) − R`, to the metre), the
+  nearer radar on a tie; its code, 0 included. This is My mosaic's `lowest`
+  rule with each radar's clear beam in place of its lowest scan.
+- No candidate: code 1 (no data, G bit 4). No bias correction is applied;
+  `scripts/radar-bias.py` estimates each overlapping pair's offset offline
+  and applies nothing.
+- A radar whose volume at T reaches less than its full range (DMI's short
+  scans) takes the texels past its lowest scan's edge from its latest longer
+  volume up to 10 minutes older, as in My mosaic.
+
+**Timing and cost.** My mosaic's timing (S25): the frame for T is built when
+every radar's volume for T is in, or once it is T + 8 minutes and no volume
+has come for 30 seconds; a volume that arrives after its frame was built
+builds it once more under the same `id` while T is one of the two newest
+frame times and under 12 minutes old. A radar missing from a frame is named
+in its provenance (`engine.log`), and its area falls to its neighbours or is
+no data. Each radar is read by its provider's own poller through the tilt
+store, pollers 2 seconds apart, each provider one volume at a time
+engine-wide; the frame is then made from the tilt store (it must be on,
+`OMASTORM_TILTS_MB` above 0, else the station reports offline with that
+reason).
+
+- `CMAX`, `ETOP`, `VIL` and `CAPPI` read each radar's **whole volume**
+  (an SMHI volume about 39 range requests and 740 KB, a MET Norway or DMI
+  file read whole, 0.7–1.2 MB, an FMI volume five files, about 0.6 MB), so
+  after one of them the other three, any height and `LOWB` are made from
+  the tilt store with no request. They build back the newest **6** frame
+  times (half an hour, S30's rule for a set with SMHI radars).
+- `LOWB` reads only the scans its clear beams need (for most radars the
+  lowest one or two; an FMI radar its lowest file) and builds back the
+  newest **12** (an hour).
+- `OMASTORM_GRID_BACKFILL` (1–12, the engine's environment) lowers both
+  depths, for an engine with less to spend.
+- A product is polled only while its composite is selected and showing it;
+  none is ever kept warm. `OMASTORM_WARM=sweden` keeps the composite (`REF`)
+  warm, also while a product of `sweden` is shown. The measured bytes,
+  requests and seconds per frame are in `coord/log/S24b.md`.
+
 ## Terrain
 
 Additive since S30 (still version 2). Heights `above` `ground` measure from
@@ -1226,3 +1357,23 @@ Additive since (S24a, still version 2):
   legend, applying its floor in their units (tap the legend to show all),
   and draws no hatch on "at least" tops. A client facing an older engine
   finds neither in `hello` and offers neither.
+
+Additive since (S24b, still version 2):
+
+- `hello.products` gains `LOWB` "Lowest beam" after `HYBRID`; no radar
+  offers it.
+- `sweden` and `nordic` list `["REF","LOWB","CAPPI","CMAX","ETOP","VIL"]`
+  in `hello.sites[].products` (before: `[]`), and `set_product` is accepted
+  while one of them is selected ([The composites'
+  products](#the-composites-products)); `REF` stays the provider's
+  composite.
+- Selecting a grid station sets `state.product` to `REF` index 0 (before,
+  it kept the radar's choice on display while showing the composite); the
+  choice is still carried to the next radar.
+- An `ETOP` grid frame's odd codes are "at least" tops (G bit 8 in its grid
+  texture).
+- A client older than S24b hides the product chooser on a grid station and
+  so shows only the composite there; one that sees a product frame (another
+  client chose it) draws it as a grid frame with its own legend. A client
+  facing an older engine finds `[]` in a composite's products and offers
+  nothing.

@@ -122,6 +122,64 @@ frame catalog above is unchanged; the store sits beside it:
   of a station at a time is the stored tilt with the smallest angle, present
   for every product read since S26 made it free.
 
+### My mosaic
+
+`src/mosaic.rs` (S25) makes the grid station `mymosaic` from the lowest scan
+of up to 12 radars a client chooses with `set_mosaic` (`docs/protocol.md`,
+My mosaic). It has four parts, meant to be extended by S30 (heights across
+the chosen radars) and S24b (the vertical products on `sweden`/`nordic`):
+
+- **Set.** `mosaic::choose(sites, args, rule)` checks a `set_mosaic` and
+  returns the `Set` that becomes `state.mosaic` (canonical ids, the reach in
+  force, the `Rule`); `Set::variant` names it in frame ids and catalog rings
+  (`m` + 8 hex, which `products::variant_of` recognizes), so `prune` keeps
+  the current and the previous set's frames.
+- **Placement.** `Layout::new(set, sites)` fixes the Web Mercator texture
+  over the box of the reach circles (the composites' `PIXEL_M`, snapped to
+  the Mercator lattice) and, per radar, a table over its part of the box:
+  each texel centre's great-circle ground distance in 10 m units (`NONE`
+  past the reach) and bearing in tenths of a degree, on the lookup rule's
+  6,371 km sphere. Built once per set; nothing in it depends on a scan.
+- **Combining.** `combine(layout, rule, inputs)` takes one `Input` per
+  radar (its scan at T, and a longer scan's far ring for a short DMI scan)
+  and returns every texel's code and the radar it came from. Per frame each
+  scan becomes lookups: azimuth entry to ray (`sweep::GAP_DEG`), distance
+  unit to gate and to beam-centre height above sea level at the scan's own
+  elevation (4/3 earth). `Rule::Lowest` keys each candidate by (height in
+  metres, distance), lower wins, skipping no-data gates; `Rule::Strongest`
+  by code rank. `build` wraps the codes as a `composite::Grid` with the
+  owners' credit; `frame` makes the protocol frame.
+- **Timing.** `poll(set, sites, events, cached)` is what `main.rs` spawns
+  instead of `providers::poll` while `mymosaic` is selected. It places the
+  set, loads each radar's stored lowest scans from the tilt store
+  (`Slot::compose(Want::Lowest, …)`, no request), then runs one
+  `providers::poll_lowest` per radar (the provider's own poller, through
+  the store, `BACKFILL + 1` deep via `Config.depth`) on a private channel.
+  Scans are keyed by `nominal_ms` (the pollers' own rule: the
+  5-minute mark at or before the start plus 1 minute).
+  `Schedule` decides when: a frame time is built once, as soon as every
+  radar has it (a short scan together with the longer scan its far ring
+  comes from), or once it is `DUE_MS` (8 min) old and no scan has arrived
+  for `QUIET_MS` (30 s); the newest `BACKFILL` (12) due times the catalog
+  lacks, newest first. A time with no scan in hand is never
+  built; a scan that comes after its frame was built builds it once more
+  (`LATE_MS`: one of the newest two, under 12 min old). A live engine keeps
+  its set in `<cache>/mosaic.json` across restarts (`save`, `load`). Frames go to `main.rs` as `Scan::Mosaic` events and
+  are catalogued like a composite's (code texture included). The log says
+  `Mosaic mymosaic: … built in … ms` with the frame's provenance (radars
+  used, missing, far rings, and the summed `N range requests, B of T bytes`
+  of the scans it read), and `… encoded in … ms, texture … KB, codes … KB`.
+  Each radar's newest volume logs `<radar> HH:MMZ in at T + m:ss`, with
+  `, after its frame was built` when it came too late for its frame: the
+  data for judging `DUE_MS` against the providers.
+
+Costs: a Vara + Hurum + Sindal layout is 601 × 691 texels; release builds
+place it in 16 ms and combine a frame in 6 ms; twelve radars across the
+Nordics (1576 × 1915) take 78 ms and 25 ms (`cargo test --release mosaic`).
+A radar also kept warm (`OMASTORM_WARM`) is polled twice while the mosaic
+shows (its listings; its volumes come from the tilt store once either
+poller has read them). `OMASTORM_WARM` refuses `mymosaic` itself.
+
 The station table's source, retrieval date, and caveats are in `data/sites.json`
 and hello. It includes archived and test sites; membership does not imply live
 availability. An archived scan retains its measured coordinates.

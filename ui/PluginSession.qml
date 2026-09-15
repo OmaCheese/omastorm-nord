@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import "Location.js" as Location
 import "Keys.js" as KeyMap
+import "Mosaic.js" as Mosaic
 
 QtObject {
     id: session
@@ -12,6 +13,9 @@ QtObject {
     property Engine engine: Engine {}
     property Config config: Config {}
     property Remembered remembered: Remembered {}
+    /// My mosaic's last set (S25), sent again to an engine that has none.
+    property MosaicStore mosaicStore: MosaicStore {}
+    property bool mosaicResent: false
     property Theme theme: Theme {}
     property bool windowOpen: false
     // The station whose loop this process's surfaces play from their own
@@ -396,14 +400,31 @@ QtObject {
         if (KeyMap.envFloor(Quickshell.env("OMASTORM_WEAK")) === undefined) weakFloor = KeyMap.weakFloor(config.weakFloor, errors);
     }
 
+    // My mosaic (S25): keep the engine's set; give an engine with none (a
+    // restart) the one kept, once per connection. An engine older than S25
+    // sends no hello.mosaic, and nothing happens.
+    function keepMosaic() {
+        var st = engine.state;
+        if (!st || !engine.mosaic || !st.mosaic || !Array.isArray(st.mosaic.sites)) return;
+        if (st.mosaic.sites.length) { mosaicStore.keep(st.mosaic); return; }
+        if (mosaicResent || !Mosaic.valid(mosaicStore.set) || !engine.sites.length) return;
+        var command = Mosaic.command(mosaicStore.set, engine.sites);
+        if (!command.sites.length) return;
+        mosaicResent = true;
+        engine.send(command);
+    }
     property Timer persistTimer: Timer { interval: 400; onTriggered: session.persist() }
     onLocatingChanged: viewChanged()
     property Connections engineEvents: Connections {
         target: session.engine
         function onStateChanged() {
-            if (!session.engine.state) session.initialized = false;
-            else { session.startupError = ""; session.initialize(); }
+            if (!session.engine.state) { session.initialized = false; session.mosaicResent = false; }
+            else { session.startupError = ""; session.initialize(); session.keepMosaic(); }
         }
+    }
+    property Connections mosaicEvents: Connections {
+        target: session.mosaicStore
+        function onSetChanged() { session.keepMosaic(); }
     }
     property Connections configEvents: Connections {
         target: session.config

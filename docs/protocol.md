@@ -57,7 +57,8 @@ are additive, so the version stays 2 and an older client ignores them:
   to (`SE`, `NO`, `FI`, `DK`); empty for a composite that spans countries.
 - `provider`: where the engine gets the station's data: `smhi` (SMHI's open
   API), and from S15/S16 `ord` (EUMETNET Open Radar Data), `fmi-s3` (FMI's
-  bucket), `opera` (the OPERA composite). It is for display and grouping; a
+  bucket), `opera` (the OPERA composite), and from S25 `mosaic` (My
+  mosaic, made by the engine). It is for display and grouping; a
   client never needs it to draw.
 - `rangeKm`: the far edge of the lowest tilt's last gate, in kilometres of
   slant range, for markers and range circles (240 for SMHI's radars); 0
@@ -71,6 +72,15 @@ are additive, so the version stays 2 and an older client ignores them:
 
 `hello` also carries `products` (S20), the engine's product vocabulary in
 the order a chooser lists them ([Products](#products)).
+
+`hello` also carries `mosaic` (S25, additive, always sent): what the
+engine's own mosaic of chosen radars accepts ([My mosaic](#my-mosaic)).
+An engine older than S25 sends none, and a client then offers no mosaic.
+
+```json
+"mosaic":{"station":"mymosaic","maxSites":12,"minReachKm":25,
+          "rules":[{"id":"lowest","name":"Lowest beam"},{"id":"strongest","name":"Strongest"}]}
+```
 
 `hello` also carries `referenceSites` (S23, additive, always sent): the
 other European weather radars, whose positions a client may show for
@@ -185,6 +195,10 @@ It is small (a few KB) so clients replace rather than merge.
 - `product` (S20) is the engine's chosen product, `{"id":"REF",
   "elevationIndex":0}`, shared by every client like the station
   ([Products](#products)).
+- `mosaic` (S25) is the engine's set for My mosaic, `{"sites":[{"id":"vara",
+  "reachKm":240.0}],"rule":"lowest"}`, shared by every client like the
+  station; `sites` is `[]` until a client sends `set_mosaic`
+  ([My mosaic](#my-mosaic)). Always sent.
 - `frame.palette` has one color per class, in class order, and `frame.bounds`
   has one more entry than `palette`: class `i` covers `bounds[i]` up to
   `bounds[i+1]` in `units`. The UI uploads `palette` to the GPU as a
@@ -290,8 +304,12 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 {"type":"play"}  {"type":"pause"}  {"type":"step","delta":-1}  {"type":"seek","id":"..."}
 {"type":"set_product","product":"REF","elevationIndex":0}
 {"type":"set_product","product":"CAPPI","heightM":3000}
+{"type":"set_mosaic","sites":[{"id":"vara"},{"id":"nohur","reachKm":150},{"id":"dksin"}],"rule":"lowest"}
 {"type":"tiles_needed","z":11,"x0":469,"y0":807,"x1":472,"y1":810}
 ```
+
+- `set_mosaic` (S25) chooses My mosaic's radars, each one's reach and the
+  combine rule. The rules are in [My mosaic](#my-mosaic).
 
 - `select_site` names a station from `hello.sites`. The engine goes
   live on it: the newest frame in its catalog (the per-station ring buffer) or
@@ -765,6 +783,128 @@ a pseudo-CAPPI chooses somewhere, every scan for `CMAX`, DBZH only, with
 range requests where the provider allows. What a frame costs is in the
 table below, measured per provider.
 
+## My mosaic
+
+Additive since S25 (still version 2). The providers' composites (`sweden`,
+`nordic`) have every radar of their network baked in. My mosaic is a
+composite the engine makes itself, from the **lowest scan** of up to 12
+radars a client chooses, of any provider, so a radar can be left out or
+trimmed (plan §S25: over the Skagerrak Hurum's beam is 3–5 km up where
+Vara's and Sindal's are under 2 km).
+
+**The station.** `hello.sites` lists `mymosaic`, "My mosaic", after the
+composites: `kind` `grid`, `provider` `mosaic`, `country` empty, `rangeKm`
+0, no products and no angles. It is selected with `select_site` like any
+composite and never a hand-off target. `hello.mosaic` (above) names it and
+the limits: `maxSites` radars, a reach of at least `minReachKm`, and the
+combine `rules` in the order a chooser lists them, with display names.
+
+**`set_mosaic`.**
+
+```json
+{"type":"set_mosaic","sites":[{"id":"vara"},{"id":"nohur","reachKm":150},"dksin"],"rule":"lowest"}
+```
+
+- `sites`: the radars, 1 to `maxSites` of them, each an object with an
+  `id` and an optional `reachKm`, or just the id as a string. An id is a
+  station id or alias from `hello.sites` (as in `select_site`); it must be
+  a radar (`kind` `polar`). Reference sites are not stations, so their ids
+  are unknown.
+- `reachKm`: how far from the antenna this radar counts, in km of ground
+  distance (the great circle on the 6,371 km sphere, as the lookup rule
+  measures it). At least `minReachKm`; absent, or at or past the radar's
+  `rangeKm`, it is the radar's full range. The same unit, range and meaning
+  as S29's per-radar reach slider, with one difference: S29's reach is a
+  client's view clip of one radar on screen, while this reach is applied by
+  the engine when it combines, so a trimmed radar's area falls to its
+  neighbours.
+- `rule`: `lowest` (the default when absent) or `strongest`
+  (below).
+- It is answered with an `error`, and nothing changes, for an empty or
+  too long list, an unknown id, a composite, the same radar twice, a
+  `reachKm` below `minReachKm` or not a number, or an unknown rule.
+- Otherwise it becomes `state.mosaic`: `sites` in the order sent, each
+  with its canonical `id` and the reach in force (`rangeKm` for full,
+  otherwise to 0.1 km), and `rule`. The same radars again, in any order,
+  with the same reaches and rule, change nothing. The set is engine state,
+  shared by that engine's clients like the station, and a live engine keeps
+  it across restarts (`$XDG_CACHE_HOME/omastorm-se/mosaic.json`, checked
+  against the station table again at start). A client also remembers its
+  last set and sends it again when it connects to an engine whose
+  `state.mosaic.sites` is empty.
+- While `mymosaic` is selected, a new set shows its own history at once
+  (or the loading placeholder) with `connection.status` `loading`, and the
+  engine polls the new radars, like a `select_site`.
+
+**Frames.** Grid frames exactly like a composite's (`frame.kind` `grid`,
+the grid texture and code texture formats unchanged), so a client draws
+them as it draws `sweden`:
+
+- The texture covers the box of the chosen radars' reach circles, in Web
+  Mercator texels of 2,000 m (the composites' pixel), counted from its west
+  and north edges. It is typically 600–1,000 px a side for three radars and
+  at most about 1,600 × 2,600 for twelve spread over the Nordics.
+- `id` is `mymosaic-<T compact>-m<8 hex>`: the set (radars, reaches and
+  rule) names the last part, so each set has a timeline of its own. The
+  engine keeps the current set's frames and the previous set's.
+- `scanTime` is the nominal time T the frame is for (a multiple of 5
+  minutes), `sweepEnd` the end of the latest scan used.
+- `product` is `REF`; `productName` is the rule's name (`Lowest beam`,
+  `Strongest`); `elevationDeg` is 0 and not meaningful to show.
+- `attribution` names the owner of every radar the frame drew on, joined by
+  `; ` (`SMHI, CC BY 4.0; MET Norway, CC BY 4.0; DMI, CC BY 4.0`). The
+  station's own `attribution` in `hello` only says that.
+- `frame.site` is the middle of the texture's box; `grid.sourceProjdef`
+  names the rule and the radars, for display and debugging.
+
+**How a frame is made.** For each chosen radar, its lowest scan at T: the
+volume whose nominal time is T (the 5-minute mark at or before its start
+plus 1 minute, the pollers' own rule). Each texel centre is placed from each radar as the lookup rule
+places a screen cell: the great-circle ground distance `s` and bearing on
+the 6,371 km sphere, the slant range `r = R sin(s/R) / cos(e + s/R)` on the
+4/3 earth at the scan's own elevation `e`, the gate `round((r −
+firstGateM) / gateSpacingM)` and the ray nearest the bearing (within
+0.75°). A radar is a *candidate* at a texel when `s` is within its reach
+and the gate is one of its gates. Then, with no averaging:
+
+- `lowest` (Lowest beam): of the candidates whose gate is not no data
+  (code 1), the one whose beam centre is lowest above sea level there,
+  `altM + R cos(e) / cos(e + s/R) − R` to the metre, the nearer radar on a
+  tie; its code, below threshold (0) included. So where Vara and Sindal
+  see nothing under a layer Hurum's higher beam cuts through, the texel is
+  0.
+- `strongest` (Strongest): the highest measured code (2 and up) of any
+  candidate; none measured: 0 if any candidate is below threshold.
+- No candidate, or only no-data gates: code 1 (no data, G bit 4), as
+  outside a composite's grid. No bias correction is applied.
+- A radar whose scan at T reaches less far than its full range (DMI
+  alternates a 119.5 km scan with a 237.5 km one at Sindal) takes the gates
+  past that scan's edge from its latest longer scan up to 10 minutes older,
+  so the far ring does not blink every other frame; the provenance says so.
+
+**Timing and cost.** The frame for T is built as soon as every chosen
+radar's scan for T is in (a short DMI scan together with the longer scan
+its far ring comes from, once an older scan of that radar shows it
+alternates), or else from the scans that have arrived once it is T + 8
+minutes and no scan has come in for 30 seconds; a time with no scan at all
+is never built. A radar missing from a frame is named in its provenance,
+and its area is nodata there unless another radar covers it. A missing
+scan that arrives later builds the frame once more, under the same `id`
+(the catalog and the clients replace it), when T is one of the two newest
+frame times and less than 12 minutes old; older frames are never rebuilt.
+Selecting `mymosaic` shows the set's
+catalogued frames at once, then builds the newest 12 frame times the
+catalog lacks (an hour), newest first: each radar's lowest scans come from
+the tilt store where it has them (no request) and are otherwise fetched
+as that radar's own lowest scan is, under its provider's budget. The
+radars' pollers start 2 seconds apart, and each provider reads one volume
+at a time, engine-wide. After that one frame every 5 minutes. The radars are polled only while `mymosaic` is
+selected, and never kept warm (`OMASTORM_WARM` does not accept
+`mymosaic`). A Swedish radar's lowest scan is about 7 range requests and
+100 KB, a Norwegian one about 1 request and 0.4 MB (the file read whole), a
+Danish one 20–25 requests and about 240 KB, so Vara + Hurum + Sindal cost
+about 10 MB an hour while shown.
+
 ## Configuration
 
 `~/.config/omastorm-se/config.toml` and
@@ -862,3 +1002,14 @@ Additive since (S29, still version 2):
   `CAPPI` and `productName` names the height (`Height 3.5 km`).
 - A client facing an older engine sees `CAPPI1`/`CAPPI2` in `hello` and no
   `heightM`, and offers those two heights as before.
+
+Additive since (S25, still version 2):
+
+- `hello.sites` gains the grid station `mymosaic` (`provider` `mosaic`);
+  `hello.mosaic` and `state.mosaic` are new and always sent.
+- `set_mosaic` is new ([My mosaic](#my-mosaic)). An older engine ignores
+  it as an unknown command; a client that finds no `hello.mosaic` offers no
+  mosaic.
+- An older client lists `mymosaic` among the composites and draws its
+  frames as a composite's; with no set chosen it shows the loading
+  placeholder.

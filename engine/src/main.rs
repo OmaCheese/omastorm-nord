@@ -1,5 +1,6 @@
 mod catalog;
 mod composite;
+mod mosaic;
 mod netstats;
 mod odim;
 mod osm;
@@ -66,6 +67,10 @@ fn parse_warm(value: &str, sites: &[Station]) -> Vec<String> {
     let mut warm: Vec<String> = Vec::new();
     for id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
         match providers::resolve(sites, id) {
+            // My mosaic is polled only while shown (S25).
+            Some(s) if s.provider == providers::ProviderId::Mosaic => {
+                eprintln!("{WARM_ENV}: {} is never kept warm; ignored", s.id);
+            }
             Some(s) if !warm.contains(&s.id) => warm.push(s.id.clone()),
             Some(_) => {}
             None => eprintln!("{WARM_ENV}: no station {id:?}; ignored"),
@@ -135,6 +140,7 @@ fn hello() -> Hello {
         sites_retrieved: table.retrieved,
         sites_notes: table.notes,
         reference_sites: reference::sites(),
+        mosaic: mosaic::info(),
     }
 }
 fn fixture_frame() -> Frame {
@@ -592,6 +598,7 @@ fn initial_state(
         },
         playing: false,
         product: products::Choice::default(),
+        mosaic: mosaic::Set::default(),
     }
 }
 fn line(message: &Message) -> String {
@@ -784,14 +791,40 @@ impl Shared {
                 ..Station::default()
             });
         let want = self.want();
-        self.live = Some(tokio::spawn(providers::poll(
-            station,
-            self.events.clone(),
-            cached,
-            skip_known,
-            want,
-        )));
+        self.live = Some(if station.provider == providers::ProviderId::Mosaic {
+            // My mosaic polls its set's radars itself (S25).
+            tokio::spawn(mosaic::poll(
+                self.state.mosaic.clone(),
+                self.sites.clone(),
+                self.events.clone(),
+                cached,
+            ))
+        } else {
+            tokio::spawn(providers::poll(
+                station,
+                self.events.clone(),
+                cached,
+                skip_known,
+                want,
+            ))
+        });
         self.last_live_restart = Instant::now();
+    }
+    /// The catalog ring `station` shows under `want`: the product's
+    /// (`Want::variant`), or for My mosaic the set's (S25).
+    fn variant_for(&self, station: &Station, want: Want) -> String {
+        if station.provider == providers::ProviderId::Mosaic {
+            self.state.mosaic.variant()
+        } else {
+            want.variant()
+        }
+    }
+    /// The ring the selected station's timeline shows.
+    fn variant(&self) -> String {
+        match self.sites.iter().find(|s| s.id == self.state.site.id) {
+            Some(station) => self.variant_for(station, self.want()),
+            None => self.want().variant(),
+        }
     }
     /// The product the selected station's poller follows and its timeline
     /// shows: `state.product` where the station makes it, else (a
@@ -808,7 +841,7 @@ impl Shared {
     /// the loading placeholder, shows. Pruning first keeps the station's
     /// lowest scan and at most two other products.
     fn open_catalog(&mut self, station: &Station, want: Want) -> Result<(), String> {
-        let variant = want.variant();
+        let variant = self.variant_for(station, want);
         if let Err(e) = self.catalog.prune(&station.id, &variant) {
             eprintln!("Frame catalog: {e}");
         }
@@ -926,6 +959,56 @@ impl Shared {
         self.state.product = choice;
         self.state.connection.status = ConnectionStatus::Loading;
         self.restart_live("polling the new product", false);
+        (true, None)
+    }
+    /// `set_mosaic` (S25, `docs/protocol.md`, My mosaic): refused, changing
+    /// nothing, when `mosaic::choose` refuses it; the same set again changes
+    /// nothing; otherwise it becomes `state.mosaic`, and while `mymosaic` is
+    /// selected its timeline becomes the new set's and its radars are
+    /// polled, like a `select_site`.
+    fn set_mosaic(
+        &mut self,
+        sites: &[mosaic::SiteArg],
+        rule: Option<&str>,
+    ) -> (bool, Option<String>) {
+        let set = match mosaic::choose(&self.sites, sites, rule) {
+            Ok(set) => set,
+            Err(message) => return (false, Some(message)),
+        };
+        if set.same(&self.state.mosaic) {
+            return (false, None);
+        }
+        eprintln!(
+            "{} Mosaic set {}: {} {}",
+            iso(now_ms()),
+            set.variant(),
+            set.rule.id(),
+            set.sites
+                .iter()
+                .map(|s| format!("{}:{}", s.id, s.reach_km))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        self.state.mosaic = set;
+        // Kept across restarts (review #11); an archived start keeps none.
+        if self.state.source == Source::Live {
+            mosaic::save(&self.state.mosaic);
+        }
+        let shown = self
+            .sites
+            .iter()
+            .find(|s| s.id == self.state.site.id)
+            .filter(|s| s.provider == providers::ProviderId::Mosaic)
+            .cloned();
+        if let Some(station) = shown
+            && self.state.source == Source::Live
+        {
+            if let Err(message) = self.open_catalog(&station, Want::Lowest) {
+                return (true, Some(message));
+            }
+            self.state.connection.status = ConnectionStatus::Loading;
+            self.restart_live("polling the new set", false);
+        }
         (true, None)
     }
     /// Keep-warm stations (`OMASTORM_WARM`): each one not selected has a
@@ -1119,8 +1202,13 @@ impl Shared {
             self.frame_ms = Some(entry.start_ms);
         }
         self.link(&entry);
-        let shown = if self.timeline.insert(entry) {
+        // A frame built again (My mosaic's late rebuild, S25) that is on
+        // screen shows its new files.
+        let on_screen = self.state.frame.id == entry.id;
+        let shown = if self.timeline.insert(entry.clone()) {
             self.show_position(0)
+        } else if on_screen {
+            self.show_entry(&entry)
         } else {
             Ok(())
         };
@@ -1237,6 +1325,7 @@ impl Shared {
                 elevation_index,
                 height_m,
             } => self.set_product(&product, elevation_index, height_m),
+            Command::SetMosaic { sites, rule } => self.set_mosaic(&sites, rule.as_deref()),
             // Tile requests and place search are answered to the sender, not state.
             Command::TilesNeeded { .. } | Command::SearchPlaces { .. } | Command::Unsupported => {
                 return None;
@@ -1367,6 +1456,7 @@ fn scan_frame(template: &Frame, station: &Station, scan: &Scan, complete: bool) 
         Scan::Polar(sweep) => live_frame(template, station, sweep, complete, Want::Lowest),
         Scan::Product(sweep, want, _) => live_frame(template, station, sweep, complete, *want),
         Scan::Grid(grid) => composite::frame(template, station, grid),
+        Scan::Mosaic(built) => mosaic::frame(template, station, built),
     }
 }
 /// A scan's texture, azimuth lookup, and code texture as PNGs: a grid's
@@ -1376,15 +1466,31 @@ fn encode_scan(scan: &Scan, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>, Vec<
         Scan::Polar(sweep) | Scan::Product(sweep, ..) => {
             encode(sweep, frame).map(|(t, l)| (t, l, Vec::new()))
         }
-        Scan::Grid(grid) => {
-            let (texture, lut) = composite::encode(grid, frame)?;
-            Ok((
-                texture,
-                lut,
-                gray_png(grid.width, grid.height, &grid.codes)?,
-            ))
+        Scan::Grid(grid) => encode_grid(grid, frame),
+        Scan::Mosaic(built) => {
+            let started = Instant::now();
+            let encoded = encode_grid(&built.grid, frame)?;
+            eprintln!(
+                "{} Mosaic {}: {} encoded in {:.0?}, texture {} KB, codes {} KB",
+                iso(now_ms()),
+                mosaic::STATION,
+                frame.id,
+                started.elapsed(),
+                encoded.0.len() / 1000,
+                encoded.2.len() / 1000
+            );
+            Ok(encoded)
         }
     }
+}
+/// A grid's texture, its empty lookup and its code texture as PNGs.
+fn encode_grid(grid: &composite::Grid, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let (texture, lut) = composite::encode(grid, frame)?;
+    Ok((
+        texture,
+        lut,
+        gray_png(grid.width, grid.height, &grid.codes)?,
+    ))
 }
 /// A grid's raw codes as an 8-bit grayscale PNG: its one-channel code
 /// texture (`docs/protocol.md`, code texture), a quarter of the GPU memory.
@@ -1531,7 +1637,7 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                         // which is gone; it stays catalogued.
                         if !arrival.frame.id.starts_with(&shared.state.site.id)
                             || shared.state.source != Source::Live
-                            || products::variant_of(&arrival.frame.id) != shared.want().variant()
+                            || products::variant_of(&arrival.frame.id) != shared.variant()
                         {
                             continue;
                         }
@@ -1591,7 +1697,7 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                         let mut shared = shared.lock().unwrap();
                         if !entry.id.starts_with(&shared.state.site.id)
                             || shared.state.source != Source::Live
-                            || products::variant_of(&entry.id) != shared.want().variant()
+                            || products::variant_of(&entry.id) != shared.variant()
                         {
                             continue;
                         }
@@ -2146,6 +2252,12 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         last_broadcast: String::new(),
         logged_condition: None,
     }));
+    // My mosaic's set as the last live run left it (S25, review #11).
+    if source == Source::Live {
+        let mut held = shared.lock().unwrap();
+        let kept = mosaic::load(&held.sites);
+        held.state.mosaic = kept;
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -2902,8 +3014,9 @@ mod handoff_tests {
     fn the_site_table_is_the_nordic_network() {
         let sites = site_table().sites;
         // SMHI's 12 radars and ORD's 29 (NO, FI, DK: S15) from sites.json,
-        // then the composites: SMHI's (S8) and OPERA's Nordic crop (S16).
-        assert_eq!(sites.len(), 43);
+        // then the composites: SMHI's (S8) and OPERA's Nordic crop (S16),
+        // and My mosaic (S25).
+        assert_eq!(sites.len(), 44);
         assert_eq!(
             sites.iter().filter(|s| s.kind == SiteKind::Polar).count(),
             41
@@ -2914,8 +3027,11 @@ mod handoff_tests {
                 .filter(|s| s.kind == SiteKind::Grid)
                 .map(|s| &s.id[..])
                 .collect::<Vec<_>>(),
-            ["sweden", "nordic"]
+            ["sweden", "nordic", "mymosaic"]
         );
+        // My mosaic is never a target, and nothing is handed off to from it.
+        assert!(handoff(&sites, "mymosaic", 57.71, 11.97).is_none());
+        assert!(super::parse_warm("mymosaic,vara", &sites) == ["vara"]);
         // The Nordic composite is never a target either, and while it is
         // selected nothing is handed off to.
         assert!(handoff(&sites, "nordic", 59.33, 18.07).is_none());

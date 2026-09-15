@@ -662,6 +662,9 @@ pub struct Config {
     /// The tilt store files are read through (S27); `None` reads every
     /// file from the cache, as before.
     pub store: Option<Arc<crate::tilts::Store>>,
+    /// Files a backfill reaches back, counting the live one, when not the
+    /// product's own depth (S25: a mosaic radar's hour, `poll_lowest`).
+    pub depth: Option<usize>,
 }
 
 impl Config {
@@ -676,6 +679,7 @@ impl Config {
             decode,
             want: Want::Lowest,
             store: None,
+            depth: None,
         }
     }
 }
@@ -708,6 +712,18 @@ pub async fn poll(
         ..Config::ord()
     };
     poll_with(cfg, station, events, cached).await;
+}
+
+/// The lowest scan of `station`, through the tilt store, backfilling
+/// `depth` files counting the live one: one of My mosaic's radars (S25,
+/// `mosaic.rs`), whose events go to the mosaic, not to `main.rs`.
+pub async fn poll_lowest(station: Station, events: Sender<Event>, known: Vec<i64>, depth: usize) {
+    let cfg = Config {
+        store: crate::tilts::shared(),
+        depth: Some(depth),
+        ..Config::ord()
+    };
+    poll_with(cfg, station, events, known).await;
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -920,7 +936,7 @@ async fn backfill(
         let loop_ = volumes
             .into_iter()
             .filter(|(t, _)| *t < live_ms && live_ms - *t < HORIZON_MS)
-            .take(BACKFILL - 1);
+            .take(cfg.depth.unwrap_or(BACKFILL).saturating_sub(1));
         for (valid_ms, key) in loop_ {
             if covered(valid_ms, &known) {
                 continue;
@@ -952,7 +968,8 @@ async fn backfill(
         chosen,
         live_ms,
         &known,
-        cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL),
+        cfg.depth
+            .unwrap_or_else(|| cfg.want.backfill(BACKFILL, PRODUCT_BACKFILL)),
     );
     targets.retain(|f| !done.contains(&f.valid_ms));
     let wanted = targets.len();
@@ -1523,6 +1540,7 @@ mod tests {
                 decode,
                 want,
                 store,
+                depth: None,
             };
             let (tx, mut rx) = mpsc::channel(16);
             let poller = tokio::spawn(poll_with(cfg, station(), tx, cached));
@@ -1832,7 +1850,7 @@ mod tests {
         let traffic = reader.traffic();
         let sweep = match decode(reader, want, None).unwrap() {
             Scan::Polar(sweep) | Scan::Product(sweep, ..) => sweep,
-            Scan::Grid(_) => panic!("a radar decodes to a polar sweep"),
+            Scan::Grid(_) | Scan::Mosaic(_) => panic!("a radar decodes to a polar sweep"),
         };
         let mut digest = 0xcbf2_9ce4_8422_2325u64;
         for ray in &sweep.rays {

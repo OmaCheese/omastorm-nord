@@ -11,6 +11,9 @@ QtObject {
     /// hello.products (S20): the product vocabulary, in chooser order;
     /// empty from an older engine, which hides the chooser.
     property var products: []
+    /// hello.mosaic (S25): what My mosaic accepts, or null from an engine
+    /// older than S25, which hides it.
+    property var mosaic: null
     /// Transport and parsing trouble: disconnected, unreadable message,
     /// unknown protocol version. Cleared by the next valid state.
     property string error: ""
@@ -370,6 +373,7 @@ QtObject {
                 sites = message.sites;
                 referenceSites = message.referenceSites || [];
                 products = message.products || [];
+                mosaic = message.mosaic && Array.isArray(message.mosaic.rules) ? message.mosaic : null;
             }
             else if (message.type === "state") {
                 var frame = message.frame;

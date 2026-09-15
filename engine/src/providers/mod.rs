@@ -44,6 +44,9 @@ pub enum ProviderId {
     /// EUMETNET Open Radar Data's 24-hour S3 cache: the 29 radars of
     /// Norway, Finland and Denmark (S15, DEC-13).
     Ord,
+    /// My mosaic (S25, `mosaic.rs`): made by the engine from the lowest
+    /// scans of radars of the other providers, polled by `mosaic::poll`.
+    Mosaic,
 }
 
 /// When a reachable feed is `stale`, and when `unavailable`, by the age of
@@ -101,6 +104,7 @@ pub fn spec(id: ProviderId) -> &'static Spec {
         ProviderId::Smhi => &smhi::SPEC,
         ProviderId::Opera => &opera::SPEC,
         ProviderId::Ord => &ord::SPEC,
+        ProviderId::Mosaic => &crate::mosaic::SPEC,
     }
 }
 
@@ -119,6 +123,22 @@ pub async fn poll(
         ProviderId::Smhi => smhi::poll(station, events, cached, skip_known, want).await,
         ProviderId::Opera => opera::poll(station, events, cached, skip_known).await,
         ProviderId::Ord => ord::poll(station, events, cached, skip_known, want).await,
+        // A mosaic needs its set: `main.rs` starts `mosaic::poll` itself.
+        ProviderId::Mosaic => eprintln!("{}: polled by mosaic::poll, not here", station.id),
+    }
+}
+
+/// One radar's lowest scan for My mosaic (S25): its provider's poller,
+/// through the tilt store, `depth` volumes deep, reporting to the mosaic.
+/// `known` holds the nominal times the mosaic already has. A composite, or
+/// the mosaic itself, has no lowest scan and polls nothing.
+pub async fn poll_lowest(station: Station, events: Sender<Event>, known: Vec<i64>, depth: usize) {
+    match station.provider {
+        ProviderId::Smhi if station.kind == SiteKind::Polar => {
+            crate::smhi_live::poll_lowest(station.id, events, known, depth).await;
+        }
+        ProviderId::Ord => ord::poll_lowest(station, events, known, depth).await,
+        _ => eprintln!("{}: no lowest scan to poll for a mosaic", station.id),
     }
 }
 
@@ -243,6 +263,7 @@ pub fn table() -> Table {
     let mut sites: Vec<Station> = file.sites.into_iter().map(Row::station).collect();
     sites.push(crate::composite::station());
     sites.push(opera::station());
+    sites.push(crate::mosaic::station());
     Table {
         source: file.source,
         retrieved: file.retrieved,
@@ -337,9 +358,18 @@ mod tests {
     #[test]
     fn the_table_is_smhis_twelve_radars_its_composite_and_ords_twenty_nine() {
         let sites = table().sites;
-        // SMHI's 13 (12 radars and sweden), OPERA's Nordic composite (S16)
-        // and ORD's 29 radars (S15).
-        assert_eq!(sites.len(), 13 + 1 + 29);
+        // SMHI's 13 (12 radars and sweden), OPERA's Nordic composite (S16),
+        // ORD's 29 radars (S15) and My mosaic (S25), listed last.
+        assert_eq!(sites.len(), 13 + 1 + 29 + 1);
+        let mine = sites.last().unwrap();
+        assert_eq!(
+            (mine.id.as_str(), mine.kind, mine.provider),
+            ("mymosaic", SiteKind::Grid, ProviderId::Mosaic)
+        );
+        assert_eq!(
+            serde_json::to_string(&ProviderId::Mosaic).unwrap(),
+            "\"mosaic\""
+        );
         assert!(problems(&sites).is_empty(), "{:?}", problems(&sites));
         let nordic = sites.iter().find(|s| s.id == "nordic").unwrap();
         assert_eq!(

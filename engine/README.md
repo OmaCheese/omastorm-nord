@@ -293,8 +293,8 @@ older than S24b, which hides the chooser on a composite, never starts one.
 - **Reads**: every scan (`Want::ColMax`) for `CMAX`, `ETOP`, `VIL` and
   `CAPPI`, so one read serves the four and `LOWB`; `LOWB` alone reads its
   clear beams' scans (`Want::Hybrid`; an FMI radar its lowest file). They
-  build back 6 and 12 frame times; `OMASTORM_GRID_BACKFILL=n` (1–12) lowers
-  both. The frames are built from the tilt store, so it must be on; the
+  build back 3 and 6 frame times (review S1; 6 and 12 at first);
+  `OMASTORM_GRID_BACKFILL=n` (1–12) lowers both, never raises them. The frames are built from the tilt store, so it must be on; the
   schedule keeps only each scan's geometry (`geometry`), not its rays.
 - **Cost** (S24b live run, 2026-09-15): the first whole-volume fill of
   `nordic` read two volumes a radar: SMHI 1,105 requests and 18.1 MB (about

@@ -89,16 +89,23 @@ const SMHI_LOWEST_REQUESTS: usize = 7;
 /// products build back (S24b, `grid_backfill`): 1 to `BACKFILL` frame times.
 pub const GRID_BACKFILL_ENV: &str = "OMASTORM_GRID_BACKFILL";
 
+/// Frame times a composite's product reading whole volumes builds back
+/// (review S1): a quarter of an hour; its first fill is then 4 volumes a
+/// radar, about 1,900 SMHI requests for `nordic`, in ~5 minutes.
+pub const GRID_WHOLE_BACKFILL: usize = 3;
+/// ...and `LOWB`, which reads only the scans of each radar's clear beams:
+/// half an hour.
+pub const GRID_LOWB_BACKFILL: usize = 6;
+
 /// Frame times a composite's product builds back (S24b, `docs/protocol.md`,
-/// the composites' products): `LOWB`, which reads only the scans of each
-/// radar's clear beams, `BACKFILL`; the products that read whole volumes
-/// S30's `HEIGHT_BACKFILL` (both composites have SMHI radars; the plan's 12
-/// predates S30's rule). `OMASTORM_GRID_BACKFILL` lowers either.
+/// the composites' products): `GRID_LOWB_BACKFILL` for `LOWB`,
+/// `GRID_WHOLE_BACKFILL` for the others. `OMASTORM_GRID_BACKFILL` lowers
+/// either (a cap, never a raise).
 pub fn grid_backfill(want: Want) -> usize {
     let base = if want == Want::LowestBeam {
-        BACKFILL
+        GRID_LOWB_BACKFILL
     } else {
-        HEIGHT_BACKFILL
+        GRID_WHOLE_BACKFILL
     };
     let cap = std::env::var(GRID_BACKFILL_ENV)
         .ok()
@@ -4420,6 +4427,21 @@ mod tests {
             100,
             "{id} at {degree_clear}°: clear at 0.5°"
         );
+    }
+
+    /// Review S1: a composite's whole-volume products build back 3 frame
+    /// times, `LOWB` 6 (with `OMASTORM_GRID_BACKFILL` unset, as in tests).
+    #[test]
+    fn a_composites_products_build_back_a_quarter_and_half_an_hour() {
+        assert!(std::env::var(GRID_BACKFILL_ENV).is_err());
+        assert_eq!(grid_backfill(Want::ColMax), 3);
+        assert_eq!(grid_backfill(Want::Vil), 3);
+        assert_eq!(grid_backfill(Want::Cappi(2000.0, 2000)), 3);
+        assert_eq!(grid_backfill(Want::LowestBeam), 6);
+        let sites = table();
+        let nordic = sites.iter().find(|s| s.id == "nordic").unwrap();
+        let layout = Layout::grid(nordic, Want::EchoTop(0.0), &sites).unwrap();
+        assert_eq!(layout.backfill(), GRID_WHOLE_BACKFILL);
     }
 
     #[test]

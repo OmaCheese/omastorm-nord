@@ -1180,13 +1180,13 @@ reason).
   (an SMHI volume about 39 range requests and 740 KB, a MET Norway or DMI
   file read whole, 0.7–1.2 MB, an FMI volume five files, about 0.6 MB), so
   after one of them the other three, any height and `LOWB` are made from
-  the tilt store with no request. They build back the newest **6** frame
-  times (half an hour, S30's rule for a set with SMHI radars).
+  the tilt store with no request. They build back the newest **3** frame
+  times (a quarter of an hour; the first fill reads four volumes a radar).
 - `LOWB` reads only the scans its clear beams need (for most radars the
   lowest one or two; an FMI radar its lowest file) and builds back the
-  newest **12** (an hour).
+  newest **6** (half an hour).
 - `OMASTORM_GRID_BACKFILL` (1–12, the engine's environment) lowers both
-  depths, for an engine with less to spend.
+  depths, for an engine with less to spend; it never raises them.
 - A product is polled only while its composite is selected and showing it,
   and while some client is connected: when the engine's last client
   disconnects while a composite shows a product, the engine goes back to

@@ -1343,7 +1343,7 @@ once it is built (a few seconds):
  "frameId":"nordic-20260915T120000Z-cmax","scanTime":"2026-09-15T12:00:00Z","units":"dBZ",
  "levels":[{"bottomM":0,"topM":500,"dbz":24.5,"samples":6,"radars":["vara"]},
            {"bottomM":500,"topM":1000,"dbz":null,"samples":0,"radars":[]}],
- "radars":["vara","nohur"],"echoTopM":7500}
+ "radars":["vara","nohur"],"echoTopM":7500,"echoTopAtLeast":false}
 ```
 
 - `levels`: 24, bottom to top. `dbz` is the cell's maximum, `null` when no
@@ -1351,7 +1351,10 @@ once it is built (a few seconds):
   (so `dbz` `null` with samples above 0 is clear air, below threshold);
   `radars` the radars whose beams fed it.
 - `radars`: every radar that reached the column; `echoTopM`: the top of the
-  highest level at or above 18 dBZ (`ETOP`'s threshold), `null` when none.
+  highest level at or above 18 dBZ (`ETOP`'s threshold), `null` when none;
+  `echoTopAtLeast` (review S3, additive) is `true` when no beam sampled any
+  level above that top, so the storm may reach higher (as `ETOP`'s "at
+  least"), `false` otherwise and when there is no top.
 - `status`: `ready`, `empty` (nothing to cut, as for a section, with
   `message`), or `outside` (the point is outside the grid; every level has
   no samples).

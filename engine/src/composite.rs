@@ -609,6 +609,13 @@ impl Target {
 // The decoded composite
 // ---------------------------------------------------------------------------
 
+/// The texture `decode_box` makes over `b`, width × height texels (S33:
+/// what a cut of another OPERA box costs in memory, one byte a texel).
+pub fn texture_size(b: LonLatBox) -> (u32, u32) {
+    let t = Target::over(b);
+    (t.width, t.height)
+}
+
 /// A composite reprojected to its Web Mercator texture.
 pub struct Grid {
     pub width: u32,

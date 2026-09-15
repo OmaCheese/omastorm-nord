@@ -215,9 +215,11 @@ pub fn decode(reader: RangeReader, areas: &[LonLatBox]) -> Result<Vec<Grid>, Str
 
 /// A cut made for another box's poller waits this long for it...
 const CUT_TTL: Duration = Duration::from_secs(10 * 60);
-/// ...and at most this many wait at once (a Nordic cut is 3.8 MB; pollers
-/// reading the same times take theirs within seconds).
-const CUT_KEEP: usize = 4;
+/// ...and is made only while the cuts waiting fit in this many bytes of
+/// codes (review SF2): about four Nordic cuts (3.8 MB each) or 27 Iberian
+/// ones (0.58 MB). A made cut is never dropped to make room, so no read's
+/// bytes for another box are wasted; past the room a box reads its own.
+const CUT_ROOM: usize = 16 * 1024 * 1024;
 
 /// What the engine's OPERA pollers share (S33): the boxes being polled and
 /// the times each already has, cuts one poller's read made for another,
@@ -238,6 +240,23 @@ struct Watch {
     /// Start times the box has: catalogued when its poller started,
     /// fetched or cut since.
     known: Vec<i64>,
+    /// Valid times the box's running backfill still wants (review SF2):
+    /// another box's backfill read is cut for it only at these.
+    wants: Vec<i64>,
+}
+
+/// A backfill's declared wants; they end with it.
+struct Wanting {
+    hub: Arc<Hub>,
+    site: String,
+}
+
+impl Drop for Wanting {
+    fn drop(&mut self) {
+        if let Some(w) = lock(&self.hub.watching).get_mut(&self.site) {
+            w.wants.clear();
+        }
+    }
 }
 
 struct Cutout {
@@ -298,34 +317,66 @@ impl Hub {
     fn got(&self, site: &str, ms: i64) {
         if let Some(w) = lock(&self.watching).get_mut(site) {
             w.known.push(ms);
+            w.wants.retain(|&t| !covered(t, &[ms]));
         }
     }
 
-    /// The boxes one read of `volume` is cut to: `site`'s own first, then
-    /// every other box being polled that lacks that time and has no cut of
-    /// it waiting. Empty when `site` is not one of OPERA's boxes.
+    /// Review SF2: `site`'s backfill wants the composites valid at `times`,
+    /// until the returned guard drops (the backfill ends).
+    fn want(self: &Arc<Self>, site: &str, times: &[i64]) -> Wanting {
+        if let Some(w) = lock(&self.watching).get_mut(site) {
+            w.wants = times.to_vec();
+        }
+        Wanting {
+            hub: self.clone(),
+            site: site.to_owned(),
+        }
+    }
+
+    /// The boxes a live read of `volume` is cut to: `site`'s own first,
+    /// then every other box being polled that lacks that time, has no cut
+    /// of it waiting, and whose cut fits the room. Empty when `site` is not
+    /// one of OPERA's boxes.
     fn boxes_for(&self, site: &str, volume: &Volume) -> Vec<&'static Cut> {
+        self.cut_for(site, volume, false)
+    }
+
+    /// `boxes_for` of a backfill read (review SF2): another box only where
+    /// its own backfill is running and wants that time, so a backfill ahead
+    /// of the other box's cuts nothing that would wait for long.
+    fn boxes_for_backfill(&self, site: &str, volume: &Volume) -> Vec<&'static Cut> {
+        self.cut_for(site, volume, true)
+    }
+
+    fn cut_for(&self, site: &str, volume: &Volume, backfill: bool) -> Vec<&'static Cut> {
         let Some(own) = cut(site) else {
             return Vec::new();
         };
         let watching = lock(&self.watching);
         let cuts = lock(&self.cuts);
+        let mut room = CUT_ROOM.saturating_sub(cuts.iter().map(|c| c.grid.codes.len()).sum());
         let mut boxes = vec![own];
         for other in CUTS.iter().filter(|c| c.id != site) {
-            let lacks = watching
-                .get(other.id)
-                .is_some_and(|w| !covered(volume.valid_ms, &w.known));
+            let Some(w) = watching.get(other.id) else {
+                continue;
+            };
+            let lacks = !covered(volume.valid_ms, &w.known);
+            let wanted = !backfill || w.wants.contains(&volume.valid_ms);
             let waiting = cuts
                 .iter()
                 .any(|c| c.site == other.id && c.key == volume.key);
-            if lacks && !waiting {
+            let (width, height) = composite::texture_size(other.area);
+            let size = width as usize * height as usize;
+            if lacks && wanted && !waiting && size <= room {
+                room -= size;
                 boxes.push(other);
             }
         }
         boxes
     }
 
-    /// Keep a cut of `key` for `site`'s poller.
+    /// Keep a cut of `key` for `site`'s poller, until it is taken or its
+    /// `CUT_TTL` passes.
     fn keep(&self, key: &str, site: &str, grid: Grid, provenance: String) {
         let mut cuts = lock(&self.cuts);
         cuts.retain(|c| c.made.elapsed() < CUT_TTL);
@@ -336,9 +387,6 @@ impl Hub {
             provenance,
             made: Instant::now(),
         });
-        while cuts.len() > CUT_KEEP {
-            cuts.remove(0);
-        }
     }
 
     /// The cut of `key` waiting for `site`, if another poller's read made
@@ -541,6 +589,7 @@ async fn fetch(
     hub: &Arc<Hub>,
     site: &str,
     volume: &Volume,
+    backfill: bool,
 ) -> Result<(Scan, String), Failure> {
     let permit = FETCHER
         .clone()
@@ -553,7 +602,11 @@ async fn fetch(
         hub.got(site, grid.start_ms);
         return Ok((Scan::Grid(grid), provenance));
     }
-    let boxes = hub.boxes_for(site, volume);
+    let boxes = if backfill {
+        hub.boxes_for_backfill(site, volume)
+    } else {
+        hub.boxes_for(site, volume)
+    };
     if boxes.is_empty() {
         return Err(Failure::Decode(format!(
             "{site} is not one of OPERA's boxes"
@@ -758,7 +811,7 @@ pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached:
                             newest = Some(latest);
                             caught_up = true;
                         } else {
-                            match fetch(&http, &cfg.hub, &site, &latest).await {
+                            match fetch(&http, &cfg.hub, &site, &latest, false).await {
                                 Ok((scan, provenance)) => {
                                     known.push(scan.start_ms());
                                     let event = Event::Sweep {
@@ -892,6 +945,9 @@ async fn backfill(
     };
     let targets = backfill_targets(listed, live_ms, &known, BACKFILL);
     let wanted = targets.len();
+    // Review SF2: another box's backfill cuts these for this one.
+    let times: Vec<i64> = targets.iter().map(|v| v.valid_ms).collect();
+    let _wanting = cfg.hub.want(&site, &times);
     // S31: what the history will bring, for `state.loading`.
     let plan = Event::HistoryPlan {
         site: site.clone(),
@@ -903,7 +959,7 @@ async fn backfill(
     }
     let mut fetched = 0;
     for volume in targets {
-        match fetch(&http, &cfg.hub, &site, &volume).await {
+        match fetch(&http, &cfg.hub, &site, &volume, true).await {
             Ok((scan, provenance)) => {
                 let event = Event::Backfill {
                     site: site.clone(),
@@ -1211,18 +1267,63 @@ mod tests {
     }
 
     #[test]
-    fn few_cuts_wait() {
-        let hub = Hub::default();
-        for k in 0..CUT_KEEP + 2 {
-            let v = volume(BASE, at(15, 17, 0) + k as i64 * CADENCE_MS);
-            hub.keep(&v.key, "iberia", a_grid(v.valid_ms), String::new());
+    fn cuts_are_made_while_they_fit_and_never_dropped_for_room() {
+        // Review SF2: iberia's live reads cut for nordic (3.8 MB each) only
+        // while the waiting cuts fit; none made is ever dropped.
+        let hub = Arc::new(Hub::default());
+        let (_n, _i) = (hub.watch("nordic", &[]), hub.watch("iberia", &[]));
+        let (w, h) = composite::texture_size(NORDIC);
+        let mut made = 0;
+        for k in 0..6 {
+            let v = volume(BASE, at(15, 17, 0) + k * CADENCE_MS);
+            if hub.boxes_for("iberia", &v).len() == 2 {
+                let mut grid = a_grid(v.valid_ms);
+                grid.codes = vec![0; w as usize * h as usize];
+                hub.keep(&v.key, "nordic", grid, String::new());
+                made += 1;
+            }
         }
-        assert_eq!(lock(&hub.cuts).len(), CUT_KEEP);
-        // The oldest went first.
+        assert_eq!(made, CUT_ROOM / (w as usize * h as usize));
+        assert_eq!(made, 4);
+        assert_eq!(lock(&hub.cuts).len(), 4);
+        // The first is still there; taking it makes room for the next.
         assert!(
-            hub.take(&volume(BASE, at(15, 17, 0)).key, "iberia")
-                .is_none()
+            hub.take(&volume(BASE, at(15, 17, 0)).key, "nordic")
+                .is_some()
         );
+        let next = volume(BASE, at(15, 18, 0));
+        assert_eq!(ids(hub.boxes_for("iberia", &next)), ["iberia", "nordic"]);
+        // An Iberian cut is small: it still fits beside three Nordic ones.
+        assert_eq!(ids(hub.boxes_for("nordic", &next)), ["nordic", "iberia"]);
+    }
+
+    #[test]
+    fn a_backfill_read_is_cut_only_for_times_another_backfill_wants() {
+        let hub = Arc::new(Hub::default());
+        let (_n, _i) = (hub.watch("nordic", &[]), hub.watch("iberia", &[]));
+        let (v1, v2) = (volume(BASE, at(15, 17, 0)), volume(BASE, at(15, 17, 5)));
+        // nordic has no backfill running: iberia's backfill cuts nothing
+        // for it, though its live reads still would.
+        assert_eq!(ids(hub.boxes_for_backfill("iberia", &v1)), ["iberia"]);
+        assert_eq!(ids(hub.boxes_for("iberia", &v1)), ["iberia", "nordic"]);
+        // nordic's backfill wants v1 only.
+        let wanting = hub.want("nordic", &[v1.valid_ms]);
+        assert_eq!(
+            ids(hub.boxes_for_backfill("iberia", &v1)),
+            ["iberia", "nordic"]
+        );
+        assert_eq!(ids(hub.boxes_for_backfill("iberia", &v2)), ["iberia"]);
+        // Once nordic has it, it wants it no more.
+        hub.got("nordic", v1.valid_ms);
+        assert_eq!(ids(hub.boxes_for_backfill("iberia", &v1)), ["iberia"]);
+        // Its backfill over, nothing is wanted.
+        let again = hub.want("nordic", &[v2.valid_ms]);
+        assert_eq!(
+            ids(hub.boxes_for_backfill("iberia", &v2)),
+            ["iberia", "nordic"]
+        );
+        drop((wanting, again));
+        assert_eq!(ids(hub.boxes_for_backfill("iberia", &v2)), ["iberia"]);
     }
 
     #[test]

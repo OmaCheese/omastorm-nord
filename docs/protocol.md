@@ -1233,8 +1233,9 @@ reason).
 
 Additive since S24c (still version 2). A vertical cut through what the
 selected station shows, along a line the user draws (`set_section`), and
-one column's values at a tap (`profile`): how tall a storm is, and which
-radars saw it. Both are made by the engine from the radars' volumes in the
+one column's values at a point the user presses (`profile`; the web client
+asks on a long press, ~500 ms without moving, or a right click): how tall a
+storm is, and which radars' beams sampled it. Both are made by the engine from the radars' volumes in the
 tilt store, for the **newest** complete frame of the timeline only. They
 never make a request of their own and never change what is polled: the
 engine uses the volumes it already holds for what a client is showing.

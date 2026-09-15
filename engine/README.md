@@ -158,12 +158,20 @@ cache (`ES/<nod>/PVOL`) with three quirks the decoder and poller handle:
 metres); every 10 minutes a long-range volume (`…@DBZH_TH`, 0.5/1.3/2.1°,
 Valladolid and San Sebastián 0.5/1.4/2.3° with 450 rays and no azimuths)
 and, 7 minutes later, a Doppler volume (`…@DBZH_VRADH`, 150 km) that is
-never read (`ord::one_task`); and their 10-minute cadence gives staleness
-20/30 min (`ord::staleness_for`). Every file is under `WHOLE_UP_TO`, so one
-request each. Measured on 2026-09-15 (Alhaurín el Grande): a join 33
-requests and 7.06 MB (31 frames, five hours), then about 66 requests and
-1.6 MB an hour; a product switch reads its 24 files whole again (25
-requests, 5.65 MB), since the lowest scan stored only its own tilt. The
+never read (`ord::one_task`; not even alone, so with the long-range task
+down the station goes stale); and their 10-minute cadence gives staleness
+20/30 min (`ord::staleness_for`) and a listing every 2 minutes
+(`ord::ES_POLL`). Every file is under `WHOLE_UP_TO`, so one request each.
+Measured on 2026-09-15 (Alhaurín el Grande, then listing each minute): a
+join 33 requests and 7.06 MB (31 frames, five hours), then about 66
+requests and 1.6 MB an hour, about 36 an hour with the 2-minute listing; a
+product switch reads its 24 files whole again (25 requests, 5.65 MB), since
+the lowest scan stored only its own tilt. In My mosaic a Spanish radar
+counts at its own cadence (`Schedule::with_cadences`): a set of Spanish
+radars only makes the 10-minute frames (no :x5 time waits), and a mixed
+set's :x5 frames carry each Spanish radar's :x0 scan, named in the
+provenance (`esahr (its 12:00Z scan)`). The root `/how` of the IRIS 8.13
+exports holds per-ray azimuths the decoder does not read (a 0.08° offset). The
 terrain grid is Nordic: a Spanish radar's heights are above sea level only
 (`products::has_terrain`, `hello.sites[].above`). The Nordic composite's
 products keep their 41 radars (`mosaic::grid_radars` takes the radars whose

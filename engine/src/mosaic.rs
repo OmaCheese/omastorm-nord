@@ -143,8 +143,9 @@ pub fn grid_radars(station: &Station, sites: &[Station]) -> Vec<Station> {
         .collect()
 }
 
-/// The box a composite's products are drawn over: its composite's own.
-fn grid_box(station: &Station) -> Option<LonLatBox> {
+/// The box a composite's products are drawn over: its composite's own; also
+/// whether the composite offers them (`products::for_station`, review N3).
+pub(crate) fn grid_box(station: &Station) -> Option<LonLatBox> {
     match (station.kind, station.provider) {
         (SiteKind::Grid, ProviderId::Opera) => Some(crate::providers::opera::NORDIC),
         (SiteKind::Grid, ProviderId::Smhi) => Some(SWEDEN_BOX),

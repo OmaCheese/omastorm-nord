@@ -537,11 +537,12 @@ pub fn nominal_angles(station: &Station) -> &'static [f64] {
 pub fn for_station(station: &Station) -> (Vec<&'static str>, Vec<Elevation>) {
     if station.kind == SiteKind::Grid {
         // S24b: a provider's composite offers the products the engine makes
-        // from its radars; My mosaic has its set's rule instead.
-        let products = if station.provider == ProviderId::Mosaic {
-            Vec::new()
-        } else {
+        // from its radars, where the mosaic knows its box (review N3: the
+        // one decides the other); My mosaic has its set's rule instead.
+        let products = if crate::mosaic::grid_box(station).is_some() {
             GRID_PRODUCTS.to_vec()
+        } else {
+            Vec::new()
         };
         return (products, Vec::new());
     }
@@ -1837,6 +1838,12 @@ mod tests {
             ..grid.clone()
         };
         assert_eq!(for_station(&mine), (vec![], vec![]));
+        // Review N3: a grid station the mosaic knows no box for offers none.
+        let unknown = Station {
+            provider: ProviderId::Ord,
+            ..grid.clone()
+        };
+        assert_eq!(for_station(&unknown), (vec![], vec![]));
         assert_eq!(want_for(&grid, &choice_of(LOWB)), Some(Want::LowestBeam));
         assert_eq!(want_for(&grid, &choice_of(CMAX)), Some(Want::ColMax));
         assert_eq!(want_for(&grid, &choice_of(HYBRID)), None);

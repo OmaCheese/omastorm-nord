@@ -88,6 +88,15 @@ An engine older than S25 sends none, and a client then offers no mosaic.
 The `height` rule is S30's (a slice at a chosen height across the chosen
 radars); an engine older than S30 lists only the first two.
 
+`hello` also carries `sections` (S24c, additive, always sent): the shape of
+the vertical cuts and column profiles the engine makes on request
+([Sections and profiles](#sections-and-profiles)). An engine older than
+S24c sends none, and a client then offers neither.
+
+```json
+"sections":{"levels":24,"levelM":500,"columnM":2000,"maxColumns":300}
+```
+
 `hello` also carries `referenceSites` (S23, additive, always sent): the
 other European weather radars, whose positions a client may show for
 orientation. They are **not stations**: no `select_site` accepts their ids,
@@ -206,6 +215,10 @@ It is small (a few KB) so clients replace rather than merge.
   station; `sites` is `[]` until a client sends `set_mosaic`
   ([My mosaic](#my-mosaic)). Always sent. With the `height` rule (S30) it
   also carries `heightM` and `above`.
+- `section` (S24c) is the vertical cut a client asked for with
+  `set_section`, shared by every client like the station, or `null` when
+  there is none ([Sections and profiles](#sections-and-profiles)). Always
+  sent; an engine older than S24c sends no `section`.
 - `frame.palette` has one color per class, in class order, and `frame.bounds`
   has one more entry than `palette`: class `i` covers `bounds[i]` up to
   `bounds[i+1]` in `units`. The UI uploads `palette` to the GPU as a
@@ -315,10 +328,17 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 {"type":"set_mosaic","sites":[{"id":"vara"},{"id":"nohur","reachKm":150},{"id":"dksin"}],"rule":"lowest"}
 {"type":"set_mosaic","sites":["vara","nohur","dksin"],"rule":"height","heightM":3000,"above":"sea"}
 {"type":"tiles_needed","z":11,"x0":469,"y0":807,"x1":472,"y1":810}
+{"type":"set_section","from":{"lat":58.26,"lon":12.83},"to":{"lat":59.93,"lon":10.72}}
+{"type":"set_section"}
+{"type":"profile","lat":58.70,"lon":13.40}
 ```
 
 - `set_mosaic` (S25) chooses My mosaic's radars, each one's reach and the
   combine rule. The rules are in [My mosaic](#my-mosaic).
+- `set_section` (S24c) sets, moves or (with neither point) clears the
+  vertical cut in `state.section`; `profile` (S24c) asks for one column's
+  values, answered with `profile` to the sender only, like `places`. Both
+  are in [Sections and profiles](#sections-and-profiles).
 
 - `select_site` names a station from `hello.sites`. The engine goes
   live on it: the newest frame in its catalog (the per-station ring buffer) or
@@ -1209,7 +1229,130 @@ reason).
   measured bytes, requests and seconds per frame are in
   `coord/log/S24b.md`.
 
-## Terrain
+## Sections and profiles
+
+Additive since S24c (still version 2). A vertical cut through what the
+selected station shows, along a line the user draws (`set_section`), and
+one column's values at a tap (`profile`): how tall a storm is, and which
+radars saw it. Both are made by the engine from the radars' volumes in the
+tilt store, for the **newest** complete frame of the timeline only. They
+never make a request of their own and never change what is polled: the
+engine uses the volumes it already holds for what a client is showing.
+
+**What it is made from.** The station's radars, as its frames place them:
+a radar alone at its full range, My mosaic's set with its reaches, a
+composite's every radar at full range (`sweden`, `nordic`, as [its
+products](#the-composites-products)). Each radar gives every scan the tilt
+store holds of its volume at the frame's time T (the 5-minute mark of the
+frame's `scanTime`, as My mosaic's nominal time); a radar whose volume at T
+reaches less than its full range takes the distances past its farthest scan
+from its latest longer volume up to 10 minutes older, as in My mosaic. A
+radar with no volume at T in the store is left out. So the cut is as full
+as what is shown reads:
+
+- a composite's `CMAX`, `ETOP`, `VIL` or `CAPPI`, a radar's `CAPPI`, `CMAX`,
+  `ETOP` or `VIL`, and My mosaic at a height read whole volumes: every scan;
+- a composite's `LOWB`, a radar's `REF` or `HYBRID`, and My mosaic's
+  lowest-scan rules read one or two scans: the cut shows those beams only;
+- a composite's `REF` (the provider's own composite) reads no volume: the
+  cut is `empty` unless the store still holds its radars' volumes for T.
+
+**The grid.** Built when a client asks for a section or a profile and none
+is held for the newest frame; one at a time; a transient of the engine,
+never stored:
+
+- Columns: the station's frames' box (a radar's reach circle, My mosaic's
+  box, a composite's box) on the Web Mercator lattice counted from x = 0
+  and y = 0, in texels of **4,000 m** (two of the products' 2,000 m texels a
+  side: about 2 km on the ground at 60° N, 1.4 km at 70° N, 2.3 km at 55°
+  N). Levels: **24 of 500 m** above sea level, from 0 to 12 km.
+- Fill, with no averaging: each radar is placed on the 2,000 m texels
+  exactly as in My mosaic (ground distance and bearing on the 6,371 km
+  sphere; per scan the gate on the 4/3 earth at the scan's own angle and
+  the ray nearest the bearing within 0.75°). Each gate that is not no data
+  (code 1) goes to every level its beam covers there: its beam centre's
+  height above sea level (`altM + R cos(e) / cos(e + s/R) − R`) plus and
+  minus `r·tan(0.5°)`, a 1° beam at slant range `r`, clipped to 0–12 km. A
+  cell keeps the **maximum** code (the maximum in linear Z: codes rise with
+  dBZ) and counts its samples, up to 255; a 4,000 m column takes the samples
+  of its four 2,000 m texels. A cell no beam reached has no samples (no
+  data); one whose samples are all below threshold holds 0.
+- Each cell also records which radars fed it (up to 8 per column: a column
+  that more radars reach records the first 8 in the station's order per
+  cell; `engine.log` counts such columns), and each column every radar
+  that reached it.
+- Held until the newest frame is replaced, or 3 minutes after a section or
+  profile last used it, then dropped. While a section is set, a new newest
+  frame builds the next grid and cuts the section again; nothing else
+  builds one. A Nordic grid is about 77 MB while held; its fill seconds and
+  the engine's memory are in `coord/log/S24c.md`.
+
+**`set_section`.** `from` and `to` are points (`lat` in [−90, 90], `lon` in
+[−180, 180]) at least 2 km apart; anything else is answered with an
+`error`. Without either point it clears the section. One section at a time,
+shared by every client like the station: the latest `set_section` replaces
+it. The engine drops it when the client that set it disconnects, or on a
+clear; a station switch keeps the line and cuts it from the new station's
+grid.
+
+The cut follows the great circle from `from` to `to` on the 6,371 km
+sphere in columns of 2,000 m of ground (the length ÷ 2,000 m rounded up, at
+most 300: a line over 600 km has 300 columns of length ÷ 300). Column `i`
+takes the grid column containing the point `(i + 0.5)` column lengths from
+`from`; outside the grid it is no data.
+
+```json
+"section":{"from":{"lat":58.26,"lon":12.83},"to":{"lat":59.93,"lon":10.72},
+           "status":"ready","message":"",
+           "frameId":"nordic-20260915T120000Z-cmax","scanTime":"2026-09-15T12:00:00Z",
+           "texture":"tex/section-nordic-4242-r1757937731000000000.png",
+           "columns":110,"lengthKm":219.6,"levels":24,"levelM":500,
+           "units":"dBZ","scale":2.0,"offset":66.0,
+           "palette":["#34465f","..."],"bounds":[-32,0,10,20,30,40,45,50,55,60,65,70,96],
+           "radars":["vara","nohur"]}
+```
+
+- `status`: `building` (the grid or the cut is being made; `texture` is
+  `""`, and a client may keep showing its previous cut), `ready`, or `empty`
+  (nothing to cut: `message` says why, `texture` is `""`).
+- `frameId` and `scanTime` name the frame the cut was made for: the newest
+  complete timeline entry when it was cut. A client shows the cut only
+  while that frame is the newest entry and on screen, and hides it while
+  the user steps or scrubs through history (sections of older frames are
+  not made).
+- `texture`: a PNG, 8-bit grayscale, `columns` wide and `levels` high,
+  row 0 the top level (11.5–12 km), the last row the lowest (0–0.5 km),
+  column 0 at `from`. Codes as a [code texture](#texture-files): 0 below
+  threshold, 1 no data (no beam there), 2–255 measured, value = (code −
+  `offset`) / `scale` in `units`, always reflectivity whatever product the
+  frame shows, so the section carries its own `palette` and `bounds` (the
+  reflectivity's) and a client applies the code texture's class rule with
+  them. A new name each time it is cut; referenced by `state`, so it is
+  retired 30 s after `section` stops naming it.
+- `radars`: the ids of the radars whose beams reached any column of the
+  cut, in the station's order; the frame's `attribution` credits them.
+
+**`profile`.** One column at `lat`, `lon` (in range, else an `error`),
+answered to the sender only, at once when the grid is held and otherwise
+once it is built (a few seconds):
+
+```json
+{"type":"profile","v":2,"lat":58.70,"lon":13.40,"status":"ready","message":"",
+ "frameId":"nordic-20260915T120000Z-cmax","scanTime":"2026-09-15T12:00:00Z","units":"dBZ",
+ "levels":[{"bottomM":0,"topM":500,"dbz":24.5,"samples":6,"radars":["vara"]},
+           {"bottomM":500,"topM":1000,"dbz":null,"samples":0,"radars":[]}],
+ "radars":["vara","nohur"],"echoTopM":7500}
+```
+
+- `levels`: 24, bottom to top. `dbz` is the cell's maximum, `null` when no
+  echo was measured there; `samples` its count, 0 where no beam reached it
+  (so `dbz` `null` with samples above 0 is clear air, below threshold);
+  `radars` the radars whose beams fed it.
+- `radars`: every radar that reached the column; `echoTopM`: the top of the
+  highest level at or above 18 dBZ (`ETOP`'s threshold), `null` when none.
+- `status`: `ready`, `empty` (nothing to cut, as for a section, with
+  `message`), or `outside` (the point is outside the grid; every level has
+  no samples).
 
 Additive since S30 (still version 2). Heights `above` `ground` measure from
 a terrain model the engine carries: `engine/data/terrain-nordic-2km.bin`,

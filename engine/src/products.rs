@@ -583,10 +583,33 @@ pub fn for_station(station: &Station) -> (Vec<&'static str>, Vec<Elevation>) {
 /// A station as `hello.sites[]` sends it.
 pub fn site_entry(station: Station) -> crate::protocol::SiteEntry {
     let (products, elevations) = for_station(&station);
+    let above = if products.contains(&CAPPI) {
+        above_for(&station)
+    } else {
+        Vec::new()
+    };
     crate::protocol::SiteEntry {
         station,
         products,
         elevations,
+        above,
+    }
+}
+
+/// Whether a height above the ground means anything at `station` (S32): the
+/// terrain grid (S30) holds a radar's whole reach, and a composite's box
+/// (the Nordic ones); a Spanish radar's heights are above sea level only.
+pub fn has_terrain(station: &Station) -> bool {
+    station.kind == SiteKind::Grid
+        || crate::terrain::covers(station.lat, station.lon, station.range_km)
+}
+
+/// What `CAPPI`'s height can be above at `station` (`hello.sites[].above`).
+pub fn above_for(station: &Station) -> Vec<&'static str> {
+    if has_terrain(station) {
+        vec![Above::Sea.id(), Above::Ground.id()]
+    } else {
+        vec![Above::Sea.id()]
     }
 }
 
@@ -605,7 +628,8 @@ pub fn want_for(station: &Station, choice: &Choice) -> Option<Want> {
         station.alt_m,
     )?;
     Some(match (want, choice.above) {
-        (Want::Cappi(base, agl), Some(Above::Ground)) => Want::CappiGround(
+        // S32: no terrain under this radar: its heights are above sea level.
+        (Want::Cappi(base, agl), Some(Above::Ground)) if has_terrain(station) => Want::CappiGround(
             base,
             agl,
             At {
@@ -649,7 +673,16 @@ pub fn carry(choice: &Choice, deg: Option<f64>, to: &Station) -> Choice {
         };
     }
     if want_for(to, choice).is_some() {
-        choice.clone()
+        // S32: a height above the ground stays one above sea level on a
+        // radar with no terrain under it (a Spanish one), and says so.
+        let above = match choice.above {
+            Some(Above::Ground) if !has_terrain(to) => Some(Above::Sea),
+            above => above,
+        };
+        Choice {
+            above,
+            ..choice.clone()
+        }
     } else {
         Choice::default()
     }
@@ -1906,10 +1939,18 @@ mod tests {
             height_m: None,
             above: None,
         };
+        // Where they stand (S32: a height above the ground carries over only
+        // to a radar the terrain grid holds).
+        let at = |s: Station, lat, lon| Station {
+            lat,
+            lon,
+            range_km: 240.0,
+            ..s
+        };
         let (smhi, norway, finland) = (
-            polar(ProviderId::Smhi, "SE"),
-            polar(ProviderId::Ord, "NO"),
-            polar(ProviderId::Ord, "FI"),
+            at(polar(ProviderId::Smhi, "SE"), 58.26, 12.83),
+            at(polar(ProviderId::Ord, "NO"), 59.63, 10.56),
+            at(polar(ProviderId::Ord, "FI"), 60.13, 21.64),
         );
         let grid = Station {
             kind: SiteKind::Grid,
@@ -2506,6 +2547,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// S32: a Spanish radar lies outside the terrain grid (S30, Nordic): its
+    /// hello entry offers heights above sea level only, a height above the
+    /// ground asked of it is made above sea level, and one carried over from a
+    /// Nordic radar says so. Every product but the composites' is offered.
+    #[test]
+    fn a_spanish_radar_has_every_product_and_heights_above_sea_only() {
+        let table = crate::providers::table();
+        let by_id = |id: &str| table.sites.iter().find(|s| s.id == id).unwrap().clone();
+        let (esahr, nohur) = (by_id("esahr"), by_id("nohur"));
+        let entry = site_entry(esahr.clone());
+        assert_eq!(
+            entry.products,
+            ["REF", "HYBRID", "CAPPI", "CMAX", "ETOP", "VIL"]
+        );
+        assert_eq!(
+            entry.elevations.iter().map(|e| e.deg).collect::<Vec<_>>(),
+            [0.5, 1.3, 2.1]
+        );
+        assert_eq!(entry.above, ["sea"]);
+        assert_eq!(site_entry(nohur.clone()).above, ["sea", "ground"]);
+        assert_eq!(
+            nominal_angles(&by_id("essse")),
+            [0.5, 1.4, 2.3],
+            "San Sebastián and Valladolid scan higher"
+        );
+        let ground = choose("CAPPI", 0, Some(2000), Some("ground")).unwrap();
+        assert!(matches!(
+            want_for(&nohur, &ground),
+            Some(Want::CappiGround(..))
+        ));
+        assert!(matches!(want_for(&esahr, &ground), Some(Want::Cappi(..))));
+        let carried = carry(&ground, None, &esahr);
+        assert_eq!(
+            (carried.id.as_str(), carried.height_m, carried.above),
+            ("CAPPI", Some(2000), Some(Above::Sea))
+        );
+        assert_eq!(carry(&ground, None, &nohur).above, Some(Above::Ground));
+        // The serialized entry: `above` only where CAPPI is offered.
+        let json = serde_json::to_value(site_entry(esahr)).unwrap();
+        assert_eq!(json["above"], serde_json::json!(["sea"]));
+        let grid = serde_json::to_value(site_entry(by_id("mymosaic"))).unwrap();
+        assert!(grid.get("above").is_none());
     }
 
     /// The vendored blockage tables (`scripts/blockage-tables.py`): 360

@@ -367,8 +367,8 @@ mod tests {
     fn the_table_is_smhis_twelve_radars_its_composite_and_ords_twenty_nine() {
         let sites = table().sites;
         // SMHI's 13 (12 radars and sweden), OPERA's Nordic composite (S16),
-        // ORD's 29 radars (S15) and My mosaic (S25), listed last.
-        assert_eq!(sites.len(), 13 + 1 + 29 + 1);
+        // ORD's 29 radars (S15) and 11 (S32) and My mosaic (S25), listed last.
+        assert_eq!(sites.len(), 13 + 1 + 29 + 11 + 1);
         let mine = sites.last().unwrap();
         assert_eq!(
             (mine.id.as_str(), mine.kind, mine.provider),
@@ -426,6 +426,8 @@ mod tests {
             ("NO", 12, "MET Norway, CC BY 4.0", 240.0..=240.0),
             ("FI", 12, "FMI, CC BY 4.0", 250.0..=250.0),
             ("DK", 5, "DMI, CC BY 4.0", 237.5..=238.0),
+            // DEC-16 (S32): AEMET, rstart in metres, 240-250 km.
+            ("ES", 11, "© AEMET, CC BY 4.0", 240.1..=250.2),
         ] {
             let of: Vec<&&Station> = ord.iter().filter(|s| s.country == country).collect();
             assert_eq!(of.len(), count, "{country}");
@@ -441,17 +443,20 @@ mod tests {
                 assert!(s.aliases.is_empty(), "{}: the node code is the id", s.id);
                 let kind = if country == "FI" { "SCAN" } else { "PVOL" };
                 assert_eq!(s.source, format!("{country}/{}/{kind}", s.id));
-                assert!(
-                    (54.0..72.0).contains(&s.lat) && (4.0..32.0).contains(&s.lon),
-                    "{}",
-                    s.id
-                );
+                let (lats, lons) = if country == "ES" {
+                    // The peninsula and the Canaries.
+                    (27.5..44.0, -17.0..2.0)
+                } else {
+                    (54.0..72.0, 4.0..32.0)
+                };
+                assert!(lats.contains(&s.lat) && lons.contains(&s.lon), "{}", s.id);
                 assert!(!s.name.is_empty() && !s.state.is_empty(), "{}", s.id);
             }
         }
-        assert_eq!(ord.len(), 29);
+        assert_eq!(ord.len(), 40);
         let id = |name: &str| resolve(&sites, name).map(|s| s.id.as_str());
         assert_eq!(id("nohur"), Some("nohur"));
+        assert_eq!(id("ESAHR"), Some("esahr"));
         assert_eq!(id("FIKOR"), Some("fikor"));
         assert_eq!(id("dksin"), Some("dksin"));
     }

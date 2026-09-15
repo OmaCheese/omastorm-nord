@@ -122,6 +122,26 @@ pub fn max_m() -> f64 {
     grid().map_or(0.0, Grid::max_m)
 }
 
+/// Whether the grid holds a radar's whole reach: the box around the circle
+/// of `range_km` at (`lat`, `lon`) lies inside it (S32: the grid is Nordic,
+/// so a Spanish radar's heights are above sea level only, and "above
+/// ground" is not offered there).
+pub fn covers(lat: f64, lon: f64, range_km: f64) -> bool {
+    let Some(g) = grid() else {
+        return false;
+    };
+    let dlat = range_km / 111.2;
+    let dlon = range_km / (111.2 * lat.to_radians().cos().max(0.05));
+    let (west, east) = (lon - dlon, lon + dlon);
+    let (south, north) = ((lat - dlat).max(-85.0), (lat + dlat).min(85.0));
+    let col = |lon: f64| ((MERCATOR_R * lon.to_radians()) / PIXEL_M).floor() as i64;
+    let row = |lat: f64| (mercator_y(lat) / PIXEL_M).floor() as i64 + 1;
+    col(west) >= g.col0
+        && col(east) < g.col0 + g.width as i64
+        && row(north) <= g.north0
+        && row(south) > g.north0 - g.height as i64
+}
+
 /// The point `d` metres from (`lat`, `lon`) along the initial bearing
 /// `bearing` (degrees), on the lookup rule's 6,371 km sphere.
 pub fn destination(lat: f64, lon: f64, bearing: f64, d: f64) -> (f64, f64) {
@@ -151,9 +171,14 @@ mod tests {
             g.width,
             g.height
         );
-        // Every radar of the table lies well inside the box.
+        // Every Nordic radar of the table lies well inside the box, its whole
+        // reach too; Spain's (S32) lie outside it.
         for s in crate::providers::table().sites {
-            if s.kind == crate::protocol::SiteKind::Polar {
+            if s.kind == crate::protocol::SiteKind::Polar && s.country == "ES" {
+                assert!(!covers(s.lat, s.lon, s.range_km), "{}", s.id);
+                assert_eq!(at(s.lat, s.lon), 0.0, "{}", s.id);
+            } else if s.kind == crate::protocol::SiteKind::Polar {
+                assert!(covers(s.lat, s.lon, s.range_km), "{}", s.id);
                 let (x, y) = (MERCATOR_R * s.lon.to_radians(), mercator_y(s.lat));
                 let c = (x / PIXEL_M).floor() as i64 - g.col0;
                 let r = g.north0 - ((y / PIXEL_M).floor() as i64 + 1);

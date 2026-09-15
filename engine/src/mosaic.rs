@@ -128,14 +128,25 @@ pub const SWEDEN_BOX: LonLatBox = LonLatBox {
 };
 
 /// The radars a composite's products are made from (S24b): `sweden` from
-/// SMHI's twelve, `nordic` (OPERA's) from every radar in the table.
+/// SMHI's twelve, `nordic` (OPERA's) from every radar in the table whose
+/// reach touches its box (S32: not Spain's).
 pub fn grid_radars(station: &Station, sites: &[Station]) -> Vec<Station> {
+    let reaches = |s: &Station| {
+        grid_box(station).is_none_or(|b| {
+            let dlat = s.range_km / 111.2;
+            let dlon = s.range_km / (111.2 * s.lat.to_radians().cos().max(0.05));
+            s.lat + dlat >= b.south
+                && s.lat - dlat <= b.north
+                && s.lon + dlon >= b.west
+                && s.lon - dlon <= b.east
+        })
+    };
     sites
         .iter()
         .filter(|s| {
             s.kind == SiteKind::Polar
                 && match station.provider {
-                    ProviderId::Opera => true,
+                    ProviderId::Opera => reaches(s),
                     provider => s.provider == provider,
                 }
         })

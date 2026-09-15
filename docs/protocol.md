@@ -162,7 +162,9 @@ It is small (a few KB) so clients replace rather than merge.
   judged against the station's provider's cadence (DEC-9 generalized):
   `stale` from the cadence plus 10 minutes, `unavailable` from the larger of
   30 minutes and the stale threshold plus one cadence, unless a provider
-  documents its own. For SMHI (5-minute cadence) that is `ok` under 15
+  documents its own (S32: an ORD station's cadence is its country's, 10
+  minutes for Spain's radars, so `stale` from 20 minutes and `unavailable`
+  from 30). For SMHI (5-minute cadence) that is `ok` under 15
   minutes, `stale` from 15 minutes, `unavailable` from 30 minutes (SMHI is
   up and the station is silent: maintenance or an outage; Leksand has
   published nothing since January 2026). A healthy SMHI frame is already 5 to
@@ -640,7 +642,12 @@ A provider supplies the station's listing and polling, its cadence (and so
 its staleness thresholds), its backfill depth, its range-read budget, and
 the default `attribution`, `country`, and `rangeKm` of its rows in
 `engine/data/sites.json`. SMHI: the poller above, a 5-minute cadence,
-60-frame backfill, and DEC-2's range reads. `opera` (S16, DEC-14): the grid
+60-frame backfill, and DEC-2's range reads. `ord` (S15, DEC-13; Spain since
+S32, DEC-16): EUMETNET Open Radar Data's 24-hour S3 cache, credited to each
+national owner (`MET Norway`, `FMI`, `DMI`, `© AEMET`, CC BY 4.0), a
+5-minute cadence (Spain's AEMET radars 10 minutes; of their two volumes
+every 10 minutes the long-range one is read, not the Doppler one), and a
+backfill of up to 60 files over the last five hours. `opera` (S16, DEC-14): the grid
 station `nordic`, EUMETNET OPERA's European composite from the Open Radar
 Data 24-hour S3 cache, cut to 3–33° E, 53–71.5° N (a 1670 × 2297 texture,
 larger than Sweden's 1364 × 1983 and above WebGL2's guaranteed 2048), read
@@ -727,8 +734,21 @@ Each `hello.sites[]` entry names what the station can show and its angles:
   S24a, FMI's, whose files hold one angle each in ORD's cache: the engine
   reads the five files of one nominal time as one volume ([FMI's
   volumes](#fmis-volumes)). Before S24a FMI's radars offered `REF` alone,
-  with `elevations` `[]`. `HYBRID` is offered only where the engine also
+  with `elevations` `[]`. Since S32 AEMET's eleven (Spain) offer them too,
+  from their three angles (0.5, 1.3, 2.1°; Valladolid and San Sebastián
+  0.5, 1.4, 2.3°), so their storm height and rain mass see little above
+  a few kilometres far out. `HYBRID` is offered only where the engine also
   has a blockage table (none for FMI's radars yet).
+- `above` (S32): what `CAPPI`'s height can be measured from at this
+  station, a subset of `hello.products`' `above`: `["sea","ground"]` where
+  the terrain grid holds the radar's whole reach (every Nordic radar, and
+  the Nordic composites), `["sea"]` elsewhere (Spain's radars: the grid is
+  Nordic, [Terrain](#terrain)). Sent only with `CAPPI` in `products`.
+  Clients offer "above the ground" only where it is listed, and for My
+  mosaic only when every chosen radar lists it. A `ground` choice on a
+  station without it is made above sea level (a switch carries it over as
+  `sea`). An engine older than S32 sends no `above` here: `hello.products`
+  decides alone.
 - `elevations`: the radar's scan angles, ascending; the position is the
   `elevationIndex`. `beamKm50` and `beamKm100` are the beam centre's height
   above the antenna at 50 and 100 km ground distance, in km with one

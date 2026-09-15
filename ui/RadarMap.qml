@@ -572,6 +572,9 @@ Item {
     // beam 2 km up.
     readonly property var faintSites: !drawable || !site || grid ? []
         : rings.filter(r => !r.strong).map(r => ({id:siteId, lat:site.lat, lon:site.lon, km:r.km}))
+    // S25: My mosaic's chosen radars at their reach, [{id, lat, lon, km}]:
+    // the checklist's while it is open, the set's while My mosaic shows.
+    property var mosaicCircles: []
 
     // Upload the immutable sweep and its azimuth lookup once. Pan/zoom updates
     // shader uniforms; the polar-to-screen lookup runs in the shader and no
@@ -733,6 +736,27 @@ Item {
                         strokeWidth: 100000/map.worldPixels
                         strokeStyle: ShapePath.DashLine
                         dashPattern: [3, 5]
+                        PathMultiline {
+                            paths: map.clippedCoverage(vertices)
+                        }
+                    }
+                }
+            }
+        }
+        // My mosaic's radars (S25), solid in accent.
+        Repeater {
+            model: map.mosaicCircles
+            Loader {
+                id: mosaicRing
+                required property var modelData
+                active: map.coverageInReach(modelData)
+                sourceComponent: Shape {
+                    readonly property var vertices: map.coveragePoints(mosaicRing.modelData)
+                    transform: Scale { xScale: map.worldPixels/100000; yScale: xScale }
+                    ShapePath {
+                        fillColor: "transparent"
+                        strokeColor: Qt.alpha(map.theme.accent, .8)
+                        strokeWidth: 1.5*100000/map.worldPixels
                         PathMultiline {
                             paths: map.clippedCoverage(vertices)
                         }

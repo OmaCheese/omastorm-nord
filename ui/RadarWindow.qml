@@ -6,6 +6,7 @@ import Quickshell.Io
 import "Sites.js" as Sites
 import "Keys.js" as KeyMap
 import "Location.js" as Location
+import "Mosaic.js" as Mosaic
 
 Item {
     id: app
@@ -239,7 +240,34 @@ Item {
         if (!session && KeyMap.envFloor(Quickshell.env("OMASTORM_WEAK")) === undefined) weakFloor = floor;
     }
     Component.onCompleted: applySettings()
-    readonly property bool overlayOpen: picker.open || locationPicker.open || sheet.open
+    readonly property bool overlayOpen: picker.open || locationPicker.open || sheet.open || mosaicPicker.open
+    // My mosaic (S25): whether it is the station shown, and the chosen
+    // radars' circles for the map (the checklist's while it is open).
+    readonly property bool mosaicShown: !!engine.site && engine.site.provider === "mosaic"
+    readonly property var mosaicSet: state && state.mosaic && state.mosaic.sites ? state.mosaic : null
+    readonly property var mosaicCircles: mosaicPicker.open ? mosaicPicker.circles
+        : !mosaicShown || !mosaicSet ? [] : mosaicSet.sites.map(s => {
+            var site = engine.sites.find(x => x.id === s.id);
+            return site ? {id: s.id, lat: site.lat, lon: site.lon, km: Mosaic.reachOf(s, site)} : null;
+        }).filter(c => c !== null)
+    readonly property string mosaicLabel: !mosaicShown ? "" : !mosaicSet || !mosaicSet.sites.length ? "CHOOSE RADARS"
+        : Mosaic.ruleName(engine.mosaic ? engine.mosaic.rules : [], mosaicSet.rule).toUpperCase() + " / " + mosaicSet.sites.length + (mosaicSet.sites.length === 1 ? " RADAR" : " RADARS")
+    // SHOW in the checklist: My mosaic, centred on the chosen radars.
+    function showMosaic(set) {
+        if (!engine.mosaic) return;
+        var s = 90, n = -90, w = 180, e = -180;
+        for (var x of set.sites) {
+            var site = engine.sites.find(r => r.id === x.id);
+            if (!site) continue;
+            var km = Mosaic.reachOf(x, site), dLat = km / 111.2, dLon = km / (111.2 * Math.cos(site.lat * Math.PI / 180));
+            s = Math.min(s, site.lat - dLat); n = Math.max(n, site.lat + dLat);
+            w = Math.min(w, site.lon - dLon); e = Math.max(e, site.lon + dLon);
+        }
+        if (s > n) return;
+        store.chooseRadar(engine.mosaic.station, (s + n) / 2, (w + e) / 2, "My mosaic");
+        applyView();
+        map.zoom(Math.max((n - s) * 111.2, (e - w) * 111.2 * Math.cos((s + n) / 2 * Math.PI / 180)) * 1.05);
+    }
     // The product chooser (S20, docs/protocol.md products): the selected
     // radar's products (hello.sites[].products, named by hello.products),
     // then its angles with the beam centre's height at 50 and 100 km. Empty
@@ -396,6 +424,15 @@ Item {
     }
     function choose(s) {
         if (!state || !s) return;
+        // My mosaic with no set, here or remembered: the checklist first.
+        if (s.provider === "mosaic" && !(mosaicSet && mosaicSet.sites.length) && !Mosaic.valid(store.mosaicStore.set)) {
+            mosaicPicker.show();
+            return;
+        }
+        if (s.provider === "mosaic") {
+            showMosaic(mosaicSet && mosaicSet.sites.length ? mosaicSet : store.mosaicStore.set);
+            return;
+        }
         store.chooseRadar(s.id, Number(s.lat), Number(s.lon), s.name || s.id);
         applyView();
     }
@@ -409,6 +446,22 @@ Item {
         function move(delta: int): void { picker.move(delta); }
         function matches(): string { return JSON.stringify(picker.rows.map(r => r.site.id)); }
         function status(): string { return JSON.stringify({open: picker.open, query: picker.query, selected: picker.selected, total: picker.ranked.total, focused: picker.fieldFocused}); }
+    }
+    // My mosaic's checklist from outside, for checks and captures (S25):
+    // quickshell ipc --pid <pid> call mosaic toggle vara
+    IpcHandler {
+        target: "mosaic"
+        function open(): void { mosaicPicker.show(); }
+        function close(): void { mosaicPicker.close(); }
+        function accept(): void { mosaicPicker.accept(); }
+        function toggle(id: string): void { mosaicPicker.toggle(id); }
+        function step(id: string, delta: int): void { if (id) mosaicPicker.stepReach(id, delta); else mosaicPicker.stepAll(delta); }
+        function rule(id: string): void { mosaicPicker.setRule(id); }
+        function status(): string {
+            return JSON.stringify({open: mosaicPicker.open, draft: mosaicPicker.draft, all: mosaicPicker.allText, rows: mosaicPicker.radars.length,
+                                   circles: app.mosaicCircles.length, label: app.mosaicLabel, shown: app.mosaicShown,
+                                   command: engine.sites.length ? Mosaic.command(mosaicPicker.draft, engine.sites) : null});
+        }
     }
     IpcHandler {
         target: "location"
@@ -710,17 +763,21 @@ Item {
                             id: productText
                             // An angle only for one scan angle (REF, S20); a
                             // product built from several has none to show.
-                            text: !app.scan ? "" : app.scan.productName.toUpperCase() + (!app.scan.scanTime ? "" : app.scan.kind === "grid" ? " / COMPOSITE" : (app.scan.product || "REF") === "REF" ? " / " + app.scan.elevationDeg.toFixed(1) + "°" : "")
+                            // My mosaic (S25) names its rule and radars, and
+                            // opens its checklist from here.
+                            text: app.mosaicShown ? app.mosaicLabel
+                                : !app.scan ? "" : app.scan.productName.toUpperCase() + (!app.scan.scanTime ? "" : app.scan.kind === "grid" ? " / COMPOSITE" : (app.scan.product || "REF") === "REF" ? " / " + app.scan.elevationDeg.toFixed(1) + "°" : "")
                             font.underline: productTextArea.containsMouse && productTextArea.enabled
                             // The product menu opens from here (S29): the
                             // chip row that held its chip is hidden.
                             MouseArea {
                                 id: productTextArea
                                 anchors.fill: parent
-                                enabled: app.productRows.length > 0
+                                enabled: app.productRows.length > 0 || (app.mosaicShown && !!engine.mosaic)
                                 hoverEnabled: true
                                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onClicked: productMenu.opened ? productMenu.close() : productMenu.show()
+                                onClicked: app.mosaicShown ? mosaicPicker.show()
+                                    : productMenu.opened ? productMenu.close() : productMenu.show()
                             }
                         }
                         // The source's credit, verbatim (SMHI, MET Norway, FMI, DMI, OPERA).
@@ -767,6 +824,7 @@ Item {
                     texture: engine.texture
                     azimuthLut: engine.azimuthLut
                     codes: engine.codes
+                    mosaicCircles: app.mosaicCircles
                     siteId: app.siteId
                     sites: engine.sites
                     referenceSites: engine.referenceSites
@@ -1199,6 +1257,21 @@ Item {
                 app.notice = name ? "LOCATION · " + name.toUpperCase() : "LOCATION · " + lat.toFixed(4) + ", " + lon.toFixed(4);
                 noticeTimer.restart();
             }
+          }
+          // My mosaic's checklist (S25) beside the map, which keeps showing
+          // the ticked radars' circles.
+          MosaicPicker {
+            id: mosaicPicker
+            anchors.fill: parent
+            engine: engine
+            theme: app.theme
+            store: app.store.mosaicStore
+            reach: reachStore
+            centerLat: map.centerLat
+            centerLon: map.centerLon
+            compact: win.compact
+            cardTop: layout.anchors.margins + mapFrame.y
+            onShown: set => app.showMosaic(set)
           }
           // The treatment menu over the surface (not a Popup, which the
           // window overlay would draw outside the captured surface): a card

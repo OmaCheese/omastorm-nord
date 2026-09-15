@@ -146,8 +146,30 @@ metadata and chunks byte-identical to the original's.
 
 Together they cover both gate spacings and three reaches of SMHI's tilts,
 Hurum's 720-ray lowest tilt beside 360-ray upper ones, and DMI's first gate
-at 750 m. FMI's files hold one angle each, so FMI's radars offer the lowest
-scan only and have no multi-angle fixture. The answer keys are
+at 750 m.
+
+FMI's files hold one angle each (S24a): the engine reads the five `SCAN`
+files of one nominal time as one volume. Its fixture is the five files of
+Korppoo at 2026-09-15 00:00 UTC, each cut to DBZH by
+`scripts/trim-odim.py ORIGINAL.h5 EXTRACT.h5 --keep DBZH` (its one tilt,
+metadata and chunks byte-identical to the original's), 295,022 bytes
+together. The originals,
+`s3.waw3-1.cloudferro.com/openradar-24h/2026/09/15/FI/fikor/SCAN/fikor@20260915T0000@<angle>@DBZH_TH_VRADH.h5`,
+are named with their sizes and digests in `golden/fikor-20260915/products.json`.
+
+| Fixture (`data/fixtures/`) | Angle | Original bytes | Bytes |
+|---|---|---|---|
+| `ord_fikor_202609150000_scan05.h5` | 0.5° | 208,995 | 64,368 |
+| `ord_fikor_202609150000_scan07.h5` | 0.7° | 203,378 | 67,804 |
+| `ord_fikor_202609150000_scan15.h5` | 1.5° | 177,736 | 65,905 |
+| `ord_fikor_202609150000_scan30.h5` | 3.0° | 129,124 | 51,561 |
+| `ord_fikor_202609150000_scan50.h5` | 5.0° (367 gates, 183.5 km) | 108,722 | 45,384 |
+
+Its answer key is the assembled volume's column maximum, storm height (8
+"at least" tops) and rain mass (`golden/produce-products.py --parts`);
+`products::tests::an_assembled_volume_matches_its_answer_key` matches them
+byte for byte. Every fixture's key also holds `etop` and `vil` (S24a). The
+answer keys are
 `golden/<id>/products.json` and one gzipped `<variant>.u8.gz` per product,
 composed from every kept tilt by `golden/produce-products.py` (h5py, with
 the contract's formulas in scalar libm arithmetic);

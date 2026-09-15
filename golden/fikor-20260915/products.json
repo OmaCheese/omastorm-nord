@@ -1,0 +1,163 @@
+{
+ "fixture": "fikor-20260915",
+ "station": "WIGOS:0-20010-0-02933,WMO:02933,RAD:FI46,PLC:Korpo,NOD:fikor",
+ "parts": [
+  {
+   "fixture": "ord_fikor_202609150000_scan05.h5",
+   "elangle": 0.5,
+   "bytes": 64368,
+   "sha256": "3fccd4437c3aad23356dbbd2aede269c3e6214427140b5cbbdc9fbf99783138f",
+   "original": {
+    "file": "fikor@20260915T0000@0.5@DBZH_TH_VRADH.h5",
+    "url": "https://s3.waw3-1.cloudferro.com/openradar-24h/2026/09/15/FI/fikor/SCAN/fikor@20260915T0000@0.5@DBZH_TH_VRADH.h5",
+    "bytes": 208995,
+    "sha256": "f31dd8e18106f82516469ac469a41f79af5fd20f31803b0c764780a9336686b5",
+    "by": "scripts/trim-odim.py --keep DBZH"
+   }
+  },
+  {
+   "fixture": "ord_fikor_202609150000_scan07.h5",
+   "elangle": 0.7,
+   "bytes": 67804,
+   "sha256": "b11939c78f8729be46afab3bb0465e08f08c40cafbe800f810525288d7155423",
+   "original": {
+    "file": "fikor@20260915T0000@0.7@DBZH_TH_VRADH.h5",
+    "url": "https://s3.waw3-1.cloudferro.com/openradar-24h/2026/09/15/FI/fikor/SCAN/fikor@20260915T0000@0.7@DBZH_TH_VRADH.h5",
+    "bytes": 203378,
+    "sha256": "34ff303f356268c5936f39bc24c01ab5c70eebcefb931761c77572a37d585b2f",
+    "by": "scripts/trim-odim.py --keep DBZH"
+   }
+  },
+  {
+   "fixture": "ord_fikor_202609150000_scan15.h5",
+   "elangle": 1.5,
+   "bytes": 65905,
+   "sha256": "bc958bf4ccb2fdb19bb77f342adfba7d95081f358b34768b326e350aa82e6763",
+   "original": {
+    "file": "fikor@20260915T0000@1.5@DBZH_TH_VRADH.h5",
+    "url": "https://s3.waw3-1.cloudferro.com/openradar-24h/2026/09/15/FI/fikor/SCAN/fikor@20260915T0000@1.5@DBZH_TH_VRADH.h5",
+    "bytes": 177736,
+    "sha256": "6081d3fa72154c7a06a81d525cbf2b98519fe17b383a76720a906f93939ea283",
+    "by": "scripts/trim-odim.py --keep DBZH"
+   }
+  },
+  {
+   "fixture": "ord_fikor_202609150000_scan30.h5",
+   "elangle": 3.0,
+   "bytes": 51561,
+   "sha256": "41e9f47e5c0b209b53c65e78de128ff68baa6883dd13cafa46e300571b42dcbf",
+   "original": {
+    "file": "fikor@20260915T0000@3.0@DBZH_TH_VRADH.h5",
+    "url": "https://s3.waw3-1.cloudferro.com/openradar-24h/2026/09/15/FI/fikor/SCAN/fikor@20260915T0000@3.0@DBZH_TH_VRADH.h5",
+    "bytes": 129124,
+    "sha256": "4dda6e09b4a80a7199d45549d72d2107e74c7ecf90086d12e0fe3e30de1be09f",
+    "by": "scripts/trim-odim.py --keep DBZH"
+   }
+  },
+  {
+   "fixture": "ord_fikor_202609150000_scan50.h5",
+   "elangle": 5.0,
+   "bytes": 45384,
+   "sha256": "a1c04281b8ddd7dc744ecea2ec46357587c1cf66a42aea20235b910bc37512ee",
+   "original": {
+    "file": "fikor@20260915T0000@5.0@DBZH_TH_VRADH.h5",
+    "url": "https://s3.waw3-1.cloudferro.com/openradar-24h/2026/09/15/FI/fikor/SCAN/fikor@20260915T0000@5.0@DBZH_TH_VRADH.h5",
+    "bytes": 108722,
+    "sha256": "8e5f937c86a28280a7520c6c90913ce44e9eaf2a572b9e676d0902d6327b1c7a",
+    "by": "scripts/trim-odim.py --keep DBZH"
+   }
+  }
+ ],
+ "tilts": [
+  {
+   "dataset": "/dataset1",
+   "elangle": 0.5,
+   "rays": 360,
+   "gates": 500,
+   "firstGateM": 250,
+   "gateSpacingM": 500
+  },
+  {
+   "dataset": "/dataset1",
+   "elangle": 0.7,
+   "rays": 360,
+   "gates": 500,
+   "firstGateM": 250,
+   "gateSpacingM": 500
+  },
+  {
+   "dataset": "/dataset1",
+   "elangle": 1.5,
+   "rays": 360,
+   "gates": 500,
+   "firstGateM": 250,
+   "gateSpacingM": 500
+  },
+  {
+   "dataset": "/dataset1",
+   "elangle": 3.0,
+   "rays": 360,
+   "gates": 500,
+   "firstGateM": 250,
+   "gateSpacingM": 500
+  },
+  {
+   "dataset": "/dataset1",
+   "elangle": 5.0,
+   "rays": 360,
+   "gates": 367,
+   "firstGateM": 250,
+   "gateSpacingM": 500
+  }
+ ],
+ "placementDeg": 0.5,
+ "altM": 61.0,
+ "products": {
+  "cmax": {
+   "what": "column maximum of the assembled volume",
+   "file": "cmax.u8.gz",
+   "rays": 360,
+   "gates": 500,
+   "firstGateM": 250,
+   "gateSpacingM": 500,
+   "u8Sha256": "80a2057dd00f54de81e1c6d7f8fb6e4beb920089973cb8e54edafd891e11c89e",
+   "counts": {
+    "undetect": 102864,
+    "nodata": 0,
+    "measured": 77136
+   }
+  },
+  "etop": {
+   "what": "storm height: highest beam >= 18 dBZ, beam centre + altM 61.0 m, 0.2 km, +1 at least",
+   "file": "etop.u8.gz",
+   "rays": 360,
+   "gates": 500,
+   "firstGateM": 250,
+   "gateSpacingM": 500,
+   "u8Sha256": "599c0ee33e45948c5767f92a665f9099da63631a59f9795a5db6a4f5ef90f08b",
+   "counts": {
+    "undetect": 179606,
+    "nodata": 0,
+    "measured": 394
+   },
+   "atLeast": 8
+  },
+  "vil": {
+   "what": "rain mass: Marshall-Palmer VIL, dBZ capped at 56, 0.5 kg/m2",
+   "file": "vil.u8.gz",
+   "rays": 360,
+   "gates": 500,
+   "firstGateM": 250,
+   "gateSpacingM": 500,
+   "u8Sha256": "b8be4be23244144e86c7fdbcc07c3a0daadebd098d0827e9678f899321115f89",
+   "counts": {
+    "undetect": 179976,
+    "nodata": 0,
+    "measured": 24
+   }
+  }
+ },
+ "byteOrder": "gzip of row-major rays x gates uint8; rays in ascending azimuth of the lowest tilt",
+ "producedBy": "golden/produce-products.py --parts (h5py 3.16.0, numpy 2.5.3)",
+ "producedOn": "2026-09-15"
+}

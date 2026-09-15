@@ -178,7 +178,46 @@ def ray_map(out_az, scan_az):
     return result
 
 
-def compose(tilts, product, height=None, table=None):
+def etop_code(column, alt):
+    """S24a Storm height of one output gate. `column`: the covering tilts,
+    ascending by angle, as (code, beam height above the antenna in m)."""
+    top = None
+    for k, (v, _) in enumerate(column):
+        if v >= 102:  # 18 dBZ
+            top = k
+    if top is None:
+        return 0 if any(v != 1 for v, _ in column) else 1
+    t = (column[top][1] + alt) / 1000.0
+    code = min(2 + 2 * int(rnd(5.0 * t)), 254)
+    at_least = all(v == 1 for v, _ in column[top + 1:])
+    return code + (1 if at_least else 0)
+
+
+def vil_code(column):
+    """S24a Rain mass of one output gate, same `column`: Marshall-Palmer
+    water over the gaps between consecutive beam centres, dBZ capped at 56."""
+    readings = [(v, h) for v, h in column if v != 1]
+    if not readings:
+        return 1
+    if all(v == 0 for v, _ in readings):
+        return 0
+    zs = []
+    for v, h in readings:
+        if v == 0:
+            zs.append((0.0, h))
+        else:
+            dbz = min((float(v) - 66.0) / 2.0, 56.0)
+            zs.append((math.pow(10.0, dbz / 10.0), h))
+    total = 0.0
+    for (za, ha), (zb, hb) in zip(zs, zs[1:]):
+        total += 3.44e-6 * math.pow((za + zb) / 2.0, 4.0 / 7.0) * (hb - ha)
+    # S24a review #4: under 0.25 kg/m2 is code 0, as below threshold.
+    if total < 0.25:
+        return 0
+    return min(2 + int(rnd(2.0 * total)), 255)
+
+
+def compose(tilts, product, height=None, table=None, alt=None):
     tilts = sorted(tilts, key=lambda t: t["elangle"])  # stable, like sort_by
     h = hits(tilts)
     base = tilts[0]
@@ -221,6 +260,9 @@ def compose(tilts, product, height=None, table=None):
             elif product == "clear":
                 v = value(k_clear, i, g)
                 codes.append(1 if v is None else v)
+            elif product in ("etop", "vil"):
+                column = [(value(k, i, g), h[k][g][1]) for k in range(len(tilts)) if h[k][g] is not None]
+                codes.append(etop_code(column, alt) if product == "etop" else vil_code(column))
             else:  # cmax
                 top, below = None, False
                 for k in range(len(tilts)):
@@ -256,7 +298,97 @@ def extract_of(source_url, original, tilts):
     }
 
 
+def write_product(out, products, variant, codes, base, what):
+    blob = gzip.compress(codes, mtime=0)
+    name = f"{variant}.u8.gz"
+    open(os.path.join(out, name), "wb").write(blob)
+    counts = {"undetect": codes.count(0), "nodata": codes.count(1)}
+    counts["measured"] = len(codes) - counts["undetect"] - counts["nodata"]
+    products[variant] = {
+        "what": what,
+        "file": name,
+        "rays": len(base["azimuth"]),
+        "gates": base["gates"],
+        "firstGateM": base["first"],
+        "gateSpacingM": base["spacing"],
+        "u8Sha256": hashlib.sha256(codes).hexdigest(),
+        "counts": counts,
+    }
+    if variant == "etop":
+        # "At least" tops are the odd measured codes (S24a).
+        products[variant]["atLeast"] = sum(1 for c in codes if c >= 2 and c % 2 == 1)
+
+
+def vertical(out, products, tilts, alt):
+    """S24a: the storm height and the rain mass, from every tilt."""
+    codes, base = compose(tilts, "etop", alt=alt)
+    write_product(out, products, "etop", codes, base,
+                  f"storm height: highest beam >= 18 dBZ, beam centre + altM {alt} m, 0.2 km, +1 at least")
+    codes, base = compose(tilts, "vil")
+    write_product(out, products, "vil", codes, base, "rain mass: Marshall-Palmer VIL, dBZ capped at 56, 0.5 kg/m2")
+
+
+def parts_main(args):
+    """S24a: FMI's one-angle SCAN files of one nominal time, assembled into
+    one volume (every dataset of every file, ascending by angle), and its
+    cmax, etop and vil.
+
+      produce-products.py --parts OUT SOURCE_PREFIX FIXTURE=ORIGINAL ...
+    """
+    out, prefix, pairs = args[0], args[1], [a.split("=", 1) for a in args[2:]]
+    os.makedirs(out, exist_ok=True)
+    tilts, parts, alt, station = [], [], None, None
+    for fixture, original in pairs:
+        f = h5py.File(fixture, "r")
+        names = sorted((k for k in f if k.startswith("dataset")), key=lambda k: int(k[len("dataset"):]))
+        tilts.extend(decode(f[k]) for k in names)
+        if alt is None:
+            alt = float(f["where"].attrs["height"])
+            station = text(f["what"].attrs["source"])
+        raw, orig = open(fixture, "rb").read(), open(original, "rb").read()
+        parts.append({
+            "fixture": os.path.basename(fixture),
+            "elangle": float(f[names[0]]["where"].attrs["elangle"]),
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "original": {
+                "file": os.path.basename(original),
+                "url": prefix + os.path.basename(original),
+                "bytes": len(orig),
+                "sha256": hashlib.sha256(orig).hexdigest(),
+                "by": "scripts/trim-odim.py --keep DBZH",
+            },
+        })
+    ascending = sorted(tilts, key=lambda t: t["elangle"])
+    products = {}
+    codes, base = compose(tilts, "cmax")
+    write_product(out, products, "cmax", codes, base, "column maximum of the assembled volume")
+    vertical(out, products, tilts, alt)
+    golden = {
+        "fixture": os.path.basename(os.path.normpath(out)),
+        "station": station,
+        "parts": parts,
+        "tilts": [
+            {"dataset": t["dataset"], "elangle": t["elangle"], "rays": len(t["azimuth"]), "gates": t["gates"],
+             "firstGateM": t["first"], "gateSpacingM": t["spacing"]}
+            for t in ascending
+        ],
+        "placementDeg": rnd(ascending[0]["elangle"] * 100.0) / 100.0,
+        "altM": alt,
+        "products": products,
+        "byteOrder": "gzip of row-major rays x gates uint8; rays in ascending azimuth of the lowest tilt",
+        "producedBy": f"golden/produce-products.py --parts (h5py {h5py.__version__}, numpy {np.__version__})",
+        "producedOn": datetime.date.today().isoformat(),
+    }
+    with open(os.path.join(out, "products.json"), "w") as fh:
+        json.dump(golden, fh, indent=1)
+        fh.write("\n")
+    print(json.dumps({v: (p["rays"], p["gates"], p["counts"], p.get("atLeast")) for v, p in products.items()}))
+
+
 def main():
+    if sys.argv[1] == "--parts":
+        return parts_main(sys.argv[2:])
     src, out, source_url, original = sys.argv[1:5]
     raw = open(src, "rb").read()
     previous = None
@@ -301,6 +433,10 @@ def main():
     for t in (ascending[1], ascending[-1]):
         deg = t["elangle"]
         write(f"a{int(rnd(deg * 10.0))}", b"".join(t["rows"]), t, f"the {deg} deg tilt ({t['dataset']}) as decoded")
+    # S24a: the antenna's height from the file's own /where, not the
+    # engine's site table.
+    alt = float(f["where"].attrs["height"])
+    vertical(out, products, tilts, alt)
 
     golden = {
         "fixture": os.path.basename(os.path.normpath(out)),
@@ -311,6 +447,7 @@ def main():
             for t in tilts
         ],
         "placementDeg": rnd(ascending[0]["elangle"] * 100.0) / 100.0,
+        "altM": alt,
         "blockageTenths": table,
         "products": products,
         "byteOrder": "gzip of row-major rays x gates uint8; rays in ascending azimuth of the lowest tilt (a single angle: its own)",

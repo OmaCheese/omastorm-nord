@@ -74,11 +74,25 @@ pub const BACKFILL: usize = 12;
 /// whole volume is ~39 range requests, 5–6 times its lowest scan
 /// (`docs/protocol.md`), so half an hour: twelve SMHI radars with an empty
 /// tilt store then read 12 × 7 volumes, about 3,300 requests, instead of
-/// 12 × 13, about 6,100. A set of ORD radars only (whole files, 1 request
-/// each) builds back `BACKFILL`.
+/// 12 × 13, about 6,100. An FMI radar's volume is five files, one per
+/// angle, so a set with one counts the same (S24a review #2); a set of
+/// one-file ORD radars only (1 request each) builds back `BACKFILL`.
 pub const HEIGHT_BACKFILL: usize = 6;
 /// Range requests an SMHI whole volume costs, for the first-fill estimate.
 const SMHI_VOLUME_REQUESTS: usize = 39;
+
+/// Requests one whole volume of this radar costs (S24a review #2): an SMHI
+/// volume ~`SMHI_VOLUME_REQUESTS` range requests; a per-angle ORD station
+/// (FMI) one file per nominal angle, read whole; any other ORD volume 1.
+fn volume_requests(station: &Station) -> usize {
+    match station.provider {
+        ProviderId::Smhi => SMHI_VOLUME_REQUESTS,
+        _ if crate::providers::ord::per_angle(&station.source) => {
+            crate::products::nominal_angles(station).len().max(1)
+        }
+        _ => 1,
+    }
+}
 /// Every provider publishes a volume per radar every 5 minutes.
 pub const CADENCE_MS: i64 = 5 * 60 * 1000;
 /// The frame for T is due at T + 8 minutes (SMHI publishes 4–5 minutes
@@ -684,14 +698,12 @@ impl Layout {
     }
 
     /// Frame times this set builds back (review #8): `BACKFILL`, or
-    /// `HEIGHT_BACKFILL` for a height set with an SMHI radar, whose whole
-    /// volumes cost ~39 range requests each (an ORD file is 1).
+    /// `HEIGHT_BACKFILL` for a height set with a radar whose whole volume
+    /// costs more than one request: SMHI's ~39 range requests, an FMI
+    /// radar's file per angle (S24a review #2). A one-file ORD volume is 1.
     pub fn backfill(&self) -> usize {
-        let smhi = self
-            .radars
-            .iter()
-            .any(|r| r.station.provider == ProviderId::Smhi);
-        if self.set.rule == Rule::Height && smhi {
+        let costly = self.radars.iter().any(|r| volume_requests(&r.station) > 1);
+        if self.set.rule == Rule::Height && costly {
             HEIGHT_BACKFILL
         } else {
             BACKFILL
@@ -1950,24 +1962,27 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
     if height {
         // What the first fill should cost (review #8): per radar the volumes
         // of its depth the store lacks; an SMHI volume ~39 range requests,
-        // an ORD file 1; listings besides.
+        // an FMI volume a file per angle, any other ORD volume 1 file
+        // (`volume_requests`); listings besides.
         let mut held = vec![0usize; layout.radars.len()];
         for (radar, _, _) in &stored {
             held[*radar] += 1;
         }
-        let (mut smhi, mut ord) = (0usize, 0usize);
+        let (mut smhi, mut ord, mut ord_files) = (0usize, 0usize, 0usize);
         for (radar, have) in layout.radars.iter().zip(&held) {
             let missing = (depth + 1).saturating_sub(*have);
             if radar.station.provider == ProviderId::Smhi {
                 smhi += missing;
             } else {
                 ord += missing;
+                ord_files += missing * volume_requests(&radar.station);
             }
         }
         log(format_args!(
-            "first fill: about {} range requests ({smhi} SMHI volumes × ~{SMHI_VOLUME_REQUESTS}, \
-             {ord} ORD files × 1) plus listings; {from_the_store} volumes already in the tilt store",
-            smhi * SMHI_VOLUME_REQUESTS + ord
+            "first fill: about {} requests ({smhi} SMHI volumes × ~{SMHI_VOLUME_REQUESTS} range \
+             requests, {ord} ORD volumes in {ord_files} files) plus listings; \
+             {from_the_store} volumes already in the tilt store",
+            smhi * SMHI_VOLUME_REQUESTS + ord_files
         ));
     }
     for (radar, t, sweep) in stored {
@@ -2012,9 +2027,11 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         .enumerate()
         .map(|(i, radar)| {
             let (station, tx, known) = (radar.station.clone(), tx.clone(), schedule.known(i));
-            // A height set reads each whole volume (every height needs
-            // nearly every scan, so every later height is free); a radar
-            // whose provider has one file per angle gives its lowest scan.
+            // A height set reads each whole volume of a radar whose angles
+            // the engine knows (every height needs nearly every scan, so
+            // every later height is free); for an FMI radar that is all
+            // five of a time's per-angle files, read as one volume (S24a).
+            // A radar with no known angles gives its lowest scan.
             let want = if height && !crate::products::nominal_angles(&station).is_empty() {
                 Want::ColMax
             } else {
@@ -3037,6 +3054,21 @@ mod tests {
         let ord_only = [SiteArg::Id("nohur".into()), SiteArg::Id("dksin".into())];
         let ord_set = choose_with(&sites, &ord_only, Some("height"), None, None).unwrap();
         assert_eq!(layout_of(&ord_set).backfill(), BACKFILL);
+        // S24a review #2: an FMI radar's volume is a file per angle, so a
+        // height set with one builds back half an hour like SMHI's.
+        let fmi = [SiteArg::Id("nohur".into()), SiteArg::Id("fikor".into())];
+        let fmi_set = choose_with(&sites, &fmi, Some("height"), None, None).unwrap();
+        let fmi_layout = layout_of(&fmi_set);
+        assert_eq!(fmi_layout.backfill(), HEIGHT_BACKFILL);
+        let costs: Vec<(String, usize)> = fmi_layout
+            .radars
+            .iter()
+            .map(|r| (r.station.id.clone(), volume_requests(&r.station)))
+            .collect();
+        assert!(costs.contains(&("fikor".into(), 5)), "{costs:?}");
+        assert!(costs.contains(&("nohur".into(), 1)), "{costs:?}");
+        let vara = sites.iter().find(|s| s.id == "vara").unwrap();
+        assert_eq!(volume_requests(vara), SMHI_VOLUME_REQUESTS);
         for (rule, m, above, says) in [
             (Some("height"), Some(750), None, "heightM 750"),
             (Some("height"), None, Some("space"), "sea or ground"),

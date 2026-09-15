@@ -137,7 +137,9 @@ Item {
     // width: the bands are equal columns, so the floor interpolates inside
     // the band it falls in. 0 when the floor is off, under the scale, or not
     // in force because the frame carries no scale (an older engine).
-    readonly property bool floorActive: !!scan && weakFloor !== null && scan.scale > 0
+    // The floor is in dBZ (S24a): a Storm height or Rain mass legend hides
+    // nothing.
+    readonly property bool floorActive: !!scan && weakFloor !== null && scan.scale > 0 && scan.units === "dBZ"
     readonly property real floorFraction: {
         if (!floorActive || weakFloor <= scan.bounds[0]) return 0;
         for (var i = 0; i < bands; i++)

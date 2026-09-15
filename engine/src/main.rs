@@ -379,6 +379,23 @@ fn should_restart_live(
 fn known_sweep_clears_loading(status: ConnectionStatus) -> bool {
     status == ConnectionStatus::Loading
 }
+/// A frame's units, palette and bounds for `want` (S24a): the storm
+/// height's and the rain mass's own, else the engine's reflectivity
+/// vocabulary (the fixture frame's).
+fn legend_of(template: &Frame, want: Want) -> (String, Vec<String>, Vec<i32>) {
+    match want.legend() {
+        Some(legend) => (
+            legend.units.to_owned(),
+            legend.palette.iter().map(|&c| c.to_owned()).collect(),
+            legend.bounds.to_vec(),
+        ),
+        None => (
+            template.units.clone(),
+            template.palette.clone(),
+            template.bounds.clone(),
+        ),
+    }
+}
 /// A live station's frame from an assembled sweep: the fixture frame's
 /// product, palette, and bounds (the engine's reflectivity vocabulary), the
 /// sweep's geometry and times, and the station table's coordinates. Texture
@@ -397,6 +414,9 @@ fn live_frame(
         let (id, name) = want.product();
         (id.to_owned(), name)
     };
+    // S24a: the storm height and the rain mass bring their own units,
+    // palette and bounds; every other product is the reflectivity's.
+    let (units, palette, bounds) = legend_of(template, want);
     Frame {
         id: format!(
             "{}-{}-{}",
@@ -407,7 +427,7 @@ fn live_frame(
         kind: FrameKind::Polar,
         product,
         product_name,
-        units: template.units.clone(),
+        units,
         elevation_deg: (sweep.elevation_deg() * 100.0).round() / 100.0,
         scan_time: iso(sweep.start_ms),
         sweep_end: iso(sweep.end_ms),
@@ -429,8 +449,8 @@ fn live_frame(
             lon: station.lon,
             alt_m: station.alt_m,
         },
-        palette: template.palette.clone(),
-        bounds: template.bounds.clone(),
+        palette,
+        bounds,
         // A height above the ground credits the terrain too (S30).
         attribution: if matches!(want, Want::CappiGround(..)) {
             format!("{}; {}", station.attribution, terrain::CREDIT)
@@ -870,6 +890,8 @@ impl Shared {
                 if station.kind == SiteKind::Polar && !want.is_lowest() {
                     let (id, name) = want.product();
                     (frame.product, frame.product_name) = (id.to_owned(), name);
+                    // S24a: and the product's own legend, before its frame.
+                    (frame.units, frame.palette, frame.bounds) = legend_of(&self.template, want);
                 }
                 // A chosen angle shows its own until its first frame (S26),
                 // not "Reflectivity 0.0°".
@@ -1459,7 +1481,9 @@ fn link_record(dir: &Path, record: &catalog::Record) -> io::Result<()> {
 }
 /// Encode a sweep's texture and lookup as PNGs.
 fn encode(sweep: &sweep::Sweep, frame: &Frame) -> io::Result<(Vec<u8>, Vec<u8>)> {
-    let pixels = sweep.texture(&frame.bounds, frame.palette.len());
+    let mut pixels = sweep.texture(&frame.bounds, frame.palette.len());
+    // S24a: an "at least" storm height's texel gets G bit 8.
+    products::mark_texture(&frame.product, &mut pixels);
     let texture = sweep::png(u32::from(sweep.gates), sweep.rows(), &pixels)?;
     let lut = sweep::png(3600, 1, &sweep.azimuth_lut())?;
     Ok((texture, lut))

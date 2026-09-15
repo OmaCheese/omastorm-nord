@@ -218,6 +218,9 @@ pub struct State {
     /// The vertical cut a client set (S24c), shared like the station;
     /// `null` when none.
     pub section: Option<crate::grid3d::SectionState>,
+    /// How far the load a client waits for has come (S31), `null` when
+    /// nothing loads (`loading.rs`).
+    pub loading: Option<crate::loading::Loading>,
 }
 
 /// `state.basemap`: what draws the tiles and, for `osm`, whether it can.
@@ -300,6 +303,13 @@ impl State {
                     .flat_map(|e| [e.texture.as_str(), e.azimuth_lut.as_str(), e.codes.as_str()]),
             )
             .chain(self.section.iter().map(|s| s.texture.as_str()))
+            // S31: the composite drawn under its product's first stage.
+            .chain(
+                self.loading
+                    .iter()
+                    .filter_map(|l| l.under.as_ref())
+                    .flat_map(|f| [f.texture.as_str(), f.azimuth_lut.as_str()]),
+            )
             .filter(|path| !path.is_empty())
     }
 }

@@ -174,6 +174,59 @@ pub const DUE_MS: i64 = 8 * 60 * 1000;
 /// ...and built then once no scan has arrived for this long, so a backfill
 /// still delivering is not cut short.
 pub const QUIET_MS: i64 = 30 * 1000;
+/// S31: how long a radar its poller called silent stays silent to the next
+/// fill (a product switch, a reselect), until a scan of it comes: its poller
+/// says so again only after its first listing, up to a minute into a fill.
+pub const SILENT_MEMORY_MS: i64 = 60 * 60 * 1000;
+/// S31: radars called silent, with when, engine-wide across fills.
+static SILENT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, i64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// S31: note radar `id` silent (its poller said so) or heard from again.
+fn remember_silent(id: &str, silent: bool, now: i64) {
+    let mut known = SILENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if silent {
+        known.insert(id.to_owned(), now);
+    } else {
+        known.remove(id);
+    }
+}
+
+/// S31: radar `id` (index `radar` in the schedule) was called silent by its
+/// poller: not waited for, and remembered for the next fill; unless its feed
+/// is offline (review SF1), which says nothing about what it publishes.
+/// True when taken as silent.
+fn take_silent(
+    schedule: &mut Schedule,
+    radar: Option<usize>,
+    id: &str,
+    offline: bool,
+    now: i64,
+) -> bool {
+    if offline {
+        return false;
+    }
+    if let Some(i) = radar {
+        schedule.set_silent(i, true);
+    }
+    remember_silent(id, true, now);
+    true
+}
+
+/// S31: minutes since radar `id` was called silent, within `SILENT_MEMORY_MS`.
+fn remembered_silent(id: &str, now: i64) -> Option<i64> {
+    let known = SILENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    known
+        .get(id)
+        .map(|at| now - at)
+        .filter(|age| (0..SILENT_MEMORY_MS).contains(age))
+        .map(|age| age / 60_000)
+}
+
 /// A scan for T that comes after T was built builds T once more, while T
 /// is one of the newest two frame times and younger than this.
 pub const LATE_MS: i64 = 12 * 60 * 1000;
@@ -1895,6 +1948,61 @@ pub struct Schedule {
     last_arrival: Option<i64>,
     /// Frame times a selection builds back (`Set::backfill`).
     depth: usize,
+    /// S31: radars their poller calls silent (nothing published for the
+    /// provider's `unavailable` age): no frame time waits for them, and
+    /// the loading progress leaves them out.
+    silent: Vec<bool>,
+    /// S31: frame times given up on (`forget`), done as far as the fill's
+    /// progress is concerned.
+    dropped: BTreeSet<i64>,
+}
+
+/// S31: how far a fill has come (`Schedule::fill`): volumes `done` of
+/// `total` for `stage`, over frame time `t`, with the words' numbers.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Fill {
+    pub stage: crate::loading::Stage,
+    pub done: u32,
+    pub total: u32,
+    pub t: i64,
+    /// Counted radars with `t`'s scan (the first stage).
+    pub radars_in: usize,
+    pub counted: usize,
+    pub silent: usize,
+    /// Frame times of the window built, and the window's length.
+    pub built: usize,
+    pub window: usize,
+}
+
+impl Fill {
+    /// `state.loading`'s report for the load named `name`: `Nordic Rain
+    /// mass: 26 of 40 radars in for 14:25Z (1 silent)`, or `… history 1
+    /// of 3 frames`.
+    pub fn progress(&self, name: &str) -> crate::loading::Progress {
+        let silent = if self.silent > 0 {
+            format!(" ({} silent)", self.silent)
+        } else {
+            String::new()
+        };
+        let label = match self.stage {
+            crate::loading::Stage::First => format!(
+                "{name}: {} of {} radars in for {}{silent}",
+                self.radars_in,
+                self.counted,
+                utc(self.t, "%H:%MZ")
+            ),
+            crate::loading::Stage::History => format!(
+                "{name}: history {} of {} frames{silent}",
+                self.built, self.window
+            ),
+        };
+        crate::loading::Progress {
+            stage: self.stage,
+            done: self.done,
+            total: self.total,
+            label,
+        }
+    }
 }
 
 impl Schedule {
@@ -1903,6 +2011,8 @@ impl Schedule {
     /// times; `with_depth` for another depth.
     pub fn new(ranges: Vec<f64>, cached: &[i64]) -> Schedule {
         Schedule {
+            silent: vec![false; ranges.len()],
+            dropped: BTreeSet::new(),
             ranges,
             scans: BTreeMap::new(),
             built: cached.iter().copied().collect(),
@@ -2007,12 +2117,127 @@ impl Schedule {
 
     /// Whether every radar's scan for `t` is in and ready to build with
     /// (`settled`).
+    /// A radar its poller calls silent is not waited for (S31); a time with
+    /// no scan at all is never complete.
     fn complete(&self, t: i64) -> bool {
         self.scans.get(&t).is_some_and(|v| {
-            v.iter().enumerate().all(|(radar, have)| {
-                have.as_ref()
-                    .is_some_and(|h| self.settled(radar, t, &h.sweep))
-            })
+            v.iter().any(Option::is_some)
+                && v.iter().enumerate().all(|(radar, have)| {
+                    have.as_ref()
+                        .map_or(self.silent[radar], |h| self.settled(radar, t, &h.sweep))
+                })
+        })
+    }
+
+    /// S31: radar `radar`'s poller called it silent, or it delivered a scan
+    /// the schedule keeps again.
+    pub fn set_silent(&mut self, radar: usize, silent: bool) {
+        if let Some(s) = self.silent.get_mut(radar) {
+            *s = silent;
+        }
+    }
+
+    /// S31: how far the fill has come, or `None` once every frame time of
+    /// the window (`oldest` to the newest due) is built or given up.
+    ///
+    /// Until the first of them is built it is the `first` stage: over the
+    /// time closest to completion (newest on a tie; the window's and any
+    /// later time with a scan), per counted radar the volumes it delivers
+    /// down to that time's own, newest first as its poller fetches them,
+    /// from its newest scan in hand (else one cadence past the newest due,
+    /// where a poller's newest usually is); a radar with that time's scan
+    /// is done. Then `history`: the window's times, a built one done for
+    /// every counted radar, an unbuilt one per scan in hand.
+    pub fn fill(&self, now: i64) -> Option<Fill> {
+        let due = newest_due(now);
+        let oldest = self.oldest(now);
+        let window: Vec<i64> = (oldest..=due).step_by(CADENCE_MS as usize).collect();
+        let counted: Vec<usize> = (0..self.ranges.len())
+            .filter(|r| !self.silent[*r])
+            .collect();
+        let silent = self.ranges.len() - counted.len();
+        let finished = |t: &i64| self.built.contains(t) || self.dropped.contains(t);
+        let n = counted.len() as u32;
+        if self.built.range(oldest..).next().is_some() {
+            let open: Vec<i64> = window.iter().copied().filter(|t| !finished(t)).collect();
+            if open.is_empty() {
+                return None;
+            }
+            let built = (window.len() - open.len()) as u32;
+            let held: u32 = open
+                .iter()
+                .map(|&t| counted.iter().filter(|&&r| self.has(r, t)).count() as u32)
+                .sum();
+            return Some(Fill {
+                stage: crate::loading::Stage::History,
+                done: built * n + held,
+                total: window.len() as u32 * n,
+                t: open[open.len() - 1],
+                radars_in: 0,
+                counted: counted.len(),
+                silent,
+                built: built as usize,
+                window: window.len(),
+            });
+        }
+        let newest_in_hand = |r: usize| {
+            self.scans
+                .iter()
+                .rev()
+                .find(|(_, v)| v[r].is_some())
+                .map(|(t, _)| *t)
+        };
+        let later = self.scans.keys().copied().filter(|t| *t > due);
+        let mut best: Option<(u32, u32, i64)> = None;
+        for t in window.iter().copied().chain(later).filter(|t| !finished(t)) {
+            let (mut done, mut total) = (0u32, 0u32);
+            for &r in &counted {
+                let newest = newest_in_hand(r);
+                // Review SF2: a radar whose newest scan is older than `t`
+                // (SMHI's listing lagging, its poller probing forward) brings
+                // its volumes from there up to `t`: each probe counts.
+                if let Some(behind) = newest.filter(|n| *n < t) {
+                    total += ((t - behind) / CADENCE_MS) as u32 + 1;
+                    done += self
+                        .scans
+                        .range(behind..=t)
+                        .filter(|(_, v)| v[r].is_some())
+                        .count() as u32;
+                    continue;
+                }
+                let top = newest.unwrap_or((due + CADENCE_MS).max(t));
+                let need = ((top - t) / CADENCE_MS) as u32 + 1;
+                total += need;
+                done += if self.has(r, t) {
+                    need
+                } else if top > t {
+                    self.scans
+                        .range(t + 1..=top)
+                        .filter(|(_, v)| v[r].is_some())
+                        .count() as u32
+                } else {
+                    0
+                };
+            }
+            // Closest to completion; the newer on a tie.
+            let closer = best.is_none_or(|(d, tot, _)| {
+                u64::from(done) * u64::from(tot.max(1)) >= u64::from(d) * u64::from(total.max(1))
+            });
+            if closer {
+                best = Some((done, total, t));
+            }
+        }
+        let (done, total, t) = best?;
+        Some(Fill {
+            stage: crate::loading::Stage::First,
+            done,
+            total,
+            t,
+            radars_in: counted.iter().filter(|&&r| self.has(r, t)).count(),
+            counted: counted.len(),
+            silent,
+            built: 0,
+            window: window.len(),
         })
     }
 
@@ -2114,6 +2339,7 @@ impl Schedule {
     pub fn forget(&mut self, t: i64) {
         self.scans.remove(&t);
         self.late.remove(&t);
+        self.dropped.insert(t);
     }
 
     /// `t` was built and sent: the first time, or its one late rebuild.
@@ -2639,6 +2865,20 @@ async fn run(
     let now = now_ms();
     let depth = layout.backfill();
     let mut schedule = Schedule::new(ranges, &cached).with_depth(depth);
+    // S31: radars an earlier fill heard were silent are not waited for now;
+    // their pollers would say so again only after their first listing.
+    for (i, radar) in layout.radars.iter().enumerate() {
+        if let Some(minutes) = remembered_silent(&radar.station.id, now) {
+            schedule.set_silent(i, true);
+            log_for(
+                &site,
+                format_args!(
+                    "{}: silent (said {minutes} min ago); not waited for",
+                    radar.station.id
+                ),
+            );
+        }
+    }
     // The tilt store first: every stored lowest scan (for a height set,
     // every whole volume) the frames still to build can use, with no
     // request.
@@ -2710,6 +2950,27 @@ async fn run(
             cached.len()
         ),
     );
+    // S31: the fill's progress for `state.loading`, at most once a second
+    // (a stage change at once), until the window is built; the first report
+    // before any poller runs, so a frame the tilt store makes at once
+    // follows a count.
+    let load_name = match &layout.job {
+        Job::Mine => format!("My mosaic, {}", layout.product().1),
+        Job::Grid { .. } => format!("{} {}", layout.name(), layout.product().1),
+    };
+    let variant = layout.variant();
+    let first = schedule.fill(now).map(|f| f.progress(&load_name));
+    let mut filling = first.is_some();
+    let event = Event::Progress {
+        site: site.clone(),
+        variant: variant.clone(),
+        progress: first.clone(),
+    };
+    if events.send(event).await.is_err() {
+        return;
+    }
+    let mut reported: Option<Option<crate::loading::Progress>> = Some(first);
+    let mut reported_at: Option<Instant> = Some(Instant::now());
     if schedule.caught_up(now)
         && events
             .send(Event::Current { site: site.clone() })
@@ -2768,6 +3029,12 @@ async fn run(
                         let Some(i) = index(&site) else { continue };
                         offline[i] = false;
                         let t = nominal_ms(sweep.start_ms);
+                        // S31: a scan the schedule keeps counts a silent
+                        // radar again (not its hours-old last volume).
+                        if t >= schedule.floor(now) {
+                            schedule.set_silent(i, false);
+                            remember_silent(&site, false, now);
+                        }
                         if height && schedule.has(i, t) {
                             // A height set's volume comes as its product and
                             // the free lowest scan of the same read (S26).
@@ -2821,7 +3088,21 @@ async fn run(
                     Event::Silent {
                         site: radar,
                         reason,
-                    } => log_for(&site, format_args!("{radar}: {reason}")),
+                    } => {
+                        // S31: no frame time waits for it, and the
+                        // progress leaves it out; a radar whose feed is
+                        // offline is not silent, and is not remembered so
+                        // (review SF1).
+                        let i = index(&radar);
+                        let offline = i.is_some_and(|i| offline[i]);
+                        let taken = take_silent(&mut schedule, i, &radar, offline, now);
+                        let what = if taken {
+                            "not waited for"
+                        } else {
+                            "offline, so not taken as silent"
+                        };
+                        log_for(&site, format_args!("{radar}: {reason}; {what}"));
+                    }
                     _ => {}
                 }
             }
@@ -2834,6 +3115,25 @@ async fn run(
             }
         }
         schedule.prune(now);
+        if filling {
+            let report = schedule.fill(now_ms()).map(|f| f.progress(&load_name));
+            let stage = |r: &Option<crate::loading::Progress>| r.as_ref().map(|p| p.stage);
+            let staged = reported.as_ref().map(stage) != Some(stage(&report));
+            let due = reported_at.is_none_or(|at| at.elapsed() >= crate::loading::THROTTLE);
+            if reported.as_ref() != Some(&report) && (staged || due) {
+                filling = report.is_some();
+                let event = Event::Progress {
+                    site: site.clone(),
+                    variant: variant.clone(),
+                    progress: report.clone(),
+                };
+                if events.send(event).await.is_err() {
+                    return;
+                }
+                reported = Some(report);
+                reported_at = Some(Instant::now());
+            }
+        }
     }
 }
 
@@ -3420,6 +3720,220 @@ mod tests {
         assert!(!order.ready(now).contains(&t), "waiting for the far ring");
         order.add(0, t - CADENCE_MS, have(120, 475, t - CADENCE_MS), now, true);
         assert!(order.ready(now).contains(&t), "the far ring is in");
+    }
+
+    /// Review SF1: a radar whose feed is offline is not taken as silent,
+    /// nor remembered so; one that is heard from is.
+    #[test]
+    fn an_offline_radar_is_not_taken_as_silent() {
+        let now = 1_800_000_000_000;
+        let mut s = Schedule::new(vec![5_000.0; 2], &[]);
+        assert!(!take_silent(&mut s, Some(0), "s31-test-offline", true, now));
+        assert_eq!(remembered_silent("s31-test-offline", now), None);
+        assert!(!s.silent[0]);
+        assert!(take_silent(&mut s, Some(1), "s31-test-quiet", false, now));
+        assert!(s.silent[1]);
+        assert_eq!(remembered_silent("s31-test-quiet", now), Some(0));
+        remember_silent("s31-test-quiet", false, now);
+    }
+
+    /// Review SF2: SMHI's listing names 16:30 while 16:40 is the target; its
+    /// poller probes 16:35, then 16:40. Each probe moves the percentage up,
+    /// and it never goes down.
+    #[test]
+    fn a_lagging_listings_probes_move_the_first_stage() {
+        let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS; // "16:40"
+        let now = t + DUE_MS;
+        let have = || Have {
+            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+            cost: Cost::default(),
+        };
+        let pct = |s: &Schedule| {
+            let f = s.fill(now).unwrap();
+            assert_eq!((f.stage, f.t), (crate::loading::Stage::First, t));
+            crate::loading::percent(f.done, f.total)
+        };
+        let mut s = Schedule::new(vec![5_000.0; 2], &[]).with_depth(1);
+        s.add(1, t, have(), now, true); // the other radar is in
+        s.add(0, t - 2 * CADENCE_MS, have(), now, true); // listed: 16:30
+        let mut seen = vec![pct(&s)];
+        s.add(0, t - CADENCE_MS, have(), now, true); // probe: 16:35
+        seen.push(pct(&s));
+        s.add(0, t, have(), now, true); // probe: 16:40
+        seen.push(pct(&s));
+        assert_eq!(seen, [50, 66, 100], "2 of 4, 2 of 3, 2 of 2 volumes");
+    }
+
+    /// Review SF2: the live cold run's arrivals (2026-09-15, Nordic Rain
+    /// mass from an empty tilt store; each volume's time from its tilt
+    /// files, the silent radars from engine.log; written by
+    /// ~/Projects/omastorm-S31-run/arrivals.py) replayed through the
+    /// schedule: the first stage's percentage after each arrival, as the
+    /// tracker shows it (never down; 99 until the frame). Ignored: it needs
+    /// that file (`S31_ARRIVALS` names another).
+    #[test]
+    #[ignore]
+    fn the_cold_runs_arrivals_replayed() {
+        let path = std::env::var("S31_ARRIVALS")
+            .unwrap_or_else(|_| "/home/rb/Projects/omastorm-S31-run/arrivals.json".into());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let n = v["radars"].as_u64().unwrap() as usize;
+        let start = v["start"].as_i64().unwrap();
+        // (when, radar, Some(nominal time) for a volume, None for silent)
+        let mut steps: Vec<(i64, usize, Option<i64>)> = v["arrivals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                let t = a["t"].as_i64().unwrap();
+                (
+                    a["at"].as_i64().unwrap(),
+                    a["radar"].as_u64().unwrap() as usize,
+                    Some(t),
+                )
+            })
+            .chain(v["silent"].as_array().unwrap().iter().map(|a| {
+                (
+                    a["at"].as_i64().unwrap(),
+                    a["radar"].as_u64().unwrap() as usize,
+                    None,
+                )
+            }))
+            .collect();
+        steps.sort_by_key(|s| s.0);
+        let mut s = Schedule::new(vec![5_000.0; n], &[]).with_depth(1);
+        let mut shown = 0;
+        let mut last = u32::MAX;
+        for (at, radar, what) in steps {
+            match what {
+                Some(t) => {
+                    let have = Have {
+                        sweep: Arc::new(sweep(100, 10, 0.5, t)),
+                        cost: Cost::default(),
+                    };
+                    s.add(radar, t, have, at, true);
+                }
+                None => s.set_silent(radar, true),
+            }
+            if let Some(t) = s.ready(at).first() {
+                println!(
+                    "{:5.0} s  frame {} ready",
+                    (at - start) as f64 / 1000.0,
+                    utc(*t, "%H:%MZ")
+                );
+                break;
+            }
+            if let Some(f) = s
+                .fill(at)
+                .filter(|f| f.stage == crate::loading::Stage::First)
+            {
+                shown = shown.max(crate::loading::percent(f.done, f.total).min(99));
+                if shown / 5 != last / 5 || last == u32::MAX {
+                    println!(
+                        "{:5.0} s  {shown:3} %  {} of {} volumes, {}",
+                        (at - start) as f64 / 1000.0,
+                        f.done,
+                        f.total,
+                        f.progress("Nordic Rain mass").label
+                    );
+                    last = shown;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_silent_radar_is_remembered_by_the_next_fill_until_it_is_heard() {
+        let now = 1_800_000_000_000;
+        let id = "s31-test-silent-radar";
+        assert_eq!(remembered_silent(id, now), None);
+        remember_silent(id, true, now);
+        assert_eq!(remembered_silent(id, now + 12 * 60_000), Some(12));
+        assert_eq!(
+            remembered_silent(id, now + SILENT_MEMORY_MS),
+            None,
+            "forgotten after an hour"
+        );
+        remember_silent(id, false, now + 60_000);
+        assert_eq!(remembered_silent(id, now + 2 * 60_000), None, "a scan came");
+    }
+
+    #[test]
+    fn a_silent_radar_is_not_waited_for_and_the_fill_counts_what_is_in() {
+        let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS;
+        let have = || Have {
+            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+            cost: Cost::default(),
+        };
+        let now = t + DUE_MS; // T is the newest due time
+        let mut s = Schedule::new(vec![5_000.0; 3], &[]).with_depth(3);
+        // Nothing in: each radar is expected to bring its newest (one
+        // cadence past T) and T itself.
+        let fill = s.fill(now).unwrap();
+        assert_eq!(
+            (fill.stage, fill.done, fill.total, fill.t),
+            (crate::loading::Stage::First, 0, 6, t)
+        );
+        // Radar 0's newest is T + 5: that time is now the closest to
+        // completion (1 of 3; it builds first once every radar's newest is
+        // in), where T would be 1 of 6.
+        s.add(0, t + CADENCE_MS, have(), now, true);
+        let fill = s.fill(now).unwrap();
+        assert_eq!((fill.done, fill.total, fill.t), (1, 3, t + CADENCE_MS));
+        // Radar 0 brings T, radar 1's newest is T: 3 of 5 volumes, 2 of 3 radars.
+        s.add(0, t, have(), now, true);
+        s.add(1, t, have(), now, true);
+        let fill = s.fill(now).unwrap();
+        assert_eq!(
+            (fill.done, fill.total, fill.radars_in, fill.counted),
+            (3, 5, 2, 3)
+        );
+        assert_eq!(
+            fill.progress("Nordic Rain mass").label,
+            format!(
+                "Nordic Rain mass: 2 of 3 radars in for {}",
+                utc(t, "%H:%MZ")
+            )
+        );
+        assert!(s.ready(now).is_empty(), "radar 2 missing and no quiet yet");
+        // Radar 2 is silent (Kiruna): it leaves the count, and T builds at
+        // once instead of after QUIET_MS without arrivals.
+        s.set_silent(2, true);
+        let fill = s.fill(now).unwrap();
+        assert_eq!((fill.done, fill.total, fill.silent), (3, 3, 1));
+        assert_eq!(
+            fill.progress("Nordic Rain mass").label,
+            format!(
+                "Nordic Rain mass: 2 of 2 radars in for {} (1 silent)",
+                utc(t, "%H:%MZ")
+            )
+        );
+        assert_eq!(s.ready(now), [t], "built without the silent radar");
+        s.mark_built(t);
+        // History: the window's three times, T built for both counted
+        // radars, T - 5 with one scan in.
+        s.add(1, t - CADENCE_MS, have(), now, true);
+        let fill = s.fill(now).unwrap();
+        assert_eq!(
+            (fill.stage, fill.done, fill.total, fill.built, fill.window),
+            (crate::loading::Stage::History, 3, 6, 1, 3)
+        );
+        assert_eq!(
+            fill.progress("Nordic Rain mass").label,
+            "Nordic Rain mass: history 1 of 3 frames (1 silent)"
+        );
+        // A scan counts the radar again; a time given up on is done.
+        s.set_silent(2, false);
+        assert_eq!(s.fill(now).unwrap().total, 9);
+        s.mark_built(t - CADENCE_MS);
+        s.forget(t - 2 * CADENCE_MS);
+        assert_eq!(s.fill(now), None, "the window is built: the fill is over");
+        // Every radar silent and nothing in: nothing to build.
+        let mut none = Schedule::new(vec![5_000.0], &[]);
+        none.set_silent(0, true);
+        none.touch(now);
+        assert!(none.ready(now + QUIET_MS).is_empty());
     }
 
     #[test]

@@ -354,6 +354,53 @@ The station table's source, retrieval date, and caveats are in `data/sites.json`
 and hello. It includes archived and test sites; membership does not imply live
 availability. An archived scan retains its measured coordinates.
 
+### Loading progress (S31)
+
+`state.loading` (`loading.rs`, docs/protocol.md "Loading progress") says how
+far the load a client waits for has come: `first` until its first frame is on
+screen, `history` until the frames behind it are in. The engine counts only
+what it fetches or builds anyway. A radar's or a provider composite's first
+frame is 0 of 1; its history is the frames its backfill plans
+(`Event::HistoryPlan`, sent by the SMHI, ORD and OPERA backfills once the
+tilt store's frames are sent and the targets known) and each one catalogued,
+until `Event::HistoryEnd`. My mosaic and a composite's product report from
+`mosaic::run` (`Schedule::fill`, `Event::Progress`, at most once a second):
+the volumes each counted radar still delivers, newest first, down to the
+frame time closest to completion, then the window's unbuilt times; volumes in
+the tilt store count at once, and the fill stops reporting once its window is
+built. `Tracker` keeps the percentage from going down within a stage, holds a
+made first stage at 99 until its frame is shown, lets 100 stand a second,
+and sends counts at most once a second (a stage's start, 100 and end at once).
+
+A radar its poller calls silent (nothing published for the provider's
+`unavailable` age, 30 minutes) no longer holds a frame time back:
+`Schedule::complete` skips it, the progress leaves it out ("(2 silent)"), and
+the engine remembers it for an hour (`SILENT_MEMORY_MS`) so the next fill (a
+product switch) does not wait for its poller's first listing to say so again;
+a scan of it counts it again. Live, 2026-09-15: Nordic Rain mass from an empty
+tilt store built 16:40Z in 5 min 25 s without Kiruna (silent since 07:15Z)
+and dksam (since 14:20Z).
+
+A radar behind the target time (SMHI's listing lagging, its poller probing
+forward) counts its volumes from its newest scan up to it, so each probe
+moves the bar (review SF2). Only a listing that answered says a radar is
+silent (review SF1): an SMHI outage is `offline`, and an offline radar is
+never taken as silent nor remembered so. Offline, no loading stage stays;
+one starts again with the feed (review NIT5).
+
+Known, left as they are (review NIT7, NIT8): the first stage's label names
+the frame time closest to completion, but when `QUIET_MS` builds instead the
+newest due time goes first, so the frame shown can be later than the label
+said (offline replay 2026-09-15: 16:40Z said, 16:45Z built). And
+`Schedule::dropped` keeps every frame time given up on (the tilt store held
+none of its volumes) for the life of a fill, unpruned: one `i64` each, a
+few a day at most.
+
+While a composite's product has no frame, `loading.under` names the
+composite's own newest frame (its stable files kept published through
+`State::referenced_files`), which both clients draw in place of the
+placeholder.
+
 ## Basemap
 
 `build.rs` converts Natural Earth lines to a compact polyline blob and embeds

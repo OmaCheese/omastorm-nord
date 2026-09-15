@@ -35,6 +35,8 @@ FocusScope {
         if (!state) return "OFFLINE";
         if (condition === "archived") return "ARCHIVED";
         var label = condition === "ok" ? "LIVE" : condition.toUpperCase();
+        // S31: the engine's loading progress beside the condition.
+        if (connection.loading) return label + " · " + connection.loading.percent + " %";
         var complete = frames.filter(f => f.status === "complete");
         if (!scan || !scan.scanTime || !complete.length) return label;
         var age = Math.max(0, state.connection.ageSeconds +
@@ -267,6 +269,20 @@ FocusScope {
                     id: strip
                     Layout.fillWidth: true
                     implicitHeight: 14
+                    // S31: the load's progress, a thin bar under the ticks.
+                    Rectangle {
+                        visible: !!connection.loading
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                        anchors.bottomMargin: -3
+                        height: 2
+                        color: Qt.alpha(card.theme.accent, .18)
+                        Rectangle {
+                            height: parent.height
+                            width: connection.loading ? Math.round(parent.width * Math.max(0, Math.min(100, connection.loading.percent)) / 100) : 0
+                            color: card.theme.accent
+                            Behavior on width { NumberAnimation { duration: 300 } }
+                        }
+                    }
                     Repeater {
                         model: card.slots
                         Rectangle {
@@ -290,6 +306,15 @@ FocusScope {
                     Label { font.pixelSize: 10; opacity: .55; text: card.frames.length ? Qt.formatTime(new Date(card.frames[0].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
                     // While it plays: frames held of the loop and their memory
                     // against this card's cap (Engine.qml, bufferNote).
+                    // S31: what is loading, from the engine (state.loading),
+                    // beside the buffer line while the loop plays (review NIT6).
+                    Label {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignHCenter
+                        font.pixelSize: 9; color: card.theme.accent
+                        visible: !!connection.loading
+                        text: connection.loading ? connection.loading.label : ""
+                    }
                     Label {
                         Layout.fillWidth: true
                         horizontalAlignment: Text.AlignHCenter
@@ -298,7 +323,7 @@ FocusScope {
                         text: connection.bufferReady + "/" + connection.bufferTarget + " · " + connection.bufferMB + " of " + connection.bufferCapMB + " MB"
                             + (connection.bufferDropped > 0 ? " · −" + connection.bufferDropped : "")
                     }
-                    Item { Layout.fillWidth: true; visible: !(connection.looping && connection.bufferTarget > 0) }
+                    Item { Layout.fillWidth: true; visible: !connection.loading && !(connection.looping && connection.bufferTarget > 0) }
                     Label { font.pixelSize: 10; opacity: .55; text: card.condition === "ok" ? "now" : card.frames.length ? Qt.formatTime(new Date(card.frames[card.frames.length - 1].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
                 }
             }

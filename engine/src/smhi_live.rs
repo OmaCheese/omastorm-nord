@@ -256,6 +256,23 @@ pub enum Event {
     Offline { site: String, reason: String },
     /// SMHI answered, and the station has published nothing recent.
     Silent { site: String, reason: String },
+    /// S31: how far a made frame's fill has come (`mosaic::run`, for the
+    /// ring `variant`), or `None` once it is over (`loading.rs`).
+    Progress {
+        site: String,
+        variant: String,
+        progress: Option<crate::loading::Progress>,
+    },
+    /// S31: the backfill's plan for `want`: `frames` earlier frames, those
+    /// the tilt store gave (already sent) and those it fetches next.
+    HistoryPlan {
+        site: String,
+        want: Want,
+        frames: usize,
+    },
+    /// S31: the backfill for `want` ended, whether or not every planned
+    /// frame came.
+    HistoryEnd { site: String, want: Want },
 }
 
 impl Event {
@@ -1352,7 +1369,11 @@ pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached:
             .chain(live.newest.iter())
             .map(|v| v.valid_ms)
             .max();
+        // S31 review SF1: only a round whose listing answered says anything
+        // about silence (as ORD's and OPERA's pollers judge it); a failed one
+        // leaves the last word, so an SMHI outage is `offline`, never silent.
         let quiet_since = match latest_ms {
+            _ if failed.is_some() => None,
             Some(ms) if (cfg.now_ms)() - ms >= SILENT_AFTER_MS => Some(Some(ms)),
             None if lists_nothing => Some(None),
             _ => None,
@@ -1372,7 +1393,9 @@ pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached:
                 return;
             }
         }
-        silent = quiet_since.is_some();
+        if failed.is_none() {
+            silent = quiet_since.is_some();
+        }
 
         if backfilling.is_none()
             && caught_up
@@ -1489,6 +1512,11 @@ async fn backfill(
         Ok(listed) => listed,
         Err(fail) => {
             live_log(&site, format_args!("backfill listing: {fail}"));
+            let end = Event::HistoryEnd {
+                site,
+                want: cfg.want,
+            };
+            send(&events, end).await;
             return;
         }
     };
@@ -1505,6 +1533,15 @@ async fn backfill(
     let mut targets = backfill_targets(listed, live_ms, &known, depth);
     targets.retain(|v| !done.contains(&v.valid_ms));
     let wanted = targets.len();
+    // S31: what the history will bring, for `state.loading`.
+    let plan = Event::HistoryPlan {
+        site: site.clone(),
+        want: cfg.want,
+        frames: stored + wanted,
+    };
+    if !send(&events, plan).await {
+        return;
+    }
     let mut fetched = 0;
     let mut undecoded = 0;
     for volume in targets {
@@ -1549,6 +1586,11 @@ async fn backfill(
             "backfilled {fetched} of {wanted} earlier volumes, {stored} more from the tilt store"
         ),
     );
+    let end = Event::HistoryEnd {
+        site,
+        want: cfg.want,
+    };
+    send(&events, end).await;
 }
 
 #[cfg(test)]
@@ -2140,6 +2182,14 @@ mod tests {
             .unwrap()
     }
 
+    /// Collect `event`, but not the backfill's plan and end (S31), which
+    /// `backfill_reports_its_plan_and_end` checks alone.
+    fn keep(events: &mut Vec<Event>, event: Event) {
+        if !matches!(event, Event::HistoryPlan { .. } | Event::HistoryEnd { .. }) {
+            events.push(event);
+        }
+    }
+
     /// A readable summary of one event.
     fn describe(event: &Event) -> String {
         match event {
@@ -2150,6 +2200,9 @@ mod tests {
             Event::Current { .. } => "current".into(),
             Event::Offline { reason, .. } => format!("offline {reason}"),
             Event::Silent { reason, .. } => format!("silent {reason}"),
+            Event::Progress { .. } => "progress".into(),
+            Event::HistoryPlan { frames, .. } => format!("plan {frames}"),
+            Event::HistoryEnd { .. } => "history end".into(),
         }
     }
 
@@ -2194,13 +2247,13 @@ mod tests {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
             while !until(&events) {
                 match tokio::time::timeout_at(deadline, rx.recv()).await {
-                    Ok(Some(event)) => events.push(event),
+                    Ok(Some(event)) => keep(&mut events, event),
                     Ok(None) | Err(_) => break,
                 }
             }
             let deadline = tokio::time::Instant::now() + linger;
             while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
-                events.push(event);
+                keep(&mut events, event);
             }
             poller.abort();
             let served = served.lock().unwrap().clone();
@@ -2216,6 +2269,99 @@ mod tests {
     /// Another product backfills an hour (S26: a product volume costs ~39
     /// requests), and every read that decoded the lowest scan on the way
     /// sends it too, as a second event, from the same volume.
+    /// The test clock of `a_failed_listing_never_says_silent`.
+    static CLOCK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    fn clocked() -> i64 {
+        CLOCK.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Review SF1: after one good round, SMHI stops answering its listing
+    /// and 40 minutes pass: the radar is offline, never silent (a silent
+    /// one would be left out of a mosaic, and remembered so for an hour).
+    #[test]
+    fn a_failed_listing_never_says_silent() {
+        CLOCK.store(recorded(), std::sync::atomic::Ordering::SeqCst);
+        let listings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let inner = smhi("vara", VARA, VARA_DAY);
+        let count = listings.clone();
+        let handler: Handler = Arc::new(move |request: &Request| {
+            if request.path.ends_with("/qcvol.json") {
+                let n = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n > 0 {
+                    // SMHI down from the second listing on, and at once
+                    // 40 minutes later than the volumes dealt with.
+                    if n == 1 {
+                        CLOCK.fetch_add(40 * 60_000, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    return Response::new(503, "down");
+                }
+            }
+            inner(request)
+        });
+        let seen = runtime().block_on(async {
+            let (base, _served) = serve(handler).await;
+            let (tx, mut rx) = mpsc::channel(16);
+            let cfg = Config {
+                now_ms: clocked,
+                ..config(base)
+            };
+            let poller = tokio::spawn(poll_with(cfg, "vara".into(), tx, Vec::new()));
+            let mut seen: Vec<String> = Vec::new();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+            while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+                seen.push(describe(&event));
+            }
+            poller.abort();
+            seen
+        });
+        assert_eq!(seen[0], "sweep 2026-09-13 16:40Z true", "{seen:?}");
+        assert!(seen.iter().any(|s| s.starts_with("offline")), "{seen:?}");
+        assert!(!seen.iter().any(|s| s.starts_with("silent")), "{seen:?}");
+    }
+
+    /// S31: before it fetches, the backfill says how many earlier frames it
+    /// will bring (for `state.loading`), and when it has ended; every
+    /// planned frame comes between the two.
+    #[test]
+    fn backfill_reports_its_plan_and_end() {
+        let seen = runtime().block_on(async {
+            let (base, _served) = serve(smhi("vara", VARA, VARA_DAY)).await;
+            let (tx, mut rx) = mpsc::channel(16);
+            let cfg = Config {
+                want: Want::ColMax,
+                decode: stub_product,
+                ..config(base)
+            };
+            let poller = tokio::spawn(poll_with(cfg, "vara".into(), tx, Vec::new()));
+            let mut seen: Vec<String> = Vec::new();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while seen.last().is_none_or(|s| s != "history end") {
+                match tokio::time::timeout_at(deadline, rx.recv()).await {
+                    Ok(Some(event)) => seen.push(describe(&event)),
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            poller.abort();
+            seen
+        });
+        // The live path's three volumes (each with its free lowest scan),
+        // then the plan: the hour's other nine product frames...
+        let plan = seen
+            .iter()
+            .position(|s| s.starts_with("plan "))
+            .expect("a plan");
+        assert_eq!(plan, 6, "{seen:?}");
+        assert_eq!(seen[plan], format!("plan {}", PRODUCT_BACKFILL - 3));
+        assert_eq!(seen[plan + 1], "backfill 2026-09-13 16:35Z");
+        // ...which all come, with their lowest scans, before the end.
+        let end = seen
+            .iter()
+            .position(|s| s == "history end")
+            .expect("an end");
+        assert_eq!(end - plan - 1, 2 * (PRODUCT_BACKFILL - 3), "{seen:?}");
+        assert_eq!(seen[end - 1], "backfill 2026-09-13 15:55Z");
+    }
+
     #[test]
     fn a_product_backfills_an_hour_and_sends_its_lowest_scans_too() {
         let (events, served) = run_as(

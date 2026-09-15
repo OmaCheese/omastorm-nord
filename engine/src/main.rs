@@ -1,6 +1,7 @@
 mod catalog;
 mod composite;
 mod grid3d;
+mod loading;
 mod mosaic;
 mod netstats;
 mod odim;
@@ -628,6 +629,7 @@ fn initial_state(
         product: products::Choice::default(),
         mosaic: mosaic::Set::default(),
         section: None,
+        loading: None,
     }
 }
 fn line(message: &Message) -> String {
@@ -696,6 +698,8 @@ struct Shared {
     /// Sections and profiles (S24c): the grid of the newest frame, the
     /// section's line and who set it, profiles waiting.
     sections: grid3d::Sections,
+    /// The load a client waits for and what `state.loading` says (S31).
+    loading: loading::Tracker,
 }
 impl Shared {
     fn snapshot(&mut self) -> String {
@@ -715,6 +719,8 @@ impl Shared {
                 self.staleness(),
             );
         }
+        // S31: the load's progress, throttled by the tracker.
+        self.state.loading = self.loading.wire(Instant::now());
         line(&Message::State(&self.state))
     }
     /// A frame catalogued before S14 has no credit: give it its station's.
@@ -803,6 +809,36 @@ impl Shared {
             .max()?;
         Some(now_ms().saturating_sub(newest_ms).max(0) as u64 / 1000)
     }
+    /// S31: a load in words for `state.loading`: a radar's or a
+    /// composite's (`loading::radar_name`), My mosaic's set, a composite's
+    /// product (as `mosaic::run` names it).
+    fn load_name(&self, station: &Station, want: Want) -> String {
+        match loading::kind_of(station, want) {
+            loading::Kind::Radar => loading::radar_name(station, want),
+            loading::Kind::Made if station.provider == providers::ProviderId::Mosaic => {
+                format!("My mosaic, {}", self.state.mosaic.product().1)
+            }
+            loading::Kind::Made => format!("{} {}", station.name, want.product().1),
+        }
+    }
+    /// S31: the composite's own newest frame (`REF`), drawn under its
+    /// product's first stage, its stable files published; `None` when its
+    /// ring holds none.
+    fn composite_under(&self, station: &Station) -> Option<Frame> {
+        let listed = self
+            .catalog
+            .list_variant(&station.id, &Want::Lowest.variant())
+            .ok()?;
+        let record = listed.iter().rev().find_map(|e| e.record.as_ref())?;
+        if let Err(e) = link_record(&self.dir, record) {
+            eprintln!("Publishing {} under its product: {e}", record.frame.id);
+            return None;
+        }
+        let mut frame = record.frame.clone();
+        (frame.texture, frame.azimuth_lut) = stable_paths(record);
+        self.credit(&mut frame);
+        Some(frame)
+    }
     /// Abort the current poller, if any, and start another on the selected
     /// station. Timeline and the frame on screen stay; the next *new* sweep
     /// clears `unavailable` / `offline`. `skip_known` is true on a respawn
@@ -827,6 +863,20 @@ impl Shared {
                 ..Station::default()
             });
         let want = self.want();
+        // S31: a new load, or none for the engine's own restart (its
+        // backfill may still bring a history stage).
+        if skip_known {
+            self.loading.reset();
+        } else {
+            let has_frame = !self.state.frame.scan_time.is_empty();
+            let kind = loading::kind_of(&station, want);
+            let under =
+                (kind == loading::Kind::Made && station.kind == SiteKind::Grid && !has_frame)
+                    .then(|| self.composite_under(&station))
+                    .flatten();
+            let name = self.load_name(&station, want);
+            self.loading.begin(kind, &name, has_frame, under);
+        }
         self.live = Some(if station.provider == providers::ProviderId::Mosaic {
             // My mosaic polls its set's radars itself (S25).
             tokio::spawn(mosaic::poll(
@@ -1312,6 +1362,10 @@ impl Shared {
         }
         let following = self.timeline.following();
         self.state.connection.status = ConnectionStatus::Ok;
+        // S31: the load's first frame is on screen.
+        if following {
+            self.loading.shown(Instant::now());
+        }
         let shown = if complete {
             self.frame_ms = Some(start_ms);
             self.pending = None;
@@ -1351,6 +1405,8 @@ impl Shared {
             self.frame_ms = Some(entry.start_ms);
         }
         self.link(&entry);
+        // S31: one more frame of a radar's history.
+        self.loading.backfilled(Instant::now());
         // A frame built again (My mosaic's late rebuild, S25) that is on
         // screen shows its new files.
         let on_screen = self.state.frame.id == entry.id;
@@ -1876,11 +1932,51 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
             // condition stays, as for a catalogued sweep in `arrived`.
             providers::Event::Current { site } => {
                 let mut shared = shared.lock().unwrap();
+                if shared.state.site.id == site && shared.state.source == Source::Live {
+                    // S31: its newest frame was on screen already.
+                    shared.loading.shown(Instant::now());
+                    if known_sweep_clears_loading(shared.state.connection.status) {
+                        shared.state.connection.status = ConnectionStatus::Ok;
+                    }
+                    shared.broadcast();
+                }
+            }
+            // S31: a made fill's progress, a radar backfill's plan and end,
+            // for the selected station's ring only (a switch may leave an
+            // aborted poller's last events in the channel).
+            providers::Event::Progress {
+                site,
+                variant,
+                progress,
+            } => {
+                let mut shared = shared.lock().unwrap();
                 if shared.state.site.id == site
                     && shared.state.source == Source::Live
-                    && known_sweep_clears_loading(shared.state.connection.status)
+                    && shared.variant() == variant
                 {
-                    shared.state.connection.status = ConnectionStatus::Ok;
+                    shared.loading.progress(progress, Instant::now());
+                    shared.broadcast();
+                }
+            }
+            providers::Event::HistoryPlan { site, want, frames } => {
+                let mut shared = shared.lock().unwrap();
+                if shared.state.site.id == site
+                    && shared.state.source == Source::Live
+                    && shared.variant() == want.variant()
+                    && let Some(station) = shared.sites.iter().find(|s| s.id == site).cloned()
+                {
+                    let name = shared.load_name(&station, want);
+                    shared.loading.plan(&name, frames, Instant::now());
+                    shared.broadcast();
+                }
+            }
+            providers::Event::HistoryEnd { site, want } => {
+                let mut shared = shared.lock().unwrap();
+                if shared.state.site.id == site
+                    && shared.state.source == Source::Live
+                    && shared.variant() == want.variant()
+                {
+                    shared.loading.history_end(Instant::now());
                     shared.broadcast();
                 }
             }
@@ -1903,9 +1999,12 @@ fn report(shared: &Mutex<Shared>, site: &str, reason: &str, condition: Connectio
         return;
     }
     eprintln!("{} Live {site}: {reason}", iso(now_ms()));
-    if set(&mut shared.state.connection.status, condition) {
-        shared.broadcast();
-    }
+    set(&mut shared.state.connection.status, condition);
+    // S31: no first frame is coming; offline, no stage stays (review NIT5).
+    shared
+        .loading
+        .quiet(Instant::now(), condition == ConnectionStatus::Offline);
+    shared.broadcast();
 }
 /// Sections and profiles (S24c): on a wake (a `set_section`, a `profile`)
 /// or once a second, a pass over `grid3d::Sections`; a grid it asks for is
@@ -2461,6 +2560,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         last_broadcast: String::new(),
         logged_condition: None,
         sections: grid3d::Sections::default(),
+        loading: loading::Tracker::default(),
     }));
     // My mosaic's set as the last live run left it (S25, review #11).
     if source == Source::Live {
@@ -2757,6 +2857,7 @@ mod tests {
             last_broadcast: String::new(),
             logged_condition: None,
             sections: grid3d::Sections::default(),
+            loading: loading::Tracker::default(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -2799,6 +2900,62 @@ mod tests {
         assert!(!shared.release_unwatched_product(), "a radar's product");
         shared.state.site.id = "mymosaic".into();
         assert!(!shared.release_unwatched_product(), "My mosaic");
+        if let Some(task) = shared.live.take() {
+            task.abort();
+        }
+    }
+    /// S31: a radar opened on the placeholder loads its first frame; a
+    /// composite's product loads over the composite's newest frame, whose
+    /// files stay published and referenced; a station opened on a
+    /// catalogued frame shows no first stage.
+    #[test]
+    fn a_load_names_its_first_frame_and_a_composites_product_loads_over_it() {
+        let (mut shared, runtime) = live_shared("loading");
+        let _guard = runtime.enter();
+        let later = || Instant::now() + Duration::from_secs(5);
+        assert!(shared.select_site("vara").0);
+        shared.snapshot();
+        let first = shared.state.loading.clone().unwrap();
+        assert_eq!(
+            (first.stage, first.percent, first.total, first.unit),
+            (loading::Stage::First, 0, 1, loading::Unit::Frames)
+        );
+        assert_eq!(first.label, "Vara Reflectivity 0.5°: first frame");
+        // The composite's ring holds a frame: it opens on it, no first stage.
+        let mut frame = fixture_frame();
+        frame.id = "nordic-20260914T100000Z-e0".into();
+        shared
+            .catalog
+            .store("nordic", &frame, 1, b"sweep", b"lut", "p")
+            .unwrap();
+        assert!(shared.select_site("nordic").0);
+        assert_eq!(shared.loading.wire(later()), None);
+        // Its product has no frame: the placeholder, the fill's first
+        // stage, and the composite under it.
+        let (changed, refused) = shared.set_product(products::CMAX, 0, None, None);
+        assert!(changed && refused.is_none());
+        assert!(shared.state.frame.scan_time.is_empty());
+        shared.snapshot();
+        let product = shared.state.loading.clone().unwrap();
+        assert_eq!(product.stage, loading::Stage::First);
+        assert_eq!(product.label, "Nordic Column max: placing the radars");
+        let under = product.under.expect("the composite under its product");
+        assert_eq!(under.id, frame.id);
+        assert!(
+            under
+                .texture
+                .starts_with("tex/sweep-nordic-20260914T100000Z-e0-")
+        );
+        assert_eq!(fs::read(shared.dir.join(&under.texture)).unwrap(), b"sweep");
+        assert!(
+            shared.state.referenced_files().any(|p| p == under.texture),
+            "kept from the texture cleanup"
+        );
+        // Its first frame on screen: 100, and no composite under it.
+        shared.loading.shown(Instant::now());
+        shared.snapshot();
+        let shown = shared.state.loading.clone().unwrap();
+        assert_eq!((shown.percent, shown.under.is_none()), (100, true));
         if let Some(task) = shared.live.take() {
             task.abort();
         }

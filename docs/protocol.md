@@ -219,6 +219,11 @@ It is small (a few KB) so clients replace rather than merge.
   `set_section`, shared by every client like the station, or `null` when
   there is none ([Sections and profiles](#sections-and-profiles)). Always
   sent; an engine older than S24c sends no `section`.
+- `loading` (S31) is how far the load a client is waiting for has come,
+  as a percentage with what it counts, or `null` when nothing is loading
+  ([Loading progress](#loading-progress)). Always sent; an engine older
+  than S31 sends no `loading`, and a client then shows `connection.status`
+  `loading` as before.
 - `frame.palette` has one color per class, in class order, and `frame.bounds`
   has one more entry than `palette`: class `i` covers `bounds[i]` up to
   `bounds[i+1]` in `units`. The UI uploads `palette` to the GPU as a
@@ -1376,6 +1381,78 @@ box the terrain is 0 (sea level). A point is looked up by the texel that
 contains it, nearest, with no interpolation: at 60° N a texel is about
 1 km across, finer than the beam is thick.
 
+## Loading progress
+
+`state.loading` (S31, additive, always sent) says how far the load a client
+is waiting for has come, or is `null` when nothing is loading. A load starts
+with a `select_site`, a `set_product` or a `set_mosaic` that starts a new
+poller; a poller restarted by the engine on its own (a quiet feed) starts
+none, though its backfill may start a history stage (below).
+
+```json
+"loading":{"stage":"first","percent":63,"done":52,"total":82,"unit":"volumes",
+           "label":"Nordic Rain mass: 26 of 40 radars in for 14:25Z (1 silent)"}
+"loading":{"stage":"history","percent":58,"done":7,"total":12,"unit":"frames",
+           "label":"Vara Reflectivity 1.5°: 7 of 12 frames"}
+"loading":null
+```
+
+- `stage`: `first` while the first frame of the load is on its way (the
+  station has no frame on screen for it yet, or a made frame is still
+  being filled), then `history` while the frames behind it arrive. A load
+  may have either stage alone.
+- `percent`: an integer, 0 to 100: `done` of `total` in `unit`, rounded
+  down. Within a stage it never goes down, and it reaches 100 only when
+  the stage's frame is on screen (`first`: `state.frame` is it) or its last
+  frame is in `state.timeline` (`history`). A stage change starts again from
+  the new stage's own count. At 100 `loading` stays for about a second,
+  then becomes `null` (or the next stage).
+- `done` and `total`: what the engine counts, in `unit`, `volumes` or
+  `frames`. They are counts of what the engine fetches or builds anyway;
+  showing them costs no request.
+- `label`: English, shown verbatim, naming the station, the product and
+  what is counted.
+- `under` (only in the `first` stage of a composite's product, S24b): the
+  composite's own newest frame (`REF`), a complete `frame` object with its
+  stable texture names, which the engine keeps published while it is
+  here. While `state.frame` is the loading placeholder a client draws
+  `under` in its place, with `under`'s own legend and name, and shows the
+  progress beside it. It is absent when the composite has no frame.
+
+What each load counts:
+
+- **A radar or a provider's composite** (`frames`): `first` is its first
+  frame (`done` 0 of `total` 1) when the station opened on the loading
+  placeholder; a station that opened on a catalogued frame skips it.
+  `history` is the backfill: the frames its poller will bring after the
+  first (those the tilt store holds first, then those it fetches), counted
+  as each joins the timeline. A backfill that stops early (a network
+  failure) ends the stage at 100.
+- **My mosaic and a composite's products** (`volumes`, S25, S24b): `first`
+  counts, over the frame time the engine is closest to completing, the
+  volumes each counted radar still has to deliver before that time's own
+  (its poller fetches newest first), so the percentage rises while the
+  newer volumes come in; volumes the tilt store already holds are done at
+  once. The label names how many radars are in for that time. `history`
+  counts the volumes of the frame times still to build in the set's
+  backfill window, and the label how many of those frames are built. The
+  load ends once every frame time of the window is built; the next live
+  frame five minutes later starts no load.
+- **A silent radar does not count**: a radar whose poller reports it
+  silent (it has published nothing for the provider's `unavailable` age,
+  30 minutes for SMHI and ORD; Kiruna from 07:15Z on 2026-09-15) leaves
+  `total`, and a frame time no longer waits for it: the time builds when
+  the other radars are in, not after `QUIET_MS` without arrivals. The
+  label says how many are silent. A scan from it counts it again.
+
+The engine changes `loading` at most once a second while counting; a
+stage's start, its 100 and its end are sent at once, with the broadcast of
+the change that caused them. A client older than S31 ignores `loading` and
+shows `connection.status` as before (`under` is not drawn: it shows the
+placeholder, which draws nothing, as before S31). A client facing an older
+engine finds no `loading` and shows `connection.status` `loading` as it
+did.
+
 ## Configuration
 
 `~/.config/omastorm-se/config.toml` and
@@ -1546,3 +1623,13 @@ Additive since (S24b, still version 2):
   client chose it) draws it as a grid frame with its own legend. A client
   facing an older engine finds `[]` in a composite's products and offers
   nothing.
+
+Additive since (S31, still version 2):
+
+- `state.loading` is new and always sent: `{stage, percent, done, total,
+  unit, label}` and, in the first stage of a composite's product, `under`;
+  `null` when nothing loads ([Loading progress](#loading-progress)).
+- A frame time of My mosaic or a composite's product no longer waits for a
+  radar its poller reports silent.
+- A client older than S31 ignores `loading`; a client facing an older
+  engine finds none and shows `connection.status` `loading` as before.

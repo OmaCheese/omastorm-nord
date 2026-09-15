@@ -24,6 +24,9 @@ QtObject {
     property string loopSite: ""
     property bool initialized: false
     property string treatment: Quickshell.env("OMASTORM_STYLE") || "GLYPHS"
+    // S24d: Relief (a storm height lit as a surface), shared by the window and
+    // the popover; OMASTORM_RELIEF=1 turns it on for checks and captures.
+    property bool relief: Quickshell.env("OMASTORM_RELIEF") === "1"
     // The weak-return floor in dBZ, or null for every measured return
     // (DESIGN.md, weak-return floor); config.toml's weak_floor and the `w`
     // key change it, OMASTORM_WEAK outranks the file for captures.

@@ -634,6 +634,9 @@ pub struct Profile {
     pub levels: Vec<Level>,
     pub radars: Vec<String>,
     pub echo_top_m: Option<u32>,
+    /// No beam sampled any level above `echo_top_m`: the top may be higher
+    /// (review S3, as `ETOP`'s "at least").
+    pub echo_top_at_least: bool,
 }
 
 impl Profile {
@@ -658,6 +661,7 @@ impl Profile {
                 .collect(),
             radars: Vec::new(),
             echo_top_m: None,
+            echo_top_at_least: false,
         }
     }
 
@@ -677,15 +681,25 @@ impl Profile {
             level.samples = u32::from(count);
             level.radars = radars;
         }
-        out.echo_top_m = out
-            .levels
-            .iter()
-            .rev()
-            .find(|l| l.dbz.is_some_and(|v| v >= ETOP_DBZ))
-            .map(|l| l.top_m);
+        (out.echo_top_m, out.echo_top_at_least) = echo_top(&out.levels);
         out.radars = column.radars;
         out
     }
+}
+
+/// The top of the highest level at or above `ETOP_DBZ`, and whether it is
+/// only "at least" that high: no beam sampled any level above it.
+fn echo_top(levels: &[Level]) -> (Option<u32>, bool) {
+    let Some(k) = levels
+        .iter()
+        .rposition(|l| l.dbz.is_some_and(|v| v >= ETOP_DBZ))
+    else {
+        return (None, false);
+    };
+    (
+        Some(levels[k].top_m),
+        levels[k + 1..].iter().all(|l| l.samples == 0),
+    )
 }
 
 /// Check a `set_section`'s points: `Ok(None)` clears, `Ok(Some)` sets.
@@ -1735,6 +1749,35 @@ mod tests {
         assert!(asked.is_some() && !changed);
         assert_eq!(state.unwrap().status, Status::Ready);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review S3: a top with no beam above it is "at least".
+    #[test]
+    fn an_echo_top_with_no_beam_above_is_at_least() {
+        let levels = |cells: &[(Option<f64>, u32)]| -> Vec<Level> {
+            cells
+                .iter()
+                .enumerate()
+                .map(|(k, &(dbz, samples))| Level {
+                    bottom_m: k as u32 * LEVEL_M,
+                    top_m: (k as u32 + 1) * LEVEL_M,
+                    dbz,
+                    samples,
+                    radars: Vec::new(),
+                })
+                .collect()
+        };
+        let seen_above = levels(&[(Some(30.0), 3), (Some(20.0), 2), (None, 2), (None, 0)]);
+        assert_eq!(echo_top(&seen_above), (Some(1000), false));
+        let nothing_above = levels(&[(Some(30.0), 3), (Some(20.0), 2), (None, 0), (None, 0)]);
+        assert_eq!(echo_top(&nothing_above), (Some(1000), true));
+        let weak = levels(&[(Some(10.0), 3), (None, 2)]);
+        assert_eq!(echo_top(&weak), (None, false));
+        // The tower: beams see clear air above its top.
+        let (grid, _, sites) = tower();
+        let job = Job::new(&sites[0], &Set::default(), &sites, "x", "t", T).unwrap();
+        let centre = Profile::of(&grid, &job, 59.25, 14.2);
+        assert!(!centre.echo_top_at_least);
     }
 
     /// Review S4: a client waits for one profile at a time, its latest.

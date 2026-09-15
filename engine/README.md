@@ -105,7 +105,8 @@ frame catalog above is unchanged; the store sits beside it:
   stored volume of the loop the catalog lacks, newest first and unpaced, then
   fetches the rest of its depth; its log line counts both.
 - **Cap.** `OMASTORM_TILTS_MB` (default 256, in 10^6 bytes of `.u8z`; 0
-  turns the store off). After each save the least recently used tilts go
+  turns the store off, and then My mosaic's height sets, made from the
+  store, report the station offline with that reason, S30). After each save the least recently used tilts go
   first (a compose counts as a use), oldest volume first on a tie, whatever
   the station. Nothing is fetched to fill it. Each save logs
   `Tilts <station>: N tilts, M MB, cap X MB`; an eviction logs
@@ -180,7 +181,10 @@ above sea level or above the ground:
 - **Whole volumes, through the tilt store.** Its pollers run with
   `Want::ColMax` (every scan of each volume; at 0.5–6 km every SMHI scan holds
   the height somewhere within 240 km, so "only the scans a height needs" is
-  the whole volume anyway), `HEIGHT_BACKFILL + 1` (7) deep instead of 13. The
+  the whole volume anyway), `HEIGHT_BACKFILL + 1` (7) deep instead of 13 when the set has an SMHI
+  radar (`Layout::backfill`; a set of ORD radars, 1 request a file, stays
+  13), and the log says what the first fill should cost (`first fill: about
+  N range requests …`). The
   events only say a volume is in; `build_and_send` reads each radar's scans
   back from the store (`volume_of`) on the blocking pool while it builds, so
   no decoded volume is held between frames. A stored volume counts at start

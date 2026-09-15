@@ -83,7 +83,9 @@ Item {
             var sea = id === "CAPPI";
             var asl = product && product.id === "CAPPI" && product.heightM > 0 ? product.heightM : 2000;
             var above = sea ? asl - (here && here.altM ? here.altM : 0) : id === "CAPPI1" ? 1000 : 2000;
-            var at = groundKmAt(e, above);
+            // S30: above the ground the lowest beam meets the height at no
+            // one distance (the ground varies): only the data's edge.
+            var at = sea && product && product.above === "ground" ? 0 : groundKmAt(e, above);
             if (at > 0 && at < data) {
                 out.push({km: at, strong: true, what: "height", heightM: sea ? asl : above, sea: sea});
                 out.push({km: data, strong: false, what: "data"});
@@ -575,6 +577,15 @@ Item {
     // S25: My mosaic's chosen radars at their reach, [{id, lat, lon, km}]:
     // the checklist's while it is open, the set's while My mosaic shows.
     property var mosaicCircles: []
+    // S30: where a My mosaic height frame's holes are hatched: its chosen
+    // radars' reach circles ([{lat, lon, km}], the window's blue circles by
+    // default), as the shader wants them: latitude and longitude less the
+    // site's (radians) and reach (metres), at most 12. Empty: hatched
+    // everywhere, as before.
+    property var hatchSites: mosaicCircles
+    readonly property var hatchCircles: !placement || !scan || scan.product !== "CAPPI" || !hatchSites ? []
+        : hatchSites.slice(0, 12).map(c => Qt.vector4d(c.lat * Math.PI / 180, (mercatorX(c.lon) - siteMx) * 2 * Math.PI, c.km * 1000, 0))
+    function circleAt(i) { return i < hatchCircles.length ? hatchCircles[i] : Qt.vector4d(0, 0, 0, 0); }
 
     // Upload the immutable sweep and its azimuth lookup once. Pan/zoom updates
     // shader uniforms; the polar-to-screen lookup runs in the shader and no
@@ -708,6 +719,20 @@ Item {
         property real reachM: map.reachShownKm * 1000
         property color hatchInk: map.theme ? map.theme.foreground : "white"
         property vector4d hatchColor: Qt.vector4d(hatchInk.r, hatchInk.g, hatchInk.b, .45)
+        // S30: hatched only inside the chosen radars' reach (radar.frag).
+        property int circleCount: map.hatchCircles.length
+        property vector4d circle0: map.circleAt(0)
+        property vector4d circle1: map.circleAt(1)
+        property vector4d circle2: map.circleAt(2)
+        property vector4d circle3: map.circleAt(3)
+        property vector4d circle4: map.circleAt(4)
+        property vector4d circle5: map.circleAt(5)
+        property vector4d circle6: map.circleAt(6)
+        property vector4d circle7: map.circleAt(7)
+        property vector4d circle8: map.circleAt(8)
+        property vector4d circle9: map.circleAt(9)
+        property vector4d circle10: map.circleAt(10)
+        property vector4d circle11: map.circleAt(11)
         fragmentShader: "shaders/radar.frag.qsb"
     }
     Item {

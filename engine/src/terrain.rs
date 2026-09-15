@@ -12,6 +12,9 @@ use std::sync::LazyLock;
 
 const FILE: &[u8] = include_bytes!("../data/terrain-nordic-2km.bin");
 const MAGIC: &[u8; 8] = b"OMTERR1\0";
+/// The credit an above-ground frame adds to its `attribution` (S30,
+/// `data/README.md`).
+pub const CREDIT: &str = "terrain: Mapzen Terrain Tiles (AWS open data; Kartverket, NLS Finland, SDFE, EU-DEM/Copernicus)";
 /// The sphere the lookup rule measures ground distance and bearing on.
 const SPHERE_M: f64 = 6_371_000.0;
 
@@ -99,6 +102,7 @@ static GRID: LazyLock<Result<Grid, String>> = LazyLock::new(|| {
     let grid = Grid::parse(FILE);
     if let Err(e) = &grid {
         eprintln!("Terrain: {e}; every height above ground is above sea level");
+        debug_assert!(false, "the embedded terrain grid does not parse: {e}");
     }
     grid
 });

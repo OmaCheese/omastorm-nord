@@ -431,7 +431,12 @@ fn live_frame(
         },
         palette: template.palette.clone(),
         bounds: template.bounds.clone(),
-        attribution: station.attribution.clone(),
+        // A height above the ground credits the terrain too (S30).
+        attribution: if matches!(want, Want::CappiGround(..)) {
+            format!("{}; {}", station.attribution, terrain::CREDIT)
+        } else {
+            station.attribution.clone()
+        },
         grid: None,
     }
 }

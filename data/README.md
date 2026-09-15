@@ -202,14 +202,20 @@ encoding, zoom 8), open data on AWS
 (<https://registry.opendata.aws/terrain-tiles/>,
 `s3.amazonaws.com/elevation-tiles-prod`), the same tiles
 `scripts/blockage-tables.py` reads for Clear view. The tiles are a blend of
-several public elevation models; their sources and the credit each asks
-for are listed in
-[joerd's attribution.md](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)
-(for the Nordic countries SRTM, GMTED2010, ETOPO1 and EU-DEM, "produced using
-Copernicus data and information funded by the European Union", and the
-national models it names). Use of the grid follows those terms: credit
-"Terrain Tiles (Mapzen / AWS open data), with SRTM, GMTED2010, ETOPO1,
-EU-DEM and the national models listed by joerd".
+public elevation models, each with its own credit, listed in
+[joerd's attribution.md](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
+Over the Nordic box they include:
+
+- Kartverket's elevation model (Norway), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/);
+- the National Land Survey of Finland's elevation model, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/);
+- SDFE's elevation model (Denmark), under SDFE's free-data terms;
+- EU-DEM, "produced using Copernicus data and information funded by the
+  European Union";
+- and SRTM, GMTED2010 and ETOPO1 (public domain) where those are absent.
+
+Credit, as the README's "Data and licenses" and every above-ground frame's
+`attribution` give it: "terrain: Mapzen Terrain Tiles (AWS open data; Kartverket,
+NLS Finland, SDFE, EU-DEM/Copernicus)".
 
 Made on 2026-09-15: the box of every station-table radar's 250 km circle on
 the Web Mercator lattice of 2,000 m (1976 × 2556 texels, lattice column 16,

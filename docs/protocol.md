@@ -970,7 +970,9 @@ Sindal cost about 25 MB an hour while shown. Every height needs nearly
 every scan, so the whole volume is read once and every later height, and
 `above` either way, is made from the tilt store with no request. Because a
 volume costs 5–6 times a lowest scan, a `height` set builds back the newest
-**6** frame times (half an hour), not 12; its timeline still grows as live
+**6** frame times (half an hour), not 12, when it has an SMHI radar (a set
+of ORD radars only, whose files are 1 request each, builds back 12); its
+timeline still grows as live
 frames arrive. The tilts are read back from the store for each frame, so
 the store must be on (`OMASTORM_TILTS_MB` above 0); with it off, a
 `height` set reports the station offline with that reason. A radar whose
@@ -1112,7 +1114,13 @@ Additive since (S30, still version 2):
   Heights above ground are `productName` `Height 1 km above ground`; the
   frame id's product part is `cappi1000g`.
 - A My mosaic frame of the `height` rule has `product` `CAPPI`.
-- [Terrain](#terrain) is new.
+- [Terrain](#terrain) is new. A frame above the ground (a radar's or My
+  mosaic's) adds `; terrain: Mapzen Terrain Tiles (AWS open data;
+  Kartverket, NLS Finland, SDFE, EU-DEM/Copernicus)` to its `attribution`,
+  which clients show verbatim.
+- A client may hatch a My mosaic height frame's no-data texels only inside
+  the chosen radars' reach circles (`state.mosaic` and `hello.sites`);
+  outside them no radar was chosen, and it draws nothing there.
 - A client facing an older engine finds no `height` rule and no `above`,
   and offers neither. An older client sent a `height` set by another
   client shows its frames as a composite's, named by `productName`, and

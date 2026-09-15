@@ -46,6 +46,14 @@ layout(std140, binding = 0) uniform buf {
     // polar frame draws nothing; 0 draws the whole sweep.
     float reachM;
     vec4 hatchColor;
+    // S30: the chosen radars of a My mosaic height frame, up to 12, each its
+    // latitude and its longitude less the site's (radians) and its reach
+    // (metres). A grid frame's no-data texel is hatched only inside one of
+    // them; outside every reach no radar was chosen, and it draws nothing.
+    // 0 circles: hatched everywhere, as before.
+    int circleCount;
+    vec4 circle0; vec4 circle1; vec4 circle2; vec4 circle3; vec4 circle4; vec4 circle5;
+    vec4 circle6; vec4 circle7; vec4 circle8; vec4 circle9; vec4 circle10; vec4 circle11;
 };
 // The sweep: one row per radial in ascending azimuth, one texel per gate.
 // For a grid frame, the Web Mercator texture instead, row 0 north.
@@ -113,6 +121,33 @@ float bearingAtan(float y, float x) {
     return y < 0.0 ? -a : a;
 }
 vec4 shade(vec4 code, vec2 pixel);
+// S30: whether the point at latitude `lat` and longitude `dLon` from the
+// site (radians) lies within circle `c` (great circle on the 6,371 km sphere).
+bool within(vec4 c, float lat, float dLon) {
+    float sdLat = sin((lat - c.x) * .5), sdLon = sin((dLon - c.y) * .5);
+    float h = clamp(sdLat * sdLat + cos(lat) * cos(c.x) * sdLon * sdLon, 0.0, 1.0);
+    return 2.0 * R_M * atan(sqrt(h), sqrt(max(0.0, 1.0 - h))) <= c.z;
+}
+// Whether the cell at Mercator offset `d` from the site is within any
+// chosen radar's reach (spelled out: no uniform arrays in every target).
+bool withinAny(vec2 d) {
+    float lat0 = radians(siteLatDeg);
+    float lat = atan(sinh_(log(tan(lat0) + 1.0 / cos(lat0)) - d.y * 2.0 * PI));
+    float dLon = d.x * 2.0 * PI;
+    if (circleCount > 0 && within(circle0, lat, dLon)) return true;
+    if (circleCount > 1 && within(circle1, lat, dLon)) return true;
+    if (circleCount > 2 && within(circle2, lat, dLon)) return true;
+    if (circleCount > 3 && within(circle3, lat, dLon)) return true;
+    if (circleCount > 4 && within(circle4, lat, dLon)) return true;
+    if (circleCount > 5 && within(circle5, lat, dLon)) return true;
+    if (circleCount > 6 && within(circle6, lat, dLon)) return true;
+    if (circleCount > 7 && within(circle7, lat, dLon)) return true;
+    if (circleCount > 8 && within(circle8, lat, dLon)) return true;
+    if (circleCount > 9 && within(circle9, lat, dLon)) return true;
+    if (circleCount > 10 && within(circle10, lat, dLon)) return true;
+    if (circleCount > 11 && within(circle11, lat, dLon)) return true;
+    return false;
+}
 void main() {
     // Every treatment paints 3 px screen cells; each cell samples the gate
     // under its center, so the lookup below runs once per cell, not per texel.
@@ -134,6 +169,10 @@ void main() {
             float raw = floor(texel.r * 255.0 + .5);
             texel = vec4(texture(classes, vec2((raw + .5) / 256.0, .5)).r, raw == 1.0 ? 4.0 / 255.0 : 0.0, raw / 255.0, 1.0);
         }
+        // S30: a no-data texel outside every chosen radar's reach is not
+        // "no radar at this height" but no radar chosen: nothing.
+        if (hatchNodata == 1 && circleCount > 0 && texel.r == 0.0 && floor(texel.g * 255.0 + .5) == 4.0
+            && !withinAny(centerOffset + (samplePixel - viewport * .5) * unitsPerPixel)) { fragColor = vec4(0); return; }
         fragColor = shade(texel, pixel);
         return;
     }

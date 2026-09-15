@@ -211,6 +211,12 @@ OpenStreetMap contributors, [ODbL](https://opendatacommons.org/licenses/odbl/1-0
 tiles by [OpenFreeMap](https://openfreemap.org); Natural Earth, public domain.
 Location search: [GeoNames](https://www.geonames.org/),
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+Terrain (heights above ground): Mapzen [Terrain Tiles](https://registry.opendata.aws/terrain-tiles/)
+on AWS, whose Nordic inputs include Kartverket (Norway,
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)), the National Land Survey
+of Finland ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)), SDFE (Denmark)
+and EU-DEM, produced using Copernicus data and information funded by the European
+Union; details in [data/README.md](data/README.md).
 Code: MIT, see [LICENSE](LICENSE).
 
 ## Contributing

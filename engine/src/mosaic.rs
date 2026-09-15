@@ -70,11 +70,15 @@ pub const MAX_SITES: usize = 12;
 pub const MIN_REACH_KM: f64 = 25.0;
 /// Frame times a selection builds back, counting the newest: an hour.
 pub const BACKFILL: usize = 12;
-/// A `height` set's (S30): each radar's whole volume costs 5–6 times its
-/// lowest scan (an SMHI volume ~39 range requests, `docs/protocol.md`), so
-/// half an hour: twelve SMHI radars with an empty tilt store then read
-/// 12 × 7 volumes, about 3,300 requests, instead of 12 × 13, about 6,100.
+/// A `height` set's with an SMHI radar (S30, `Layout::backfill`): an SMHI
+/// whole volume is ~39 range requests, 5–6 times its lowest scan
+/// (`docs/protocol.md`), so half an hour: twelve SMHI radars with an empty
+/// tilt store then read 12 × 7 volumes, about 3,300 requests, instead of
+/// 12 × 13, about 6,100. A set of ORD radars only (whole files, 1 request
+/// each) builds back `BACKFILL`.
 pub const HEIGHT_BACKFILL: usize = 6;
+/// Range requests an SMHI whole volume costs, for the first-fill estimate.
+const SMHI_VOLUME_REQUESTS: usize = 39;
 /// Every provider publishes a volume per radar every 5 minutes.
 pub const CADENCE_MS: i64 = 5 * 60 * 1000;
 /// The frame for T is due at T + 8 minutes (SMHI publishes 4–5 minutes
@@ -253,15 +257,6 @@ impl Set {
                 crate::products::height_name(m, self.above.unwrap_or_default()),
             ),
             _ => (crate::products::REF, self.rule.name().to_owned()),
-        }
-    }
-
-    /// Frame times a selection builds back.
-    pub fn backfill(&self) -> usize {
-        if self.rule == Rule::Height {
-            HEIGHT_BACKFILL
-        } else {
-            BACKFILL
         }
     }
 
@@ -688,6 +683,21 @@ impl Layout {
         })
     }
 
+    /// Frame times this set builds back (review #8): `BACKFILL`, or
+    /// `HEIGHT_BACKFILL` for a height set with an SMHI radar, whose whole
+    /// volumes cost ~39 range requests each (an ORD file is 1).
+    pub fn backfill(&self) -> usize {
+        let smhi = self
+            .radars
+            .iter()
+            .any(|r| r.station.provider == ProviderId::Smhi);
+        if self.set.rule == Rule::Height && smhi {
+            HEIGHT_BACKFILL
+        } else {
+            BACKFILL
+        }
+    }
+
     /// The middle of the texture's box, (lat, lon): `frame.site`.
     pub fn centre(&self) -> (f64, f64) {
         let y = (mercator_y(self.north) + mercator_y(self.south)) / 2.0;
@@ -995,6 +1005,14 @@ pub fn combine_height(
     let mut owner = vec![u8::MAX; n];
     let mut best = vec![u64::MAX; n];
     let terrain = if ground { crate::terrain::grid() } else { None };
+    if ground && terrain.is_none() {
+        // Never with the embedded grid (terrain.rs parses it in its tests).
+        debug_assert!(
+            false,
+            "no terrain grid: above the ground falls back to sea level"
+        );
+        log("the terrain grid did not load: this frame is above sea level, not the ground");
+    }
     for (index, (radar, input)) in layout.radars.iter().zip(inputs).enumerate() {
         let Some(input) = input else { continue };
         if input.primary.is_empty() {
@@ -1152,7 +1170,12 @@ fn built(layout: &Layout, t_ms: i64, codes: Vec<u8>, ends: &[Option<i64>]) -> Bu
         variant: layout.set.variant(),
         product,
         product_name,
-        attribution: owners.join("; "),
+        // A height above the ground credits the terrain too (S30).
+        attribution: if layout.set.rule == Rule::Height && layout.set.above == Some(Above::Ground) {
+            format!("{}; {}", owners.join("; "), crate::terrain::CREDIT)
+        } else {
+            owners.join("; ")
+        },
         centre: layout.centre(),
     }
 }
@@ -1235,13 +1258,16 @@ pub struct Cost {
 
 impl Cost {
     /// Two reads of one volume together (S30: a product and its free
-    /// lowest scan).
+    /// lowest scan). From the store when neither made a request and either
+    /// came from it: the free scan's provenance reads as 0 requests, not as
+    /// the store's (review #5).
     pub fn plus(self, other: Cost) -> Cost {
+        let requests = self.requests + other.requests;
         Cost {
-            requests: self.requests + other.requests,
+            requests,
             bytes: self.bytes + other.bytes,
             total: self.total.max(other.total),
-            from_store: self.from_store && other.from_store,
+            from_store: requests == 0 && (self.from_store || other.from_store),
         }
     }
 
@@ -1512,6 +1538,13 @@ impl Schedule {
         self.late.contains(&t)
     }
 
+    /// Give up on frame time `t` (S30: the tilt store holds none of its
+    /// volumes): its scans go, so it is not ready again.
+    pub fn forget(&mut self, t: i64) {
+        self.scans.remove(&t);
+        self.late.remove(&t);
+    }
+
     /// `t` was built and sent: the first time, or its one late rebuild.
     pub fn mark_built(&mut self, t: i64) {
         if self.late.remove(&t) {
@@ -1699,15 +1732,19 @@ fn volume_of(store: &crate::tilts::Store, station: &str, t: i64) -> Option<Vec<T
 /// when `owned` names one, read back from the tilt store.
 type Loaded = Vec<Option<(Vec<Tilt>, Option<Vec<Tilt>>)>>;
 
-fn load_volumes(layout: &Layout, t: i64, owned: &Owned) -> Loaded {
-    let store = crate::tilts::shared();
+fn load_volumes(
+    layout: &Layout,
+    t: i64,
+    owned: &Owned,
+    store: Option<&crate::tilts::Store>,
+) -> Loaded {
     layout
         .radars
         .iter()
         .zip(owned)
         .map(|(radar, input)| {
             let (_, outer) = input.as_ref()?;
-            let store = store.as_deref()?;
+            let store = store?;
             let id = &radar.station.id;
             let primary = volume_of(store, id, t)?;
             let outer = outer
@@ -1716,6 +1753,38 @@ fn load_volumes(layout: &Layout, t: i64, owned: &Owned) -> Loaded {
             Some((primary, outer))
         })
         .collect()
+}
+
+/// The height frame for `t` (S30) from the volumes `store` holds of each
+/// radar's `owned` scans, with the radars whose volume it lacks; `None`
+/// when it holds none of them (review #6: never an empty frame).
+fn assemble_height(
+    layout: &Layout,
+    t: i64,
+    owned: &Owned,
+    store: Option<&crate::tilts::Store>,
+) -> (Option<Built>, Vec<String>) {
+    let loaded = load_volumes(layout, t, owned, store);
+    let unread: Vec<String> = layout
+        .radars
+        .iter()
+        .zip(owned.iter().zip(&loaded))
+        .filter(|(_, (input, volume))| input.is_some() && volume.is_none())
+        .map(|(radar, _)| radar.station.id.clone())
+        .collect();
+    if loaded.iter().all(Option::is_none) {
+        return (None, unread);
+    }
+    let inputs: Vec<Option<Volumes>> = loaded
+        .iter()
+        .map(|v| {
+            v.as_ref().map(|(primary, outer)| Volumes {
+                primary,
+                outer: outer.as_deref(),
+            })
+        })
+        .collect();
+    (Some(build_height(layout, t, &inputs)), unread)
 }
 
 /// Build the frame for `t` on the blocking pool and send it: as the live
@@ -1740,24 +1809,8 @@ async fn build_and_send(
     let started = Instant::now();
     let built = spawn_blocking(move || {
         if shared.set.rule == Rule::Height {
-            let loaded = load_volumes(&shared, t, &owned);
-            let unread: Vec<String> = shared
-                .radars
-                .iter()
-                .zip(owned.iter().zip(&loaded))
-                .filter(|(_, (input, volume))| input.is_some() && volume.is_none())
-                .map(|(radar, _)| radar.station.id.clone())
-                .collect();
-            let inputs: Vec<Option<Volumes>> = loaded
-                .iter()
-                .map(|v| {
-                    v.as_ref().map(|(primary, outer)| Volumes {
-                        primary,
-                        outer: outer.as_deref(),
-                    })
-                })
-                .collect();
-            let built = build_height(&shared, t, &inputs);
+            let store = crate::tilts::shared();
+            let (built, unread) = assemble_height(&shared, t, &owned, store.as_deref());
             (built, owned, unread)
         } else {
             let inputs: Vec<Option<Input>> = owned
@@ -1770,12 +1823,23 @@ async fn build_and_send(
                 })
                 .collect();
             let built = build(&shared, t, &inputs);
-            (built, owned, Vec::new())
+            (Some(built), owned, Vec::new())
         }
     })
     .await;
     let Ok((built, owned, unread)) = built else {
         log(format_args!("building {} failed", utc(t, "%H:%MZ")));
+        return true;
+    };
+    let Some(built) = built else {
+        // Review #6: every volume gone from the store; nothing is sent, and
+        // the time is given up rather than tried every second.
+        log(format_args!(
+            "{} built with no radar: the tilt store holds none of its volumes ({}); not sent",
+            utc(t, "%Y-%m-%dT%H:%MZ"),
+            unread.join(", ")
+        ));
+        schedule.forget(t);
         return true;
     };
     let provenance = provenance(layout, t, &owned, &costs, &unread);
@@ -1872,7 +1936,7 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         .map(|r| r.station.range_km * 1000.0)
         .collect();
     let now = now_ms();
-    let depth = layout.set.backfill();
+    let depth = layout.backfill();
     let mut schedule = Schedule::new(ranges, &cached).with_depth(depth);
     // The tilt store first: every stored lowest scan (for a height set,
     // every whole volume) the frames still to build can use, with no
@@ -1883,6 +1947,29 @@ pub async fn poll(set: Set, sites: Vec<Station>, events: Sender<Event>, cached: 
         .await
         .unwrap_or_default();
     let from_the_store = stored.len();
+    if height {
+        // What the first fill should cost (review #8): per radar the volumes
+        // of its depth the store lacks; an SMHI volume ~39 range requests,
+        // an ORD file 1; listings besides.
+        let mut held = vec![0usize; layout.radars.len()];
+        for (radar, _, _) in &stored {
+            held[*radar] += 1;
+        }
+        let (mut smhi, mut ord) = (0usize, 0usize);
+        for (radar, have) in layout.radars.iter().zip(&held) {
+            let missing = (depth + 1).saturating_sub(*have);
+            if radar.station.provider == ProviderId::Smhi {
+                smhi += missing;
+            } else {
+                ord += missing;
+            }
+        }
+        log(format_args!(
+            "first fill: about {} range requests ({smhi} SMHI volumes × ~{SMHI_VOLUME_REQUESTS}, \
+             {ord} ORD files × 1) plus listings; {from_the_store} volumes already in the tilt store",
+            smhi * SMHI_VOLUME_REQUESTS + ord
+        ));
+    }
     for (radar, t, sweep) in stored {
         let have = Have {
             sweep: Arc::new(sweep),
@@ -2942,10 +3029,14 @@ mod tests {
         );
         assert_eq!(sea.product().1, "Height 3 km");
         assert_eq!(lowest.product(), ("REF", "Lowest beam".to_owned()));
-        assert_eq!(
-            (ground.backfill(), lowest.backfill()),
-            (HEIGHT_BACKFILL, BACKFILL)
-        );
+        // Review #8: half an hour with an SMHI radar; a set of ORD radars,
+        // whose whole files are 1 request each, the full hour.
+        let layout_of = |s: &Set| Layout::new(s, &sites).unwrap();
+        assert_eq!(layout_of(&ground).backfill(), HEIGHT_BACKFILL);
+        assert_eq!(layout_of(&lowest).backfill(), BACKFILL);
+        let ord_only = [SiteArg::Id("nohur".into()), SiteArg::Id("dksin".into())];
+        let ord_set = choose_with(&sites, &ord_only, Some("height"), None, None).unwrap();
+        assert_eq!(layout_of(&ord_set).backfill(), BACKFILL);
         for (rule, m, above, says) in [
             (Some("height"), Some(750), None, "heightM 750"),
             (Some("height"), None, Some("space"), "sea or ground"),
@@ -3248,6 +3339,106 @@ mod tests {
             assert!(built.grid.codes.contains(&1), "holes between the radars");
             assert_eq!(built.product, "CAPPI");
         }
+    }
+
+    /// The height path's store reads (review #4, #5, #6): a whole volume and
+    /// the longer one its far ring comes from, a volume the store holds only
+    /// the lowest scan of (a radar's lowest-scan run), and one it does not
+    /// hold; a frame time with none of its volumes in the store is not built
+    /// and is given up; a store-made volume's cost stays the store's.
+    #[test]
+    fn height_frames_read_their_volumes_from_the_store() {
+        let dir = std::env::temp_dir().join(format!("omastorm-s30-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::tilts::Store::open(dir.clone(), u64::MAX).unwrap();
+        let (a, b, c) = (
+            radar("ra", 58.0, 12.0, 120.0),
+            radar("rb", 58.0, 13.2, 120.0),
+            radar("rc", 58.6, 12.6, 120.0),
+        );
+        let sites = vec![a.clone(), b, c];
+        let set = Set {
+            sites: ["ra", "rb", "rc"]
+                .map(|id| SiteReach {
+                    id: id.into(),
+                    reach_km: 120.0,
+                })
+                .to_vec(),
+            rule: Rule::Height,
+            height_m: Some(2000),
+            above: Some(Above::Sea),
+        };
+        let layout = Layout::new(&set, &sites).unwrap();
+        let t = 1_800_000_000_000 - 1_800_000_000_000 % CADENCE_MS;
+        let save = |id: &str, when: i64, v: &[Tilt], keep: &[usize]| {
+            let infos: Vec<crate::products::TiltInfo> = v.iter().map(Tilt::info).collect();
+            let tilts: Vec<(usize, &Tilt)> = keep.iter().map(|&k| (k, &v[k])).collect();
+            store.save(id, when, "src", Some(&infos), &tilts).unwrap();
+        };
+        // A: a short volume at T (50 km) and a long one 5 minutes before.
+        let short = volume(&[(0.5, 11), (1.5, 12), (4.0, 13)], 100);
+        let long = volume(&[(0.5, 21), (1.5, 22), (4.0, 23)], 240);
+        save("ra", t, &short, &[0, 1, 2]);
+        save("ra", t - CADENCE_MS, &long, &[0, 1, 2]);
+        // B: only its lowest scan. C: nothing.
+        let vb = volume(&[(0.5, 31), (1.5, 32), (4.0, 33)], 240);
+        save("rb", t, &vb, &[0]);
+        assert!(stored_whole(&store, "ra", t) && stored_whole(&store, "ra", t - CADENCE_MS));
+        assert!(!stored_whole(&store, "rb", t) && !stored_whole(&store, "rc", t));
+        assert_eq!(volume_of(&store, "rb", t).map(|v| v.len()), Some(1));
+        assert!(volume_of(&store, "rc", t).is_none());
+        let scan = || Arc::new(sweep(11, 100, 0.5, t));
+        let owned: Owned = vec![
+            Some((scan(), Some((scan(), t - CADENCE_MS)))),
+            Some((scan(), None)),
+            Some((scan(), None)),
+        ];
+        let (built, unread) = assemble_height(&layout, t, &owned, Some(&store));
+        assert_eq!(unread, ["rc"]);
+        let built = built.expect("A and B are in the store");
+        let at = |bearing: f64, km: f64| {
+            let (lat, lon) = destination(a.lat, a.lon, bearing, km * 1000.0);
+            let (col, row) = locate(&layout, lat, lon);
+            built.grid.codes[(row * layout.width + col) as usize]
+        };
+        // 2 km above sea (1.9 km above A): 30 km west, inside the short
+        // volume's 50 km, its 4° beam (seen at ~3.5°); 80 km west, past it,
+        // the long volume's 1.5° beam (seen at ~1.1°): the far ring.
+        assert_eq!(at(270.0, 30.0), 13, "the volume at T");
+        assert_eq!(at(270.0, 80.0), 22, "the far ring from the longer volume");
+        // C is missing from the provenance; B took part with its lowest scan.
+        let costs = vec![Some(Cost::default()); 3];
+        let text = provenance(&layout, t, &owned, &costs, &unread);
+        assert!(
+            text.contains("missing rc") && text.contains("2 of 3 radars"),
+            "{text}"
+        );
+        // Review #6: none of the volumes in the store, or no store: no frame.
+        let only_c: Owned = vec![None, None, Some((scan(), None))];
+        let (none, unread) = assemble_height(&layout, t, &only_c, Some(&store));
+        assert!(none.is_none() && unread == ["rc"]);
+        assert!(assemble_height(&layout, t, &owned, None).0.is_none());
+        let now = t + DUE_MS + 60_000;
+        let mut schedule = Schedule::new(vec![120_000.0; 3], &[]);
+        let have = Have {
+            sweep: scan(),
+            cost: Cost::default(),
+        };
+        schedule.add(2, t, have, now, true);
+        assert_eq!(schedule.ready(now + QUIET_MS + 1_000), [t]);
+        schedule.forget(t);
+        assert!(
+            schedule.ready(now + QUIET_MS + 1_000).is_empty(),
+            "given up"
+        );
+        // Review #5: a volume from the store and its free lowest scan (whose
+        // provenance reads 0 range requests) stay the store's.
+        let stored = Cost::of(&format!("x: {}", crate::tilts::FROM_STORE));
+        let free = Cost::of("x, its lowest scan: 0 range requests, 0 of 5 bytes");
+        assert!(stored.plus(free).from_store && free.plus(stored).from_store);
+        let fetched = Cost::of("x: 39 range requests, 700000 of 800000 bytes");
+        assert!(!fetched.plus(free).from_store && !stored.plus(fetched).from_store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

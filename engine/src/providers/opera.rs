@@ -46,8 +46,9 @@ use tokio::time::sleep;
 /// The credit OPERA's licence asks for.
 pub const ATTRIBUTION: &str = "EUMETNET OPERA, CC BY 4.0";
 /// `iberia`'s credit also names the OPERA members whose radars it shows
-/// (S33): Spain's AEMET and Portugal's IPMA.
-pub const IBERIA_ATTRIBUTION: &str = "EUMETNET OPERA (AEMET, IPMA), CC BY 4.0";
+/// (S33): Spain's AEMET, Portugal's IPMA, and Météo-France, whose radars
+/// cover the box's corner of southern France (review N6).
+pub const IBERIA_ATTRIBUTION: &str = "EUMETNET OPERA (AEMET, IPMA, Météo-France), CC BY 4.0";
 /// The public 24-hour cache of EUMETNET's Open Radar Data.
 pub const BASE: &str = "https://s3.waw3-1.cloudferro.com/openradar-24h";
 /// A stand-in for `BASE` (tests and offline replays against a local copy
@@ -1087,7 +1088,7 @@ mod tests {
         assert_eq!(nordic.attribution, "EUMETNET OPERA, CC BY 4.0");
         assert_eq!(
             stations[1].attribution,
-            "EUMETNET OPERA (AEMET, IPMA), CC BY 4.0"
+            "EUMETNET OPERA (AEMET, IPMA, Météo-France), CC BY 4.0"
         );
         assert_eq!((CUTS[0].products, CUTS[0].handoff), (true, false));
         assert_eq!((CUTS[1].products, CUTS[1].handoff), (false, true));

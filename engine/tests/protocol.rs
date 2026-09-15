@@ -260,7 +260,7 @@ fn fixture_transport_and_shared_commands() {
     assert_eq!(offer("iberia")["elevations"], json!([]));
     assert_eq!(
         offer("iberia")["attribution"],
-        "EUMETNET OPERA (AEMET, IPMA), CC BY 4.0"
+        "EUMETNET OPERA (AEMET, IPMA, Météo-France), CC BY 4.0"
     );
     let finnish: Vec<&Value> = sites.iter().filter(|s| s["country"] == "FI").collect();
     assert_eq!(finnish.len(), 12);

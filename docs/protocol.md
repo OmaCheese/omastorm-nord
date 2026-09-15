@@ -658,8 +658,9 @@ larger than Sweden's 1364 × 1983 and above WebGL2's guaranteed 2048), read
 Since S33 (DEC-17) `opera` also lists `iberia`, the same composite cut to
 10.5° W–4.5° E, 35–44.5° N (mainland Portugal and Spain with the Balearics;
 an 835 × 690 texture, 5 of the 30 chunks, ~47 KB a frame), with the same
-cadence, reads and backfill, credited `EUMETNET OPERA (AEMET, IPMA), CC BY
-4.0`, `country` empty, at the middle of its box (39.75° N, 3° W). Portugal's
+cadence, reads and backfill, credited `EUMETNET OPERA (AEMET, IPMA,
+Météo-France), CC BY 4.0` (the box takes in southern France), `country`
+empty, at the middle of its box (39.75° N, 3° W). Portugal's
 radars have no volumes in Open Radar Data, so they show only through it.
 `iberia` offers no products (`products` empty). One read of a file serves
 every OPERA box the engine is polling (the selected one and any keep-warm

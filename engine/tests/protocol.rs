@@ -371,6 +371,68 @@ fn fixture_transport_and_shared_commands() {
     for client in [&mut first, &mut second] {
         state(client, |s| s["mosaic"] == high);
     }
+    // S24c: sections and profiles. Their shape in hello, no section at
+    // first; a bad line is answered to its sender alone; a section is made
+    // in live mode only, so on this archived frame it is shared state that
+    // says why it is empty, and a profile's reply says the same; clearing
+    // it clears it for everyone. Nothing here reads a volume.
+    assert_eq!(
+        hello["sections"],
+        json!({"levels":24,"levelM":500,"columnM":2000,"maxColumns":300})
+    );
+    assert_eq!(initial["section"], Value::Null);
+    let p = |lat: f64, lon: f64| json!({"lat":lat,"lon":lon});
+    for (command, word) in [
+        (json!({"type":"set_section","from":p(58.0, 12.0)}), "both"),
+        (
+            json!({"type":"set_section","from":p(58.0, 12.0),"to":p(95.0, 12.0)}),
+            "lat in",
+        ),
+        (
+            json!({"type":"set_section","from":p(58.0, 12.0),"to":p(58.01, 12.0)}),
+            "2 km",
+        ),
+        (
+            json!({"type":"set_section","from":"vara","to":p(58.0, 12.0)}),
+            "Invalid set_section",
+        ),
+        (json!({"type":"profile","lat":58.0,"lon":200.0}), "lon in"),
+        (json!({"type":"profile","lat":58.0}), "Invalid profile"),
+    ] {
+        let kind = command["type"].clone();
+        send(&mut second, command);
+        let e = read(&mut second);
+        assert_eq!(e["type"], "error");
+        assert_eq!(e["command"], kind);
+        assert!(e["message"].as_str().unwrap().contains(word), "{e}");
+    }
+    send(
+        &mut second,
+        json!({"type":"set_section","from":p(58.26, 12.83),"to":p(59.93, 10.72)}),
+    );
+    for client in [&mut first, &mut second] {
+        let s = state(client, |s| s["section"]["status"] == "empty");
+        let section = &s["section"];
+        assert_eq!(section["from"], p(58.26, 12.83));
+        assert_eq!(section["texture"], "");
+        assert!(section["message"].as_str().unwrap().contains("live mode"));
+        assert_eq!(section["levels"], 24);
+        assert_eq!(section["units"], "dBZ");
+    }
+    send(&mut second, json!({"type":"profile","lat":58.7,"lon":13.4}));
+    let reply = loop {
+        let m = read(&mut second);
+        if m["type"] == "profile" {
+            break m;
+        }
+    };
+    assert_eq!(reply["status"], "empty");
+    assert_eq!(reply["levels"].as_array().unwrap().len(), 24);
+    assert_eq!(reply["levels"][0], json!({"bottomM":0,"topM":500,"dbz":null,"samples":0,"radars":[]}));
+    send(&mut second, json!({"type":"set_section"}));
+    for client in [&mut first, &mut second] {
+        state(client, |s| s["section"].is_null());
+    }
     first
         .get_mut()
         .write_all(b"not json\n{\"type\":\"future_command\"}\n")

@@ -317,6 +317,39 @@ older than S24b, which hides the chooser on a composite, never starts one.
   `DELETE FROM frames WHERE (id LIKE 'sweden-%' OR id LIKE 'nordic-%') AND
   id NOT LIKE '%-e0'`, and their PNGs.
 
+### Sections and profiles (S24c)
+
+`grid3d.rs` answers `set_section` (a vertical cut, `state.section`) and
+`profile` (one column, a reply to its sender) from a transient 3D grid of
+the selected station's newest frame (`docs/protocol.md`, Sections and
+profiles). The grid is built only when a client asks, only from the tilt
+store (never a request), on the blocking pool, one at a time:
+
+- **Placement** is the station's frames' (`mosaic::Layout`: the radar
+  alone, My mosaic's set, or a composite's `Layout::grid`), the fill per
+  2,000 m texel and per scan through `mosaic::Beam` (the frames' lookup
+  rule). A column is 2 × 2 texels (4,000 m of Mercator, ~2 km of ground at
+  60° N), aligned to the global lattice; 24 levels of 500 m. Each gate goes
+  to the levels its 1° beam covers; a cell keeps the maximum code, a sample
+  count and which radars fed it (bits over the column's first 8 radars).
+- **Life** (`Sections`, driven by `main.rs`'s `sections` task once a second
+  or on a wake): held until the newest frame is replaced (dropped before the
+  next is built), or 3 minutes (`KEEP`) after a client asked (a new
+  section, a profile), or 30 s (`AUTO_KEEP`) after a re-cut only a newer
+  frame asked for (review S2); a section is re-cut on each
+  new newest frame while it is set, and dropped with the client that set it
+  (`client_left`). A build that finds no stored volume is said once per
+  frame (`status` `empty`), not retried every second.
+- **Cost** (release, a copy of S24b's store, `nordic` at 12:00Z, 39 radars;
+  `grid3d::tests::a_real_nordic_grid_from_a_tilt_store`, ignored): fill
+  1.81 s, grid 836 × 1149 × 24 = 77 MB held, the process's peak +122 MB while
+  building (the layout's placement tables and one volume at a time), back to
+  its baseline after the drop; a cut 0.02 ms. At 2,000 m columns the grid
+  would be ~307 MB, so it is not offered.
+- **Answer key**: `scripts/section-key.py` (numpy) writes a 10 km tower seen
+  by two synthetic radars and its expected cuts and profiles to
+  `engine/tests/sections/`; `grid3d::tests` compares them cell by cell.
+
 The station table's source, retrieval date, and caveats are in `data/sites.json`
 and hello. It includes archived and test sites; membership does not imply live
 availability. An archived scan retains its measured coordinates.

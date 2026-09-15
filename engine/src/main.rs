@@ -1,5 +1,6 @@
 mod catalog;
 mod composite;
+mod grid3d;
 mod mosaic;
 mod netstats;
 mod odim;
@@ -142,6 +143,7 @@ fn hello() -> Hello {
         sites_notes: table.notes,
         reference_sites: reference::sites(),
         mosaic: mosaic::info(),
+        sections: grid3d::info(),
     }
 }
 fn fixture_frame() -> Frame {
@@ -625,6 +627,7 @@ fn initial_state(
         playing: false,
         product: products::Choice::default(),
         mosaic: mosaic::Set::default(),
+        section: None,
     }
 }
 fn line(message: &Message) -> String {
@@ -690,6 +693,9 @@ struct Shared {
     /// gets, with its angle: the one before the grid station, or one chosen
     /// on it. `state.product` then says what the grid station shows.
     aside: Option<(products::Choice, Option<f64>)>,
+    /// Sections and profiles (S24c): the grid of the newest frame, the
+    /// section's line and who set it, profiles waiting.
+    sections: grid3d::Sections,
 }
 impl Shared {
     fn snapshot(&mut self) -> String {
@@ -1096,6 +1102,49 @@ impl Shared {
         self.restart_live("no client shows the product; back to the composite", false);
         true
     }
+    /// S24c: the grid sections and profiles need now: the selected station's
+    /// for its newest complete frame; `Ok(None)` before it has one.
+    fn section_job(&self) -> Result<Option<grid3d::Job>, String> {
+        if self.state.source != Source::Live {
+            return Err("Sections are made in live mode only.".into());
+        }
+        let Some(station) = self.sites.iter().find(|s| s.id == self.state.site.id) else {
+            return Ok(None);
+        };
+        let Some(newest) = self.timeline.stored.last() else {
+            return Ok(None);
+        };
+        grid3d::Job::new(
+            station,
+            &self.state.mosaic,
+            &self.sites,
+            &newest.id,
+            &newest.scan_time,
+            newest.start_ms,
+        )
+        .map(Some)
+    }
+    /// S24c: one pass of the sections (`grid3d::Sections::pass`); the grid
+    /// to build, if any. Broadcasts when `state.section` changed.
+    fn sections_pass(&mut self) -> Option<grid3d::Job> {
+        let current = self.section_job();
+        let (job, changed) =
+            self.sections
+                .pass(current, &self.dir, &self.template, &mut self.state.section);
+        if changed {
+            self.broadcast();
+        }
+        job
+    }
+    /// S24c: `set_section` from `client` (checked by `grid3d::check_line`).
+    fn set_section(&mut self, line: Option<(grid3d::Point, grid3d::Point)>, client: u64) {
+        if self
+            .sections
+            .set_line(line, client, &mut self.state.section, &self.template)
+        {
+            self.broadcast();
+        }
+    }
     /// Keep-warm stations (`OMASTORM_WARM`): each one not selected has a
     /// poller of its own that fills its catalog, so opening it finds its
     /// history; the selected station's own poller covers it while selected.
@@ -1432,8 +1481,13 @@ impl Shared {
                 height_m,
                 above,
             } => self.set_mosaic(&sites, rule.as_deref(), height_m, above.as_deref()),
-            // Tile requests and place search are answered to the sender, not state.
-            Command::TilesNeeded { .. } | Command::SearchPlaces { .. } | Command::Unsupported => {
+            // Tile requests and place search are answered to the sender, not
+            // state; sections and profiles (S24c) need the sender, `receive`.
+            Command::TilesNeeded { .. }
+            | Command::SearchPlaces { .. }
+            | Command::SetSection { .. }
+            | Command::Profile { .. }
+            | Command::Unsupported => {
                 return None;
             }
         };
@@ -1853,6 +1907,27 @@ fn report(shared: &Mutex<Shared>, site: &str, reason: &str, condition: Connectio
         shared.broadcast();
     }
 }
+/// Sections and profiles (S24c): on a wake (a `set_section`, a `profile`)
+/// or once a second, a pass over `grid3d::Sections`; a grid it asks for is
+/// built on the blocking pool from the tilt store (no request), then the
+/// pass runs again to cut and answer. Idle, it holds nothing.
+async fn sections(shared: Arc<Mutex<Shared>>) {
+    let wake = shared.lock().unwrap().sections.wake.clone();
+    loop {
+        let _ = timeout(Duration::from_secs(1), wake.notified()).await;
+        let mut job = shared.lock().unwrap().sections_pass();
+        while let Some(next) = job {
+            let building = next.clone();
+            let built = spawn_blocking(move || building.build())
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+            let mut held = shared.lock().unwrap();
+            held.sections.built(next, built);
+            job = held.sections_pass();
+        }
+    }
+}
 /// Playback: woken by `play`, it advances the timeline one frame per
 /// `PLAY_INTERVAL` until `playing` is cleared, then waits for the next wake.
 async fn player(shared: Arc<Mutex<Shared>>, wake: Arc<Notify>) {
@@ -1955,6 +2030,7 @@ fn cleanup(dir: &Path, shared: &Mutex<Shared>, retirement: &mut Retirement) -> i
 /// request goes to that client's tile task on `tiles`.
 fn receive(
     shared: &Mutex<Shared>,
+    client: u64,
     reply: &Sender<String>,
     tiles: &Sender<tiles::Request>,
     bytes: &[u8],
@@ -2011,6 +2087,19 @@ fn receive(
                 let _ = reply.try_send(line(&Message::Places(&message)));
                 return;
             }
+        }
+        // S24c: a section is owned by the client that set it; a profile is
+        // answered to its sender once a grid is held.
+        Ok(Command::SetSection { from, to }) => match grid3d::check_line(from, to) {
+            Ok(line) => return shared.lock().unwrap().set_section(line, client),
+            Err(message) => message,
+        },
+        Ok(Command::Profile { lat, lon }) if grid3d::in_range(lat, lon) => {
+            let mut shared = shared.lock().unwrap();
+            return shared.sections.ask(client, reply.clone(), lat, lon);
+        }
+        Ok(Command::Profile { .. }) => {
+            "profile needs lat in [-90, 90] and lon in [-180, 180].".into()
         }
         Ok(command) => match shared.lock().unwrap().apply(command) {
             Some(message) => message,
@@ -2077,11 +2166,18 @@ fn client(
             {
                 break;
             }
-            receive(&shared, &tx, &tiles_tx, &bytes);
+            receive(&shared, id, &tx, &tiles_tx, &bytes);
         }
         {
             let mut shared = shared.lock().unwrap();
             shared.clients.retain(|(client_id, _)| *client_id != id);
+            // S24c: a section goes with the client that set it.
+            let Shared {
+                sections, state, ..
+            } = &mut *shared;
+            if sections.client_left(id, &mut state.section) {
+                shared.broadcast();
+            }
             // Review M1: the last client gone, a composite's product stops.
             if shared.release_unwatched_product() {
                 shared.broadcast();
@@ -2364,6 +2460,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         wake: wake.clone(),
         last_broadcast: String::new(),
         logged_condition: None,
+        sections: grid3d::Sections::default(),
     }));
     // My mosaic's set as the last live run left it (S25, review #11).
     if source == Source::Live {
@@ -2381,6 +2478,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
     let listener = UnixListener::bind(&socket)?;
     runtime.spawn(live_events(shared.clone(), event_rx));
     runtime.spawn(player(shared.clone(), wake));
+    runtime.spawn(sections(shared.clone()));
     runtime.spawn(netstats::report(netstats::period()));
     shared.lock().unwrap().keep_warm();
     let cleanup_shared = shared.clone();
@@ -2658,6 +2756,7 @@ mod tests {
             wake: Arc::new(Notify::new()),
             last_broadcast: String::new(),
             logged_condition: None,
+            sections: grid3d::Sections::default(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

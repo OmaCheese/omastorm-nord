@@ -1204,6 +1204,15 @@ async fn backfill(
     );
     targets.retain(|f| !done.contains(&f.valid_ms));
     let wanted = targets.len();
+    // S31: what the history will bring, for `state.loading`.
+    let plan = Event::HistoryPlan {
+        site: site.clone(),
+        want: cfg.want,
+        frames: stored + wanted,
+    };
+    if !send(&events, plan).await {
+        return;
+    }
     let mut fetched = 0;
     let mut undecoded = 0;
     for file in targets {
@@ -1249,6 +1258,11 @@ async fn backfill(
             "backfilled {fetched} of {wanted} earlier files, {stored} more from the tilt store"
         ),
     );
+    let end = Event::HistoryEnd {
+        site,
+        want: cfg.want,
+    };
+    send(&events, end).await;
 }
 
 #[cfg(test)]
@@ -1682,6 +1696,13 @@ mod tests {
         s
     }
 
+    /// Collect `event`, but not the backfill's plan and end (S31).
+    fn keep(events: &mut Vec<Event>, event: Event) {
+        if !matches!(event, Event::HistoryPlan { .. } | Event::HistoryEnd { .. }) {
+            events.push(event);
+        }
+    }
+
     fn describe(event: &Event) -> String {
         match event {
             Event::Sweep { sweep, .. } => {
@@ -1693,6 +1714,9 @@ mod tests {
             Event::Current { .. } => "current".into(),
             Event::Offline { reason, .. } => format!("offline {reason}"),
             Event::Silent { reason, .. } => format!("silent {reason}"),
+            Event::Progress { .. } => "progress".into(),
+            Event::HistoryPlan { frames, .. } => format!("plan {frames}"),
+            Event::HistoryEnd { .. } => "history end".into(),
         }
     }
 
@@ -1795,13 +1819,13 @@ mod tests {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
             while !until(&events) {
                 match tokio::time::timeout_at(deadline, rx.recv()).await {
-                    Ok(Some(event)) => events.push(event),
+                    Ok(Some(event)) => keep(&mut events, event),
                     Ok(None) | Err(_) => break,
                 }
             }
             let deadline = tokio::time::Instant::now() + linger;
             while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
-                events.push(event);
+                keep(&mut events, event);
             }
             poller.abort();
             let served = served.lock().unwrap().clone();

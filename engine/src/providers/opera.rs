@@ -528,11 +528,25 @@ async fn backfill(
         Ok((listed, _)) => listed,
         Err(fail) => {
             log(&site, format_args!("backfill listing: {fail}"));
+            let end = Event::HistoryEnd {
+                site,
+                want: crate::products::Want::Lowest,
+            };
+            send(&events, end).await;
             return;
         }
     };
     let targets = backfill_targets(listed, live_ms, &known, BACKFILL);
     let wanted = targets.len();
+    // S31: what the history will bring, for `state.loading`.
+    let plan = Event::HistoryPlan {
+        site: site.clone(),
+        want: crate::products::Want::Lowest,
+        frames: wanted,
+    };
+    if !send(&events, plan).await {
+        return;
+    }
     let mut fetched = 0;
     for volume in targets {
         match fetch(&http, &volume).await {
@@ -562,6 +576,11 @@ async fn backfill(
         &site,
         format_args!("backfilled {fetched} of {wanted} earlier composites"),
     );
+    let end = Event::HistoryEnd {
+        site,
+        want: crate::products::Want::Lowest,
+    };
+    send(&events, end).await;
 }
 
 #[cfg(test)]

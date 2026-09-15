@@ -1895,6 +1895,61 @@ pub struct Schedule {
     last_arrival: Option<i64>,
     /// Frame times a selection builds back (`Set::backfill`).
     depth: usize,
+    /// S31: radars their poller calls silent (nothing published for the
+    /// provider's `unavailable` age): no frame time waits for them, and
+    /// the loading progress leaves them out.
+    silent: Vec<bool>,
+    /// S31: frame times given up on (`forget`), done as far as the fill's
+    /// progress is concerned.
+    dropped: BTreeSet<i64>,
+}
+
+/// S31: how far a fill has come (`Schedule::fill`): volumes `done` of
+/// `total` for `stage`, over frame time `t`, with the words' numbers.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Fill {
+    pub stage: crate::loading::Stage,
+    pub done: u32,
+    pub total: u32,
+    pub t: i64,
+    /// Counted radars with `t`'s scan (the first stage).
+    pub radars_in: usize,
+    pub counted: usize,
+    pub silent: usize,
+    /// Frame times of the window built, and the window's length.
+    pub built: usize,
+    pub window: usize,
+}
+
+impl Fill {
+    /// `state.loading`'s report for the load named `name`: `Nordic Rain
+    /// mass: 26 of 40 radars in for 14:25Z (1 silent)`, or `… history 1
+    /// of 3 frames`.
+    pub fn progress(&self, name: &str) -> crate::loading::Progress {
+        let silent = if self.silent > 0 {
+            format!(" ({} silent)", self.silent)
+        } else {
+            String::new()
+        };
+        let label = match self.stage {
+            crate::loading::Stage::First => format!(
+                "{name}: {} of {} radars in for {}{silent}",
+                self.radars_in,
+                self.counted,
+                utc(self.t, "%H:%MZ")
+            ),
+            crate::loading::Stage::History => format!(
+                "{name}: history {} of {} frames{silent}",
+                self.built, self.window
+            ),
+        };
+        crate::loading::Progress {
+            stage: self.stage,
+            done: self.done,
+            total: self.total,
+            label,
+        }
+    }
 }
 
 impl Schedule {
@@ -1903,6 +1958,8 @@ impl Schedule {
     /// times; `with_depth` for another depth.
     pub fn new(ranges: Vec<f64>, cached: &[i64]) -> Schedule {
         Schedule {
+            silent: vec![false; ranges.len()],
+            dropped: BTreeSet::new(),
             ranges,
             scans: BTreeMap::new(),
             built: cached.iter().copied().collect(),
@@ -2007,12 +2064,114 @@ impl Schedule {
 
     /// Whether every radar's scan for `t` is in and ready to build with
     /// (`settled`).
+    /// A radar its poller calls silent is not waited for (S31); a time with
+    /// no scan at all is never complete.
     fn complete(&self, t: i64) -> bool {
         self.scans.get(&t).is_some_and(|v| {
-            v.iter().enumerate().all(|(radar, have)| {
-                have.as_ref()
-                    .is_some_and(|h| self.settled(radar, t, &h.sweep))
-            })
+            v.iter().any(Option::is_some)
+                && v.iter().enumerate().all(|(radar, have)| {
+                    have.as_ref()
+                        .map_or(self.silent[radar], |h| self.settled(radar, t, &h.sweep))
+                })
+        })
+    }
+
+    /// S31: radar `radar`'s poller called it silent, or it delivered a scan
+    /// the schedule keeps again.
+    pub fn set_silent(&mut self, radar: usize, silent: bool) {
+        if let Some(s) = self.silent.get_mut(radar) {
+            *s = silent;
+        }
+    }
+
+    /// S31: how far the fill has come, or `None` once every frame time of
+    /// the window (`oldest` to the newest due) is built or given up.
+    ///
+    /// Until the first of them is built it is the `first` stage: over the
+    /// time closest to completion (newest on a tie; the window's and any
+    /// later time with a scan), per counted radar the volumes it delivers
+    /// down to that time's own, newest first as its poller fetches them,
+    /// from its newest scan in hand (else one cadence past the newest due,
+    /// where a poller's newest usually is); a radar with that time's scan
+    /// is done. Then `history`: the window's times, a built one done for
+    /// every counted radar, an unbuilt one per scan in hand.
+    pub fn fill(&self, now: i64) -> Option<Fill> {
+        let due = newest_due(now);
+        let oldest = self.oldest(now);
+        let window: Vec<i64> = (oldest..=due).step_by(CADENCE_MS as usize).collect();
+        let counted: Vec<usize> = (0..self.ranges.len())
+            .filter(|r| !self.silent[*r])
+            .collect();
+        let silent = self.ranges.len() - counted.len();
+        let finished = |t: &i64| self.built.contains(t) || self.dropped.contains(t);
+        let n = counted.len() as u32;
+        if self.built.range(oldest..).next().is_some() {
+            let open: Vec<i64> = window.iter().copied().filter(|t| !finished(t)).collect();
+            if open.is_empty() {
+                return None;
+            }
+            let built = (window.len() - open.len()) as u32;
+            let held: u32 = open
+                .iter()
+                .map(|&t| counted.iter().filter(|&&r| self.has(r, t)).count() as u32)
+                .sum();
+            return Some(Fill {
+                stage: crate::loading::Stage::History,
+                done: built * n + held,
+                total: window.len() as u32 * n,
+                t: open[open.len() - 1],
+                radars_in: 0,
+                counted: counted.len(),
+                silent,
+                built: built as usize,
+                window: window.len(),
+            });
+        }
+        let newest_in_hand = |r: usize| {
+            self.scans
+                .iter()
+                .rev()
+                .find(|(_, v)| v[r].is_some())
+                .map(|(t, _)| *t)
+        };
+        let later = self.scans.keys().copied().filter(|t| *t > due);
+        let mut best: Option<(u32, u32, i64)> = None;
+        for t in window.iter().copied().chain(later).filter(|t| !finished(t)) {
+            let (mut done, mut total) = (0u32, 0u32);
+            for &r in &counted {
+                let top = newest_in_hand(r)
+                    .filter(|n| *n >= t)
+                    .unwrap_or((due + CADENCE_MS).max(t));
+                let need = ((top - t) / CADENCE_MS) as u32 + 1;
+                total += need;
+                done += if self.has(r, t) {
+                    need
+                } else {
+                    self.scans
+                        .range(t + 1..=top)
+                        .filter(|(_, v)| v[r].is_some())
+                        .count() as u32
+                };
+            }
+            // Closest to completion; the newer on a tie.
+            let closer = best.is_none_or(|(d, tot, _)| {
+                u64::from(done) * u64::from(tot.max(1)) >= u64::from(d) * u64::from(total.max(1))
+            });
+            if closer {
+                best = Some((done, total, t));
+            }
+        }
+        let (done, total, t) = best?;
+        Some(Fill {
+            stage: crate::loading::Stage::First,
+            done,
+            total,
+            t,
+            radars_in: counted.iter().filter(|&&r| self.has(r, t)).count(),
+            counted: counted.len(),
+            silent,
+            built: 0,
+            window: window.len(),
         })
     }
 
@@ -2114,6 +2273,7 @@ impl Schedule {
     pub fn forget(&mut self, t: i64) {
         self.scans.remove(&t);
         self.late.remove(&t);
+        self.dropped.insert(t);
     }
 
     /// `t` was built and sent: the first time, or its one late rebuild.
@@ -2744,6 +2904,16 @@ async fn run(
         })
         .collect();
     drop(tx);
+    // S31: the fill's progress for `state.loading`, at most once a second
+    // (a stage change at once), until the window is built.
+    let load_name = match &layout.job {
+        Job::Mine => format!("My mosaic, {}", layout.product().1),
+        Job::Grid { .. } => format!("{} {}", layout.name(), layout.product().1),
+    };
+    let variant = layout.variant();
+    let mut filling = true;
+    let mut reported: Option<Option<crate::loading::Progress>> = None;
+    let mut reported_at: Option<Instant> = None;
     loop {
         match timeout(Duration::from_secs(1), rx.recv()).await {
             Ok(None) => return log_for(&site, "every radar's poller ended"),
@@ -2768,6 +2938,11 @@ async fn run(
                         let Some(i) = index(&site) else { continue };
                         offline[i] = false;
                         let t = nominal_ms(sweep.start_ms);
+                        // S31: a scan the schedule keeps counts a silent
+                        // radar again (not its hours-old last volume).
+                        if t >= schedule.floor(now) {
+                            schedule.set_silent(i, false);
+                        }
                         if height && schedule.has(i, t) {
                             // A height set's volume comes as its product and
                             // the free lowest scan of the same read (S26).
@@ -2821,7 +2996,14 @@ async fn run(
                     Event::Silent {
                         site: radar,
                         reason,
-                    } => log_for(&site, format_args!("{radar}: {reason}")),
+                    } => {
+                        log_for(&site, format_args!("{radar}: {reason}; not waited for"));
+                        // S31: no frame time waits for it, and the
+                        // progress leaves it out.
+                        if let Some(i) = index(&radar) {
+                            schedule.set_silent(i, true);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -2834,6 +3016,25 @@ async fn run(
             }
         }
         schedule.prune(now);
+        if filling {
+            let report = schedule.fill(now_ms()).map(|f| f.progress(&load_name));
+            let stage = |r: &Option<crate::loading::Progress>| r.as_ref().map(|p| p.stage);
+            let staged = reported.as_ref().map(stage) != Some(stage(&report));
+            let due = reported_at.is_none_or(|at| at.elapsed() >= crate::loading::THROTTLE);
+            if reported.as_ref() != Some(&report) && (staged || due) {
+                filling = report.is_some();
+                let event = Event::Progress {
+                    site: site.clone(),
+                    variant: variant.clone(),
+                    progress: report.clone(),
+                };
+                if events.send(event).await.is_err() {
+                    return;
+                }
+                reported = Some(report);
+                reported_at = Some(Instant::now());
+            }
+        }
     }
 }
 

@@ -256,6 +256,23 @@ pub enum Event {
     Offline { site: String, reason: String },
     /// SMHI answered, and the station has published nothing recent.
     Silent { site: String, reason: String },
+    /// S31: how far a made frame's fill has come (`mosaic::run`, for the
+    /// ring `variant`), or `None` once it is over (`loading.rs`).
+    Progress {
+        site: String,
+        variant: String,
+        progress: Option<crate::loading::Progress>,
+    },
+    /// S31: the backfill's plan for `want`: `frames` earlier frames, those
+    /// the tilt store gave (already sent) and those it fetches next.
+    HistoryPlan {
+        site: String,
+        want: Want,
+        frames: usize,
+    },
+    /// S31: the backfill for `want` ended, whether or not every planned
+    /// frame came.
+    HistoryEnd { site: String, want: Want },
 }
 
 impl Event {
@@ -1489,6 +1506,11 @@ async fn backfill(
         Ok(listed) => listed,
         Err(fail) => {
             live_log(&site, format_args!("backfill listing: {fail}"));
+            let end = Event::HistoryEnd {
+                site,
+                want: cfg.want,
+            };
+            send(&events, end).await;
             return;
         }
     };
@@ -1505,6 +1527,15 @@ async fn backfill(
     let mut targets = backfill_targets(listed, live_ms, &known, depth);
     targets.retain(|v| !done.contains(&v.valid_ms));
     let wanted = targets.len();
+    // S31: what the history will bring, for `state.loading`.
+    let plan = Event::HistoryPlan {
+        site: site.clone(),
+        want: cfg.want,
+        frames: stored + wanted,
+    };
+    if !send(&events, plan).await {
+        return;
+    }
     let mut fetched = 0;
     let mut undecoded = 0;
     for volume in targets {
@@ -1549,6 +1580,11 @@ async fn backfill(
             "backfilled {fetched} of {wanted} earlier volumes, {stored} more from the tilt store"
         ),
     );
+    let end = Event::HistoryEnd {
+        site,
+        want: cfg.want,
+    };
+    send(&events, end).await;
 }
 
 #[cfg(test)]
@@ -2140,6 +2176,14 @@ mod tests {
             .unwrap()
     }
 
+    /// Collect `event`, but not the backfill's plan and end (S31), which
+    /// `backfill_reports_its_plan_and_end` checks alone.
+    fn keep(events: &mut Vec<Event>, event: Event) {
+        if !matches!(event, Event::HistoryPlan { .. } | Event::HistoryEnd { .. }) {
+            events.push(event);
+        }
+    }
+
     /// A readable summary of one event.
     fn describe(event: &Event) -> String {
         match event {
@@ -2150,6 +2194,9 @@ mod tests {
             Event::Current { .. } => "current".into(),
             Event::Offline { reason, .. } => format!("offline {reason}"),
             Event::Silent { reason, .. } => format!("silent {reason}"),
+            Event::Progress { .. } => "progress".into(),
+            Event::HistoryPlan { frames, .. } => format!("plan {frames}"),
+            Event::HistoryEnd { .. } => "history end".into(),
         }
     }
 
@@ -2194,13 +2241,13 @@ mod tests {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
             while !until(&events) {
                 match tokio::time::timeout_at(deadline, rx.recv()).await {
-                    Ok(Some(event)) => events.push(event),
+                    Ok(Some(event)) => keep(&mut events, event),
                     Ok(None) | Err(_) => break,
                 }
             }
             let deadline = tokio::time::Instant::now() + linger;
             while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
-                events.push(event);
+                keep(&mut events, event);
             }
             poller.abort();
             let served = served.lock().unwrap().clone();

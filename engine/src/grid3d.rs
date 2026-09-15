@@ -776,6 +776,17 @@ pub fn memory() -> String {
     format!("RSS {}, peak {}", field("VmRSS:"), field("VmHWM:"))
 }
 
+/// Give freed heap pages back to the system (glibc keeps them for reuse
+/// otherwise): after a build's transients are freed and after a grid is
+/// dropped, so the engine's resident size follows what it holds.
+pub fn trim() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim only returns memory the allocator holds free.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 impl Sections {
     /// Set the section's line for `owner`, or clear it; `state.section`
     /// follows at once. True when it changed.
@@ -828,6 +839,9 @@ impl Sections {
     /// is none so it is not tried again for the same frame.
     pub fn built(&mut self, job: Job, result: Result<Built, String>) {
         self.building = None;
+        // The fill's transients (placement tables, a volume at a time) are
+        // freed by now: give their pages back before the grid is held.
+        trim();
         let site = job.station.id.clone();
         match result {
             Ok(Built {
@@ -906,20 +920,18 @@ impl Sections {
         if let Some(held) = &self.held {
             let stale = key.as_deref() != Some(held.job.key.as_str());
             if stale || held.used.elapsed() >= KEEP {
-                log(
-                    &held.job.station.id,
-                    format_args!(
-                        "grid for {} dropped ({}); {}",
-                        held.job.scan_time,
-                        if stale {
-                            "a newer frame"
-                        } else {
-                            "unused for 3 minutes"
-                        },
-                        memory()
-                    ),
-                );
+                let (site, when) = (held.job.station.id.clone(), held.job.scan_time.clone());
                 self.held = None;
+                trim();
+                let why = if stale {
+                    "a newer frame"
+                } else {
+                    "unused for 3 minutes"
+                };
+                log(
+                    &site,
+                    format_args!("grid for {when} dropped ({why}); {}", memory()),
+                );
             }
         }
         if self

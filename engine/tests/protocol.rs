@@ -428,7 +428,10 @@ fn fixture_transport_and_shared_commands() {
     };
     assert_eq!(reply["status"], "empty");
     assert_eq!(reply["levels"].as_array().unwrap().len(), 24);
-    assert_eq!(reply["levels"][0], json!({"bottomM":0,"topM":500,"dbz":null,"samples":0,"radars":[]}));
+    assert_eq!(
+        reply["levels"][0],
+        json!({"bottomM":0,"topM":500,"dbz":null,"samples":0,"radars":[]})
+    );
     send(&mut second, json!({"type":"set_section"}));
     for client in [&mut first, &mut second] {
         state(client, |s| s["section"].is_null());

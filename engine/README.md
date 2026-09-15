@@ -381,6 +381,21 @@ a scan of it counts it again. Live, 2026-09-15: Nordic Rain mass from an empty
 tilt store built 16:40Z in 5 min 25 s without Kiruna (silent since 07:15Z)
 and dksam (since 14:20Z).
 
+A radar behind the target time (SMHI's listing lagging, its poller probing
+forward) counts its volumes from its newest scan up to it, so each probe
+moves the bar (review SF2). Only a listing that answered says a radar is
+silent (review SF1): an SMHI outage is `offline`, and an offline radar is
+never taken as silent nor remembered so. Offline, no loading stage stays;
+one starts again with the feed (review NIT5).
+
+Known, left as they are (review NIT7, NIT8): the first stage's label names
+the frame time closest to completion, but when `QUIET_MS` builds instead the
+newest due time goes first, so the frame shown can be later than the label
+said (offline replay 2026-09-15: 16:40Z said, 16:45Z built). And
+`Schedule::dropped` keeps every frame time given up on (the tilt store held
+none of its volumes) for the life of a fill, unpruned: one `i64` each, a
+few a day at most.
+
 While a composite's product has no frame, `loading.under` names the
 composite's own newest frame (its stable files kept published through
 `State::referenced_files`), which both clients draw in place of the

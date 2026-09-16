@@ -127,6 +127,54 @@ with cached frames kept. A healthy SMHI frame is already 5 to 10 minutes old.
 Measured returns under 5 dBZ (insects, birds, ground clutter on a clear day)
 are hidden by default and the legend says so; `w` shows them.
 
+## What each product says about the weather
+
+| Product | What it measures | What it tells you |
+| --- | --- | --- |
+| `Reflectivity` at an angle | how much the drops in that one beam send back, in dBZ | the raw view. Under 20 dBZ drizzle or cloud, 20–35 light to moderate rain, 35–45 heavy, 45–55 very heavy and possibly hail, over 55 almost certainly hail |
+| `Clear view` | per direction, the lowest angle the terrain does not block | the best guess at what reaches the ground, in fjords and sierras especially |
+| `Height` | one altitude, above sea level or above ground | storms compared fairly at the same level. Where no beam passes, the map says “no radar at this height”, which is not “no rain” |
+| `Column max` | the strongest echo anywhere above each point | finds cores, including ones still aloft. It overstates what is falling now |
+| `Storm height` | the top of the 18 dBZ echo, in km | storm depth, the best single clue to vigour: 3–6 km showers, 8–10 km thunderstorms, over 10–12 km severe with hail likely. “At least” means the highest beam still found echo, so the top is higher |
+| `Rain mass` | the water in the column, kg/m² | over about 25 heavy rain; very high in summer usually means hail, which reflects far more than rain. A sudden collapse over a cell suggests a downburst |
+| `Lowest beam` (composites) | which radar sees a point lowest | a data-quality map: where the composite sees near the ground, and where all of it is aloft |
+| A composite (`Sweden`, `Nordic`, `Iberia`) | the provider’s combined picture | country-wide rain at a glance; each point may come from a different radar at a different height |
+| `My mosaic` | only the radars you pick | leaves out a radar whose distant, high coverage misleads |
+| A section, and a profile on long press | a vertical slice, and one column’s numbers | structure: a flat layer with a bright band at 1–3 km is steady rain melting; a narrow column to 8–12 km is convection; echo that stops short of the ground is rain evaporating on the way down |
+| `Relief` | `Storm height` drawn as a lit surface | the same data made readable: cells stand up, flat rain looks flat |
+
+What to distrust: the bright band at the melting level looks like heavy rain
+and is not; hail inflates both reflectivity and rain mass; ground, sea and
+insect clutter sit near the antenna; past about 150 km the beam overshoots
+light rain and snow entirely, so an empty map is not proof of a dry sky; heavy
+cores absorb the signal and weaken everything behind them. Rain rate is
+inferred from returned energy, never measured.
+
+### The radars are not identical
+
+Only the beam width (about 1°) is much the same everywhere. Transmit power is
+not published in the files, and reach in practice is set by the scan strategy
+and the gate layout, not by power alone:
+
+| Country | Radars | Published range | Gate | Volume | Lowest angle |
+| --- | --- | --- | --- | --- | --- |
+| Sweden (SMHI) | 12 | 240 km | 500 m (360 × 480) | every 5 min | 0.5° |
+| Norway (MET) | 12 | 240 km | 250 m (960 gates) | every 5 min | 0.5° |
+| Finland (FMI) | 12 | 250 km | 500 m (500 gates) | every 5 min | 0.1–0.5° |
+| Denmark (DMI) | 5 | 237.5–238 km | 500 m | every 5 min | 0.48–0.51° |
+| Spain (AEMET) | 11 | 240–250 km | 1000 m | every 10 min | 0.5° |
+
+So a Norwegian radar resolves four times finer along the beam than a Spanish
+one, Spain updates half as often, and Finland starts lower, which is why its
+radars see furthest for the same height. The number of angles differs too:
+Spain publishes three tilts up to about 2.1°, so its `Storm height` and
+`Rain mass` read “at least” much sooner than a Nordic radar’s.
+
+Range on its own is a file header, not what a radar can see. What matters is
+beam height: at 0.5° the beam centre is about 2 km up at 125 km and about 4 km
+at 200 km, wherever it stands. The range circles in the window show the useful
+reach of the product you are looking at, not the header number.
+
 ## Configuration
 
 `~/.config/omastorm-se/config.toml` holds deliberate preferences. The app saves

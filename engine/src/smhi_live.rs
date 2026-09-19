@@ -263,6 +263,16 @@ pub enum Event {
         variant: String,
         progress: Option<crate::loading::Progress>,
     },
+    /// S35: a made frame's build began (`building`), or the built frame
+    /// was sent (`building` false), over frame time `time` in words
+    /// (`14:25Z`). The build is a stage of the load now, so the wait that
+    /// used to hide behind the first stage's 99 % is drawn (`loading.rs`).
+    Building {
+        site: String,
+        variant: String,
+        time: String,
+        building: bool,
+    },
     /// S31: the backfill's plan for `want`: `frames` earlier frames, those
     /// the tilt store gave (already sent) and those it fetches next.
     HistoryPlan {
@@ -2201,6 +2211,9 @@ mod tests {
             Event::Offline { reason, .. } => format!("offline {reason}"),
             Event::Silent { reason, .. } => format!("silent {reason}"),
             Event::Progress { .. } => "progress".into(),
+            Event::Building { building, .. } => {
+                format!("building {building}")
+            }
             Event::HistoryPlan { frames, .. } => format!("plan {frames}"),
             Event::HistoryEnd { .. } => "history end".into(),
         }

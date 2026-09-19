@@ -2012,13 +2012,48 @@ pub struct Fill {
     /// Frame times of the window built, and the window's length.
     pub built: usize,
     pub window: usize,
+    /// S35: the counted radars whose scan for `t` is still not in, as
+    /// indices into the set's radars (the first stage only). The label
+    /// names a few of them, so the last percent says what it waits on.
+    pub waiting: Vec<usize>,
+}
+
+/// S35: at most this many radars named in the label, then `and n more`.
+const NAMED: usize = 3;
+/// S35: the label names what it is waiting for once the tail is short
+/// enough to read; before that `26 of 40 radars` already says it.
+const NAME_WHEN_UNDER: usize = 7;
+
+/// S35: `, waiting for Vara, Luleå`, or `, waiting for Vara, Luleå, Hemse
+/// and 4 more`; empty while too many are out to be worth naming.
+fn waiting_for(waiting: &[usize], names: &[String]) -> String {
+    if waiting.is_empty() || waiting.len() >= NAME_WHEN_UNDER {
+        return String::new();
+    }
+    let named: Vec<&str> = waiting
+        .iter()
+        .filter_map(|r| names.get(*r))
+        .take(NAMED)
+        .map(String::as_str)
+        .collect();
+    if named.is_empty() {
+        return String::new();
+    }
+    let rest = waiting.len() - named.len();
+    let more = if rest > 0 {
+        format!(" and {rest} more")
+    } else {
+        String::new()
+    };
+    format!(", waiting for {}{more}", named.join(", "))
 }
 
 impl Fill {
-    /// `state.loading`'s report for the load named `name`: `Nordic Rain
-    /// mass: 26 of 40 radars in for 14:25Z (1 silent)`, or `… history 1
-    /// of 3 frames`.
-    pub fn progress(&self, name: &str) -> crate::loading::Progress {
+    /// `state.loading`'s report for the load named `name`, whose radars are
+    /// `names` in order: `Nordic Rain mass: 26 of 40 radars in for 14:25Z
+    /// (1 silent)`, `… 38 of 41 radars in for 14:25Z, waiting for Vara,
+    /// Luleå` (S35), or `… history 1 of 3 frames`.
+    pub fn progress(&self, name: &str, names: &[String]) -> crate::loading::Progress {
         let silent = if self.silent > 0 {
             format!(" ({} silent)", self.silent)
         } else {
@@ -2026,15 +2061,19 @@ impl Fill {
         };
         let label = match self.stage {
             crate::loading::Stage::First => format!(
-                "{name}: {} of {} radars in for {}{silent}",
+                "{name}: {} of {} radars in for {}{silent}{}",
                 self.radars_in,
                 self.counted,
-                utc(self.t, "%H:%MZ")
+                utc(self.t, "%H:%MZ"),
+                waiting_for(&self.waiting, names)
             ),
             crate::loading::Stage::History => format!(
                 "{name}: history {} of {} frames{silent}",
                 self.built, self.window
             ),
+            // The build reports itself (`Event::Building`); a fill never
+            // names that stage.
+            crate::loading::Stage::Build => format!("{name}: building"),
         };
         crate::loading::Progress {
             stage: self.stage,
@@ -2310,6 +2349,7 @@ impl Schedule {
                 silent,
                 built: built as usize,
                 window: window.len(),
+                waiting: Vec::new(),
             });
         }
         let newest_in_hand = |r: usize| {
@@ -2377,6 +2417,12 @@ impl Schedule {
             silent,
             built: 0,
             window: window.len(),
+            // S35: the counted radars this frame time is still short of.
+            waiting: counted
+                .iter()
+                .copied()
+                .filter(|&r| !(self.has(r, t) || self.carried(r, t).is_some()))
+                .collect(),
         })
     }
 
@@ -2878,6 +2924,18 @@ async fn build_and_send(
     let shared = layout.clone();
     let started = Instant::now();
     let site = layout.station_id().to_owned();
+    // S35: the build is a stage of the load, so it says when it starts and
+    // when the frame it made is on its way. `loading.rs` ignores it once
+    // the load is past the first frame (a history frame's build).
+    let report = |building: bool| Event::Building {
+        site: site.clone(),
+        variant: layout.variant(),
+        time: utc(t, "%H:%MZ"),
+        building,
+    };
+    if events.send(report(true)).await.is_err() {
+        return false;
+    }
     let built = spawn_blocking(move || {
         if let Job::Grid { .. } = shared.job {
             // S24b: every composite product is made from the tilt store,
@@ -2948,6 +3006,11 @@ async fn build_and_send(
             built.grid.height
         ),
     );
+    // S35: built and on its way; what is left of the build stage is the
+    // frame reaching the client's timeline (`Tracker::shown`).
+    if events.send(report(false)).await.is_err() {
+        return false;
+    }
     let sweep = Scan::Mosaic(Box::new(built));
     let event = if newest {
         Event::Sweep {
@@ -3165,7 +3228,14 @@ async fn run(
         Job::Grid { .. } => format!("{} {}", layout.name(), layout.product().1),
     };
     let variant = layout.variant();
-    let first = schedule.fill(now).map(|f| f.progress(&load_name));
+    // S35: the set's radars in order, so the label can name the ones a
+    // frame time is still waiting for.
+    let radar_names: Vec<String> = layout
+        .radars
+        .iter()
+        .map(|r| r.station.name.clone())
+        .collect();
+    let first = schedule.fill(now).map(|f| f.progress(&load_name, &radar_names));
     let mut filling = first.is_some();
     let event = Event::Progress {
         site: site.clone(),
@@ -3322,7 +3392,9 @@ async fn run(
         }
         schedule.prune(now);
         if filling {
-            let report = schedule.fill(now_ms()).map(|f| f.progress(&load_name));
+            let report = schedule
+                .fill(now_ms())
+                .map(|f| f.progress(&load_name, &radar_names));
             let stage = |r: &Option<crate::loading::Progress>| r.as_ref().map(|p| p.stage);
             let staged = reported.as_ref().map(stage) != Some(stage(&report));
             let due = reported_at.is_none_or(|at| at.elapsed() >= crate::loading::THROTTLE);
@@ -3347,6 +3419,9 @@ async fn run(
 mod tests {
     use super::*;
     use crate::sweep::Ray;
+
+    /// S35: a label for a set whose radar names the test does not need.
+    static NO_NAMES: &[String] = &[];
 
     fn table() -> Vec<Station> {
         crate::providers::table().sites
@@ -4145,14 +4220,15 @@ mod tests {
                 .fill(at)
                 .filter(|f| f.stage == crate::loading::Stage::First)
             {
-                shown = shown.max(crate::loading::percent(f.done, f.total).min(99));
+                // S35: no 99 cap; the first stage reaches a true 100.
+                shown = shown.max(crate::loading::percent(f.done, f.total));
                 if shown / 5 != last / 5 || last == u32::MAX {
                     println!(
                         "{:5.0} s  {shown:3} %  {} of {} volumes, {}",
                         (at - start) as f64 / 1000.0,
                         f.done,
                         f.total,
-                        f.progress("Nordic Rain mass").label
+                        f.progress("Nordic Rain mass", NO_NAMES).label
                     );
                     last = shown;
                 }
@@ -4207,7 +4283,7 @@ mod tests {
             (3, 5, 2, 3)
         );
         assert_eq!(
-            fill.progress("Nordic Rain mass").label,
+            fill.progress("Nordic Rain mass", NO_NAMES).label,
             format!(
                 "Nordic Rain mass: 2 of 3 radars in for {}",
                 utc(t, "%H:%MZ")
@@ -4220,7 +4296,7 @@ mod tests {
         let fill = s.fill(now).unwrap();
         assert_eq!((fill.done, fill.total, fill.silent), (3, 3, 1));
         assert_eq!(
-            fill.progress("Nordic Rain mass").label,
+            fill.progress("Nordic Rain mass", NO_NAMES).label,
             format!(
                 "Nordic Rain mass: 2 of 2 radars in for {} (1 silent)",
                 utc(t, "%H:%MZ")
@@ -4237,7 +4313,7 @@ mod tests {
             (crate::loading::Stage::History, 3, 6, 1, 3)
         );
         assert_eq!(
-            fill.progress("Nordic Rain mass").label,
+            fill.progress("Nordic Rain mass", NO_NAMES).label,
             "Nordic Rain mass: history 1 of 3 frames (1 silent)"
         );
         // A scan counts the radar again; a time given up on is done.

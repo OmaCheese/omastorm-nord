@@ -1421,10 +1421,12 @@ impl Shared {
         }
         let following = self.timeline.following();
         self.state.connection.status = ConnectionStatus::Ok;
-        // S31: the load's first frame is on screen.
-        if following {
-            self.loading.shown(Instant::now());
-        }
+        // S31: the load's first frame is on screen. S35: whether or not the
+        // timeline is following it. The frame is made and in the timeline,
+        // which is what the load was waiting for; a viewer scrubbed back
+        // into the past is still told the load has moved on, instead of
+        // watching the bar freeze until the whole fill ends.
+        self.loading.shown(Instant::now());
         let shown = if complete {
             self.frame_ms = Some(start_ms);
             self.pending = None;
@@ -2014,6 +2016,24 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                     && shared.variant() == variant
                 {
                     shared.loading.progress(progress, Instant::now());
+                    shared.broadcast();
+                }
+            }
+            // S35: a made frame's build started or its frame was sent. The
+            // build is the load's own stage, so the wait that used to hide
+            // behind the first stage's 99 % is drawn.
+            providers::Event::Building {
+                site,
+                variant,
+                time,
+                building,
+            } => {
+                let mut shared = shared.lock().unwrap();
+                if shared.state.site.id == site
+                    && shared.state.source == Source::Live
+                    && shared.variant() == variant
+                {
+                    shared.loading.building(&time, building, Instant::now());
                     shared.broadcast();
                 }
             }

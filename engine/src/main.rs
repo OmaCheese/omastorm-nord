@@ -3030,6 +3030,35 @@ mod tests {
             shared.state.referenced_files().any(|p| p == under.texture),
             "kept from the texture cleanup"
         );
+        // Review M1: the composite's build starts. `state.frame` is still
+        // the placeholder, so the composite must go on being drawn under
+        // it — a Nordic grid takes about ten seconds to build, and
+        // dropping `under` at the build's start blanked the map for all
+        // of it. This is the composite product's own load, end to end, at
+        // no request: the one load type the live runs did not reach.
+        shared.loading.building("10:10Z", true, Instant::now());
+        shared.snapshot();
+        let build = shared.state.loading.clone().unwrap();
+        assert_eq!(build.stage, loading::Stage::Build);
+        assert_eq!(build.label, "Nordic Column max: building 10:10Z");
+        let held = build.under.expect("the composite stays under the build");
+        assert_eq!(held.id, frame.id);
+        assert!(
+            shared.state.referenced_files().any(|p| p == held.texture),
+            "and its files are still kept from the texture cleanup"
+        );
+        assert!(
+            shared.state.frame.scan_time.is_empty(),
+            "the placeholder is what `under` is drawn in place of"
+        );
+        // Built and sent. A real Nordic build takes about ten seconds, so
+        // the counts reach the wire on the next throttle tick, not this
+        // millisecond.
+        shared.loading.building("10:10Z", false, Instant::now());
+        let sent = shared.loading.wire(later()).unwrap();
+        assert_eq!((sent.percent, sent.done, sent.total), (50, 1, 2));
+        assert_eq!(sent.label, "Nordic Column max: drawing 10:10Z");
+        assert!(sent.under.is_some(), "and through the send");
         // S35: the load's frame arrives while the viewer is scrubbed back
         // into the past. Before S35 `shown` waited on the timeline
         // following the newest frame, so the bar froze at 99 % until the

@@ -134,10 +134,29 @@ impl Loading {
 /// The stages a load of `kind` goes through, in order, each with its share
 /// of the bar. Fixed per kind rather than guessed from how long a stage
 /// may take, so the segment boundaries never move while the load runs.
-fn plan_of(kind: Kind) -> [(Stage, u32); 3] {
+///
+/// Review S1: a radar's load has no build stage at all. Its frame is a
+/// decode and a send its poller has already done — no poller sends
+/// `Event::Building`, and `shown` marks the build over before the first
+/// stage can even finish — so a planned build could only ever be drawn
+/// dim and then vanish, moving the divisions the load is supposed to keep
+/// still (§S35 item 6).
+fn plan_of(kind: Kind) -> &'static [(Stage, u32)] {
     match kind {
-        Kind::Radar => [(Stage::First, 40), (Stage::Build, 10), (Stage::History, 50)],
-        Kind::Made => [(Stage::First, 55), (Stage::Build, 20), (Stage::History, 25)],
+        Kind::Radar => &[(Stage::First, 44), (Stage::History, 56)],
+        Kind::Made => &[(Stage::First, 55), (Stage::Build, 20), (Stage::History, 25)],
+    }
+}
+
+/// What a stage of a load of `kind` will count to before it has started,
+/// where that is known in advance. Review S3: the build's two steps are,
+/// so a waiting build reads `0 of 2 steps` rather than `0 of 0`; a first
+/// stage's volumes and a backfill's frames are not known until they are
+/// counted, and stay 0.
+fn total_of(stage: Stage) -> u32 {
+    match stage {
+        Stage::Build => BUILD_STEPS,
+        _ => 0,
     }
 }
 
@@ -409,9 +428,26 @@ impl Tracker {
         if self.built >= BUILD_STEPS {
             return;
         }
-        let label = self.build_label();
-        let stage = Loading::new(Stage::Build, self.built, BUILD_STEPS, Unit::Steps, label);
+        let stage = self.build_stage();
         self.set_stage(Some(stage), now);
+    }
+
+    /// Review M1: the build stage as it is drawn, carrying the composite
+    /// the viewer is looking at. `state.frame` is the placeholder until
+    /// the built frame is drawn, and the build is now part of that wait,
+    /// so dropping `under` at the build's start would blank the composite
+    /// for the whole build (about ten seconds for a Nordic grid).
+    fn build_stage(&self) -> Loading {
+        Loading {
+            under: self.under.clone(),
+            ..Loading::new(
+                Stage::Build,
+                self.built,
+                BUILD_STEPS,
+                Unit::Steps,
+                self.build_label(),
+            )
+        }
     }
 
     /// `Nordic Rain mass: building 14:25Z`, then `… drawing 14:25Z`: the
@@ -434,13 +470,21 @@ impl Tracker {
     /// sent (`started` false). The first stage's work ends when the build
     /// begins; `shown` still ends the build.
     pub fn building(&mut self, time: &str, started: bool, now: Instant) {
+        let showing = self.current.as_ref().map(|c| c.stage);
+        // Review NIT3: every frame of the backfill is built too, and those
+        // builds report here. Only a build the bar is actually waiting on
+        // may name the frame time or move the build's steps on; a history
+        // frame's must not overwrite either.
+        if !matches!(showing, Some(Stage::First) | Some(Stage::Build)) {
+            return;
+        }
         if !time.is_empty() {
             self.frame_time = time.to_owned();
         }
         if !started {
             self.built = self.built.max(1);
         }
-        match self.current.as_ref().map(|c| c.stage) {
+        match showing {
             // Still on the first stage (or its 100 lingering): it is over,
             // and the build takes over at once — the first segment stays
             // full, so there is nothing left for its linger to show, and
@@ -448,9 +492,7 @@ impl Tracker {
             Some(Stage::First) => {
                 self.finish(now);
                 if self.built < BUILD_STEPS {
-                    let label = self.build_label();
-                    let counts =
-                        Loading::new(Stage::Build, self.built, BUILD_STEPS, Unit::Steps, label);
+                    let counts = self.build_stage();
                     self.hand_over(counts, now);
                 } else {
                     self.next = self.next.take().filter(|n| n.stage != Stage::Build);
@@ -519,6 +561,10 @@ impl Tracker {
     pub fn shown(&mut self, now: Instant) {
         self.first_shown = true;
         self.built = BUILD_STEPS;
+        // Review M1: the frame the viewer waited for is drawn, so the
+        // composite held under the placeholder is no longer needed —
+        // here, and not at the build's start.
+        self.under = None;
         match self.current.as_ref().map(|c| c.stage) {
             Some(Stage::First) => {
                 self.finish(now);
@@ -539,6 +585,12 @@ impl Tracker {
                 self.finish(now);
             }
             _ => {}
+        }
+        // Review M1: whatever stage that ended on, the drawn frame has
+        // replaced the composite (`update` carries `under` forward on its
+        // own, so clearing the tracker's copy is not enough).
+        if let Some(current) = &mut self.current {
+            current.under = None;
         }
     }
 
@@ -751,6 +803,16 @@ impl Tracker {
         Some(wire)
     }
 
+    /// Review NIT2: the load is over — its fill has stopped (a made load)
+    /// or its backfill has ended (a radar) — so no stage still marked
+    /// waiting will ever run.
+    fn over(&self) -> bool {
+        match self.kind {
+            Kind::Made => !self.active,
+            Kind::Radar => self.ended,
+        }
+    }
+
     /// S35: the whole load as segments, in order, for one bar. The stages
     /// before the one showing are full, those after it are dim, and a
     /// stage that ended before it was ever published is left out, so the
@@ -758,9 +820,20 @@ impl Tracker {
     /// sum to 100 over the segments drawn.
     fn segments(&self, showing: &Loading) -> Vec<Segment> {
         let here = showing.stage.order();
+        let over = self.over();
         let drawn: Vec<(Stage, u32)> = plan_of(self.kind)
-            .into_iter()
-            .filter(|(stage, _)| stage.order() >= here || self.seen.contains(stage))
+            .iter()
+            .copied()
+            .filter(|(stage, _)| {
+                if stage.order() > here {
+                    // Review NIT2: nothing more is coming, so a stage
+                    // still to come never will — a made load whose
+                    // backfill window was already built used to end
+                    // showing a dim history that never filled.
+                    return !over;
+                }
+                stage.order() == here || self.seen.contains(stage)
+            })
             .collect();
         let widths = shares(&drawn.iter().map(|(_, w)| *w).collect::<Vec<u32>>());
         drawn
@@ -806,7 +879,7 @@ impl Tracker {
                     share,
                     percent: 0,
                     done: 0,
-                    total: 0,
+                    total: total_of(stage),
                     unit: unit_of(self.kind, stage),
                     state: SegmentState::Waiting,
                 },
@@ -1061,27 +1134,31 @@ mod tests {
         assert_eq!(t.wire(at(t0, 11_500)), None);
     }
 
-    /// S35: a build over before it was ever published was never drawn, so
-    /// it gets no segment, and the shares of the ones drawn still sum to
-    /// 100. A radar's build is a decode and a send its poller already did.
+    /// Review S1: a radar's load has no build stage at all — its frame is
+    /// a decode and a send its poller already did — so the divisions do
+    /// not move under the viewer. Before the review it planned one, drew
+    /// it dim, then dropped it, shifting 40/10/50 to 44/56 in the load's
+    /// first second.
     #[test]
-    fn an_instant_build_gets_no_segment_and_the_shares_still_sum_to_100() {
+    fn a_radars_load_is_two_segments_from_the_first_tick() {
         let t0 = Instant::now();
         let mut t = Tracker::default();
         t.begin(Kind::Radar, "Vara Reflectivity 0.5°", false, None);
         let first = t.wire(t0).unwrap();
-        assert_eq!(
-            first.stages.iter().map(seg).collect::<Vec<_>>(),
-            vec![
-                (Stage::First, 40, 0, SegmentState::Active),
-                (Stage::Build, 10, 0, SegmentState::Waiting),
-                (Stage::History, 50, 0, SegmentState::Waiting),
-            ]
-        );
+        let shape = vec![
+            (Stage::First, 44, 0, SegmentState::Active),
+            (Stage::History, 56, 0, SegmentState::Waiting),
+        ];
+        assert_eq!(first.stages.iter().map(seg).collect::<Vec<_>>(), shape);
         // The frame arrives and is on screen in one go.
         t.shown(at(t0, 200));
         let shown = t.wire(at(t0, 200)).unwrap();
         assert_eq!(shown.percent, 100);
+        assert_eq!(
+            shown.stages.iter().map(|s| s.stage).collect::<Vec<_>>(),
+            vec![Stage::First, Stage::History],
+            "the divisions have not moved"
+        );
         t.plan("Vara Reflectivity 0.5°", 11, at(t0, 300));
         let history = t.wire(at(t0, 1400)).unwrap();
         assert_eq!(history.stage, Stage::History);
@@ -1091,12 +1168,7 @@ mod tests {
                 (Stage::First, 44, 100, SegmentState::Done),
                 (Stage::History, 56, 0, SegmentState::Active),
             ],
-            "no build segment, and 44 + 56 = 100"
-        );
-        assert_eq!(
-            history.stages.iter().map(|s| s.share).sum::<u32>(),
-            100,
-            "a client lays the bar out from the shares alone"
+            "the same two segments, 44 + 56 = 100"
         );
     }
 
@@ -1155,16 +1227,45 @@ mod tests {
         }
     }
 
+    /// Review M1: `under` belongs to the first stage **and the build**. A
+    /// composite's product draws the composite's own frame where the
+    /// placeholder is, and `state.frame` stays the placeholder until the
+    /// built frame is drawn — so dropping `under` when the build starts
+    /// blanked the map for the whole build (about ten seconds for a
+    /// Nordic grid). It goes at `shown`, with the frame that replaces it.
     #[test]
-    fn under_goes_with_the_first_stage() {
+    fn under_goes_with_the_first_stage_and_the_build() {
         let t0 = Instant::now();
         let mut t = Tracker::default();
         let frame: Frame = serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
         t.begin(Kind::Made, "Nordic Column max", false, Some(frame));
         t.progress(report(Stage::First, 3, 10), at(t0, 1000));
         assert!(t.wire(at(t0, 1000)).unwrap().under.is_some());
-        t.shown(at(t0, 1100));
-        assert!(t.wire(at(t0, 1100)).unwrap().under.is_none());
+        // The build starts: the first stage is over, the composite is not.
+        t.building("14:25Z", true, at(t0, 1100));
+        let building = t.wire(at(t0, 1100)).unwrap();
+        assert_eq!(building.stage, Stage::Build);
+        assert!(
+            building.under.is_some(),
+            "the composite stays drawn through the build"
+        );
+        t.building("14:25Z", false, at(t0, 2200));
+        let drawing = t.wire(at(t0, 2200)).unwrap();
+        assert_eq!((drawing.stage, drawing.percent), (Stage::Build, 50));
+        assert!(drawing.under.is_some(), "and through the send");
+        // The built frame is drawn: it replaces the composite.
+        t.shown(at(t0, 2300));
+        assert!(t.wire(at(t0, 2300)).unwrap().under.is_none());
+        // And a first stage that reaches 100 on its own count hands the
+        // composite to the build as well.
+        let frame: Frame = serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
+        let mut t = Tracker::default();
+        t.begin(Kind::Made, "Nordic Column max", false, Some(frame));
+        t.progress(report(Stage::First, 10, 10), at(t0, 3000));
+        assert_eq!(t.wire(at(t0, 3000)).unwrap().percent, 100);
+        let queued = t.wire(at(t0, 4100)).unwrap();
+        assert_eq!(queued.stage, Stage::Build);
+        assert!(queued.under.is_some(), "queued behind the first stage too");
     }
 
     #[test]
@@ -1196,7 +1297,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&t.wire(at(t0, 1000)).unwrap()).unwrap(),
-            r#"{"stage":"first","percent":63,"done":52,"total":82,"unit":"volumes","label":"Nordic Rain mass: 26 of 40 radars in for 14:25Z (1 silent)","stages":[{"stage":"first","share":55,"percent":63,"done":52,"total":82,"unit":"volumes","state":"active"},{"stage":"build","share":20,"percent":0,"done":0,"total":0,"unit":"steps","state":"waiting"},{"stage":"history","share":25,"percent":0,"done":0,"total":0,"unit":"volumes","state":"waiting"}]}"#
+            r#"{"stage":"first","percent":63,"done":52,"total":82,"unit":"volumes","label":"Nordic Rain mass: 26 of 40 radars in for 14:25Z (1 silent)","stages":[{"stage":"first","share":55,"percent":63,"done":52,"total":82,"unit":"volumes","state":"active"},{"stage":"build","share":20,"percent":0,"done":0,"total":2,"unit":"steps","state":"waiting"},{"stage":"history","share":25,"percent":0,"done":0,"total":0,"unit":"volumes","state":"waiting"}]}"#
         );
     }
 }

@@ -136,16 +136,8 @@ impl Loading {
 /// may take, so the segment boundaries never move while the load runs.
 fn plan_of(kind: Kind) -> [(Stage, u32); 3] {
     match kind {
-        Kind::Radar => [
-            (Stage::First, 40),
-            (Stage::Build, 10),
-            (Stage::History, 50),
-        ],
-        Kind::Made => [
-            (Stage::First, 55),
-            (Stage::Build, 20),
-            (Stage::History, 25),
-        ],
+        Kind::Radar => [(Stage::First, 40), (Stage::Build, 10), (Stage::History, 50)],
+        Kind::Made => [(Stage::First, 55), (Stage::Build, 20), (Stage::History, 25)],
     }
 }
 
@@ -395,6 +387,21 @@ impl Tracker {
         }
     }
 
+    /// S35: show `stage` now, without waiting out the 100's `LINGER`. The
+    /// stage behind it stays full in the bar, which is what the linger was
+    /// for, and holding a finished stage's last label over a wait it is no
+    /// longer part of reads as a lie (`100 % … waiting for Vara`).
+    fn hand_over(&mut self, stage: Loading, now: Instant) {
+        self.retire();
+        self.finished_at = None;
+        self.next = None;
+        self.current = Some(stage);
+        self.urgent = true;
+        if self.current.as_ref().is_some_and(|s| s.percent >= 100) {
+            self.finished_at = Some(now);
+        }
+    }
+
     /// S35: the build stage, after the first. Nothing is queued once the
     /// frame is already on screen (a radar's decode and send, or a frame
     /// the tilt store made at once): the segment is then never drawn.
@@ -415,7 +422,11 @@ impl Tracker {
         } else {
             &self.frame_time
         };
-        let verb = if self.built >= 1 { "drawing" } else { "building" };
+        let verb = if self.built >= 1 {
+            "drawing"
+        } else {
+            "building"
+        };
         format!("{}: {verb} {what}", self.name)
     }
 
@@ -431,10 +442,19 @@ impl Tracker {
         }
         match self.current.as_ref().map(|c| c.stage) {
             // Still on the first stage (or its 100 lingering): it is over,
-            // and the build follows it.
+            // and the build takes over at once — the first segment stays
+            // full, so there is nothing left for its linger to show, and
+            // its label ("waiting for Vara") is no longer true.
             Some(Stage::First) => {
                 self.finish(now);
-                self.queue_build(now);
+                if self.built < BUILD_STEPS {
+                    let label = self.build_label();
+                    let counts =
+                        Loading::new(Stage::Build, self.built, BUILD_STEPS, Unit::Steps, label);
+                    self.hand_over(counts, now);
+                } else {
+                    self.next = self.next.take().filter(|n| n.stage != Stage::Build);
+                }
             }
             Some(Stage::Build) => {
                 let counts = Loading::new(
@@ -1014,7 +1034,10 @@ mod tests {
         assert_eq!(drawing.label, "Nordic Rain mass: drawing 14:25Z");
         t.shown(at(t0, 5300));
         let drawn = t.wire(at(t0, 5300)).unwrap();
-        assert_eq!((drawn.stage, drawn.percent, drawn.done), (Stage::Build, 100, 2));
+        assert_eq!(
+            (drawn.stage, drawn.percent, drawn.done),
+            (Stage::Build, 100, 2)
+        );
         t.progress(report(Stage::History, 41, 123), at(t0, 5400));
         assert_eq!(t.wire(at(t0, 5400)).unwrap().stage, Stage::Build, "lingers");
         let history = t.wire(at(t0, 6400)).unwrap();
@@ -1086,9 +1109,10 @@ mod tests {
         t.begin(Kind::Radar, "Vara Rain mass", true, None);
         t.plan("Vara Rain mass", 4, at(t0, 100));
         let only = t.wire(at(t0, 100)).unwrap();
-        assert_eq!(only.stages.iter().map(seg).collect::<Vec<_>>(), vec![
-            (Stage::History, 100, 0, SegmentState::Active)
-        ]);
+        assert_eq!(
+            only.stages.iter().map(seg).collect::<Vec<_>>(),
+            vec![(Stage::History, 100, 0, SegmentState::Active)]
+        );
     }
 
     /// S35: the segments are the load, not the client's view of it. The

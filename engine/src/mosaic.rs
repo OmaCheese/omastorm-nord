@@ -3235,7 +3235,9 @@ async fn run(
         .iter()
         .map(|r| r.station.name.clone())
         .collect();
-    let first = schedule.fill(now).map(|f| f.progress(&load_name, &radar_names));
+    let first = schedule
+        .fill(now)
+        .map(|f| f.progress(&load_name, &radar_names));
     let mut filling = first.is_some();
     let event = Event::Progress {
         site: site.clone(),
@@ -4234,6 +4236,179 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// S35's capture, and the reason for the stream. The same cold run
+    /// (2026-09-15, Nordic Rain mass from an **empty** tilt store) replayed
+    /// end to end through the schedule *and* the tracker, so the segments
+    /// can be read against the clock without one request: every arrival,
+    /// then the build — 10.05 s of it, the length the live run measured
+    /// (`engine.log`: `2026-09-15T16:40Z built in 10.05s, 1671 × 2297`) —
+    /// then the frame drawn, then the backfill.
+    ///
+    /// What it shows, and what S31 could not: nothing reads 99 % while
+    /// volumes are still arriving; the first segment reaches 100 only when
+    /// the last counted radar is in; and the ten seconds of building that
+    /// used to hide behind that 99 % are a segment of their own. No
+    /// segment is full while its own work is going: `first` fills to 100
+    /// as the volumes land, `build` is empty until the first ends, and
+    /// `history` is dim until the frame is drawn.
+    ///
+    /// Ignored: it needs that file (`S31_ARRIVALS` names another).
+    /// `cargo test --offline the_cold_runs_stages_replayed -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn the_cold_runs_stages_replayed() {
+        /// The live run's own Nordic grid build, 41 radars into
+        /// 1671 × 2297; the wait S31 drew as part of "99 %".
+        const BUILD_MS: i64 = 10_050;
+        /// Built and sent, to the frame in the client's timeline.
+        const DRAW_MS: i64 = 200;
+
+        let path = std::env::var("S31_ARRIVALS")
+            .unwrap_or_else(|_| "/home/rb/Projects/omastorm-S31-run/arrivals.json".into());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let n = v["radars"].as_u64().unwrap() as usize;
+        let start = v["start"].as_i64().unwrap();
+        let names: Vec<String> = v["stations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_owned())
+            .collect();
+        let mut steps: Vec<(i64, usize, Option<i64>)> = v["arrivals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["at"].as_i64().unwrap(),
+                    a["radar"].as_u64().unwrap() as usize,
+                    Some(a["t"].as_i64().unwrap()),
+                )
+            })
+            .chain(v["silent"].as_array().unwrap().iter().map(|a| {
+                (
+                    a["at"].as_i64().unwrap(),
+                    a["radar"].as_u64().unwrap() as usize,
+                    None,
+                )
+            }))
+            .collect();
+        steps.sort_by_key(|s| s.0);
+
+        let mut s = Schedule::new(vec![5_000.0; n], &[]).with_depth(1);
+        let mut tracker = crate::loading::Tracker::default();
+        tracker.begin(crate::loading::Kind::Made, "Nordic Rain mass", false, None);
+        let t0 = Instant::now();
+        let last_at = steps.last().map_or(start, |s| s.0);
+        // The virtual clock: one tick a second, as the engine's own loop.
+        let mut at = start;
+        let mut next = 0usize;
+        // A build under way: (frame time, when it is built, whether sent).
+        let mut building: Option<(i64, i64, bool)> = None;
+        let mut drawing: Option<i64> = None;
+        let mut shown = String::new();
+        while at <= last_at + 600_000 {
+            while next < steps.len() && steps[next].0 <= at {
+                let (when, radar, what) = steps[next];
+                match what {
+                    Some(t) => {
+                        let have = Have {
+                            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+                            cost: Cost::default(),
+                        };
+                        s.add(radar, t, have, when, true);
+                    }
+                    None => s.set_silent(radar, true),
+                }
+                next += 1;
+            }
+            let now = t0 + std::time::Duration::from_millis((at - start) as u64);
+            // The build the engine would start, and the two reports it
+            // sends around it (`build_and_send`).
+            if building.is_none()
+                && drawing.is_none()
+                && let Some(t) = s.ready(at).first().copied()
+            {
+                building = Some((t, at + BUILD_MS, false));
+                tracker.building(&utc(t, "%H:%MZ"), true, now);
+            }
+            if let Some((t, done, sent)) = building
+                && at >= done
+                && !sent
+            {
+                tracker.building(&utc(t, "%H:%MZ"), false, now);
+                building = Some((t, done, true));
+                drawing = Some(at + DRAW_MS);
+            }
+            if let Some(when) = drawing
+                && at >= when
+            {
+                tracker.shown(now);
+                if let Some((t, _, _)) = building {
+                    s.mark_built(t);
+                }
+                building = None;
+                drawing = None;
+            }
+            let report = s.fill(at).map(|f| f.progress("Nordic Rain mass", &names));
+            tracker.progress(report, now);
+            // One line per change on the wire, as a client would see it.
+            let wire = tracker.wire(now);
+            let line = match &wire {
+                None => "loading: null".to_owned(),
+                Some(l) => {
+                    let bar = l
+                        .stages
+                        .iter()
+                        .map(|g| {
+                            let fill = match g.state {
+                                crate::loading::SegmentState::Waiting => "—".to_owned(),
+                                _ => format!("{:>3} %", g.percent),
+                            };
+                            format!("{:?}/{} {fill}", g.stage, g.share)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("  |  ");
+                    format!("{:>3} %  [{bar}]  {}", l.percent, l.label)
+                }
+            };
+            if line != shown {
+                let secs = (at - start) / 1000;
+                println!("  {:3}:{:02}  {line}", secs / 60, secs % 60);
+                shown = line;
+            }
+            at += 1000;
+        }
+        assert!(shown.starts_with("loading: null"), "the load ends: {shown}");
+    }
+
+    /// S35 item 4: the label names the radars the tail is waiting for —
+    /// at most three, then `and n more` — once few enough are out to read.
+    #[test]
+    fn the_label_names_the_radars_the_tail_waits_for() {
+        let names: Vec<String> = ["Vara", "Lulea", "Hemse", "Kiruna", "Arlanda", "Balsta"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(waiting_for(&[], &names), "");
+        assert_eq!(waiting_for(&[0], &names), ", waiting for Vara");
+        assert_eq!(waiting_for(&[0, 1], &names), ", waiting for Vara, Lulea");
+        assert_eq!(
+            waiting_for(&[0, 1, 2], &names),
+            ", waiting for Vara, Lulea, Hemse"
+        );
+        assert_eq!(
+            waiting_for(&[0, 1, 2, 3], &names),
+            ", waiting for Vara, Lulea, Hemse and 1 more"
+        );
+        // Too many out to be worth naming: the count already says it.
+        assert_eq!(waiting_for(&[0, 1, 2, 3, 4, 5, 6], &names), "");
+        // A set whose names the caller did not pass says nothing.
+        assert_eq!(waiting_for(&[0, 1], NO_NAMES), "");
     }
 
     #[test]

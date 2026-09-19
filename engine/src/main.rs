@@ -3030,6 +3030,39 @@ mod tests {
             shared.state.referenced_files().any(|p| p == under.texture),
             "kept from the texture cleanup"
         );
+        // S35: the load's frame arrives while the viewer is scrubbed back
+        // into the past. Before S35 `shown` waited on the timeline
+        // following the newest frame, so the bar froze at 99 % until the
+        // whole fill ended; the frame is made either way, so the stage
+        // ends either way.
+        shared.timeline.shown = Some("some-older-frame".into());
+        assert!(!shared.timeline.following(), "scrubbed back");
+        let mut arrived = fixture_frame();
+        arrived.id = "nordic-20260914T101000Z-cmax".into();
+        let arrival = Arrival {
+            frame: arrived,
+            texture: b"sweep".to_vec(),
+            lut: b"lut".to_vec(),
+            start_ms: 1_789_380_600_000,
+            end_ms: 1_789_380_660_000,
+            stored: None,
+        };
+        shared.arrived(arrival, false).unwrap();
+        shared.snapshot();
+        let scrubbed = shared.state.loading.clone().unwrap();
+        assert_eq!(
+            scrubbed.percent, 100,
+            "the stage ends though the viewer is not looking at the frame"
+        );
+        assert_eq!(
+            scrubbed
+                .stages
+                .iter()
+                .find(|s| s.stage == loading::Stage::First)
+                .map(|s| s.state),
+            Some(loading::SegmentState::Done),
+            "and its segment stays full"
+        );
         // Its first frame on screen: 100, and no composite under it.
         shared.loading.shown(Instant::now());
         shared.snapshot();

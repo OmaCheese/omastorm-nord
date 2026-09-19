@@ -2290,6 +2290,23 @@ impl Schedule {
         })
     }
 
+    /// S35 review S2: whether radar `radar`'s scan for `t` is not merely
+    /// in hand but ready to build with — the same test `complete` makes
+    /// per radar, minus the silence it handles for itself (`fill` leaves
+    /// silent radars out of its counts entirely). A short scan whose
+    /// longer predecessor has not arrived is in hand and not ready, and
+    /// the frame waits for it (up to `OUTER_MS`, else `QUIET_MS`), so the
+    /// first stage must not count it in: it would read 100 while `ready`
+    /// still refuses to build, and the bar would sit full over a wait.
+    fn ready_with(&self, radar: usize, t: i64) -> bool {
+        match self.scans.get(&t).and_then(|v| v[radar].as_ref()) {
+            Some(h) => self.settled(radar, t, &h.sweep),
+            None => self
+                .carried(radar, t)
+                .is_some_and(|(h, when)| self.settled(radar, when, &h.sweep)),
+        }
+    }
+
     /// S31: radar `radar`'s poller called it silent, or it delivered a scan
     /// the schedule keeps again.
     pub fn set_silent(&mut self, radar: usize, silent: bool) {
@@ -2332,12 +2349,7 @@ impl Schedule {
             let built = (window.len() - open.len()) as u32;
             let held: u32 = open
                 .iter()
-                .map(|&t| {
-                    counted
-                        .iter()
-                        .filter(|&&r| self.has(r, t) || self.carried(r, t).is_some())
-                        .count() as u32
-                })
+                .map(|&t| counted.iter().filter(|&&r| self.ready_with(r, t)).count() as u32)
                 .sum();
             return Some(Fill {
                 stage: crate::loading::Stage::History,
@@ -2384,6 +2396,13 @@ impl Schedule {
                 let top = newest.unwrap_or((due + step).max(tr));
                 let need = ((top - tr) / step) as u32 + 1;
                 total += need;
+                // Review S2: in hand but not ready to build with — a short
+                // scan whose longer predecessor is still on its way — so
+                // it owes that volume too, and the stage stays short of
+                // 100 for as long as the schedule stays short of ready.
+                if self.has(r, tr) && !self.ready_with(r, tr) {
+                    total += 1;
+                }
                 done += if self.has(r, tr) {
                     need
                 } else if top > tr {
@@ -2409,10 +2428,9 @@ impl Schedule {
             done,
             total,
             t,
-            radars_in: counted
-                .iter()
-                .filter(|&&r| self.has(r, t) || self.carried(r, t).is_some())
-                .count(),
+            // Review S2: a radar is "in" when its scan is one the frame
+            // can be built from, not merely when bytes have arrived.
+            radars_in: counted.iter().filter(|&&r| self.ready_with(r, t)).count(),
             counted: counted.len(),
             silent,
             built: 0,
@@ -2421,7 +2439,7 @@ impl Schedule {
             waiting: counted
                 .iter()
                 .copied()
-                .filter(|&r| !(self.has(r, t) || self.carried(r, t).is_some()))
+                .filter(|&r| !self.ready_with(r, t))
                 .collect(),
         })
     }
@@ -4311,6 +4329,15 @@ mod tests {
         let mut building: Option<(i64, i64, bool)> = None;
         let mut drawing: Option<i64> = None;
         let mut shown = String::new();
+        // Review S5: the highest each segment has reached, and how far
+        // along the load has got.
+        let mut highest: BTreeMap<String, u32> = BTreeMap::new();
+        let mut furthest = 0usize;
+        let rank = |st: crate::loading::Stage| match st {
+            crate::loading::Stage::First => 0usize,
+            crate::loading::Stage::Build => 1,
+            crate::loading::Stage::History => 2,
+        };
         while at <= last_at + 600_000 {
             while next < steps.len() && steps[next].0 <= at {
                 let (when, radar, what) = steps[next];
@@ -4358,10 +4385,14 @@ mod tests {
             tracker.progress(report, now);
             // One line per change on the wire, as a client would see it.
             let wire = tracker.wire(now);
-            // The invariant an S31 client depends on, checked at every
-            // moment of a real load: the top-level fields are exactly the
-            // active segment's (or, while the finished load lingers, the
-            // last done one), and the shares always sum to 100.
+            // The invariants checked at every moment of a real load.
+            // Review S5: the top-level-equals-active-segment one holds by
+            // construction (`segments` copies those fields across), so
+            // the two that can actually fail are checked as well — no
+            // segment's percentage ever going down, and the load never
+            // stepping back to an earlier stage. Both are what a frame
+            // time switch mid-fill (replay 0:52 -> 0:53, the schedule's
+            // target moving from 16:40Z back to 16:35Z) would break.
             if let Some(l) = &wire {
                 assert!(!l.stages.is_empty(), "loading is never sent without stages");
                 assert_eq!(
@@ -4392,6 +4423,23 @@ mod tests {
                         .all(|g| g.state == crate::loading::SegmentState::Done && g.percent == 100),
                     "every stage behind the one running stays full"
                 );
+                let secs = (at - start) / 1000;
+                for g in &l.stages {
+                    let seen = highest.entry(format!("{:?}", g.stage)).or_insert(0);
+                    assert!(
+                        g.percent >= *seen,
+                        "{:?} went back from {seen} % to {} % at {secs} s",
+                        g.stage,
+                        g.percent
+                    );
+                    *seen = g.percent;
+                }
+                assert!(
+                    rank(mine.stage) >= furthest,
+                    "the load stepped back to {:?} at {secs} s",
+                    mine.stage
+                );
+                furthest = rank(mine.stage);
             }
             let line = match &wire {
                 None => "loading: null".to_owned(),
@@ -4419,6 +4467,58 @@ mod tests {
             at += 1000;
         }
         assert!(shown.starts_with("loading: null"), "the load ends: {shown}");
+    }
+
+    /// S35 review S2: the first stage must not read 100 while `ready`
+    /// still refuses to build. A short scan whose longer predecessor has
+    /// not arrived is in hand but not `settled`, and on a cold store the
+    /// backfill delivers newest first, so that is the ordinary case, not
+    /// an edge: without this the bar sat full, with the build segment at
+    /// 0 % saying "building", for up to OUTER_MS/QUIET_MS with nothing
+    /// building. The replay cannot show this — its synthetic sweeps are
+    /// all one range, so `settled` is trivially true — hence this test.
+    #[test]
+    fn the_first_stage_stays_short_of_100_while_the_schedule_refuses_to_build() {
+        let now: i64 = 1_800_000_000_000;
+        let t = now - now.rem_euclid(CADENCE_MS);
+        // One radar reaching 250 + 10 * 500 = 5250 m of its 60 km range:
+        // a short scan (`short`), so it waits for a longer predecessor.
+        let mut s = Schedule::new(vec![60_000.0], &[]).with_depth(1);
+        let stub = Have {
+            sweep: Arc::new(sweep(100, 10, 0.5, t)),
+            cost: Cost::default(),
+        };
+        s.add(0, t, stub, now, true);
+        assert!(
+            s.ready(now).is_empty(),
+            "the schedule will not build it yet"
+        );
+        let fill = s.fill(now).unwrap();
+        assert!(
+            fill.done < fill.total,
+            "so the first stage is not full: {} of {}",
+            fill.done,
+            fill.total
+        );
+        assert_eq!(fill.radars_in, 0, "in hand is not the same as in");
+        assert_eq!(fill.waiting, vec![0]);
+        // Its longer predecessor arrives: the scan settles, the schedule
+        // will build, and the stage reaches 100 at the same moment.
+        let long = Have {
+            sweep: Arc::new(sweep(100, 240, 0.5, t - CADENCE_MS)),
+            cost: Cost::default(),
+        };
+        s.add(0, t - CADENCE_MS, long, now, true);
+        let fill = s.fill(now).unwrap();
+        assert_eq!(fill.radars_in, 1);
+        assert!(fill.waiting.is_empty());
+        assert_eq!(
+            (fill.done == fill.total, s.ready(now).is_empty()),
+            (true, false),
+            "full exactly when the schedule is ready: {} of {}",
+            fill.done,
+            fill.total
+        );
     }
 
     /// S35 item 4: the label names the radars the tail is waiting for —

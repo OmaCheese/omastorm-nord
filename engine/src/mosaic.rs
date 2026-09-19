@@ -4358,6 +4358,41 @@ mod tests {
             tracker.progress(report, now);
             // One line per change on the wire, as a client would see it.
             let wire = tracker.wire(now);
+            // The invariant an S31 client depends on, checked at every
+            // moment of a real load: the top-level fields are exactly the
+            // active segment's (or, while the finished load lingers, the
+            // last done one), and the shares always sum to 100.
+            if let Some(l) = &wire {
+                assert!(!l.stages.is_empty(), "loading is never sent without stages");
+                assert_eq!(
+                    l.stages.iter().map(|g| g.share).sum::<u32>(),
+                    100,
+                    "the shares lay the bar out"
+                );
+                let mine = l
+                    .stages
+                    .iter()
+                    .find(|g| g.state == crate::loading::SegmentState::Active)
+                    .or_else(|| {
+                        l.stages
+                            .iter()
+                            .rev()
+                            .find(|g| g.state == crate::loading::SegmentState::Done)
+                    })
+                    .expect("an active segment, or a finished load's last one");
+                assert_eq!(
+                    (mine.stage, mine.percent, mine.done, mine.total, mine.unit),
+                    (l.stage, l.percent, l.done, l.total, l.unit),
+                    "an S31 client reads the top level and draws the same bar"
+                );
+                assert!(
+                    l.stages
+                        .iter()
+                        .take_while(|g| g.stage != mine.stage)
+                        .all(|g| g.state == crate::loading::SegmentState::Done && g.percent == 100),
+                    "every stage behind the one running stays full"
+                );
+            }
             let line = match &wire {
                 None => "loading: null".to_owned(),
                 Some(l) => {

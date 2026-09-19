@@ -279,7 +279,7 @@ FocusScope {
                         loading: connection.loading
                         theme: card.theme
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                        anchors.bottomMargin: -3
+                        anchors.bottomMargin: -1 - implicitHeight
                     }
                     Repeater {
                         model: card.slots

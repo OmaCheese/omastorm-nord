@@ -30,7 +30,7 @@ jq -r --arg id "$site" '.sites[] | select(.id==$id) | "center_lat = \(.lat)\ncen
 capture() { # name, delay ms, env...
   local name=$1 delay=$2
   shift 2
-  env "$@" OMASTORM_WIDTH=960 OMASTORM_HEIGHT=680 OMASTORM_CAPTURE_DELAY="$delay" OMASTORM_CAPTURE="$review/stages-$name.png" bash run.sh > "/tmp/claude-1000/-home-rb-Projects-omastorm-se/fa724a19-2e2b-4f44-9f37-44d9260e5d20/scratchpad/capture-$name.log" 2>&1 || true
+  env "$@" OMASTORM_WIDTH=960 OMASTORM_HEIGHT=680 OMASTORM_CAPTURE_DELAY="$delay" OMASTORM_CAPTURE="$review/stages-$name.png" bash run.sh > "$scratch/capture-$name.log" 2>&1 || true
   [[ -s "$review/stages-$name.png" ]] || { echo "No capture for $name" >&2; exit 1; }
   echo "captured $name"
 }

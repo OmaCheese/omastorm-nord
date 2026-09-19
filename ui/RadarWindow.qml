@@ -1167,7 +1167,9 @@ Item {
                             theme: app.theme
                             names: !win.compact
                             anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                            anchors.bottomMargin: -4 - (names && visible ? implicitHeight - thickness : 0)
+                            // The rule lands where S31 drew it (2 px below
+                            // the strip), whatever the names add below it.
+                            anchors.bottomMargin: -2 - implicitHeight
                         }
                         Repeater {
                             model: app.slots

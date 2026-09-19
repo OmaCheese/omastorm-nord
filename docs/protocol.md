@@ -1476,18 +1476,25 @@ none, though its backfill may start a history stage (below).
   down. Within a stage it never goes down. A stage change starts again from
   the new stage's own count (but see `stages`: the segments before it stay
   full). At 100 `loading` stays for about a second, then becomes `null` (or
-  the next stage).
+  the next stage) — except when the build takes over from `first`, which
+  happens at once: the first segment stays full in the bar, which is what
+  that second was for, and holding its last label (`waiting for Vara`)
+  over a wait it is no longer part of would say something untrue.
 - `done` and `total`: what the engine counts, in `unit`, `volumes`,
   `frames` or `steps`. They are counts of what the engine fetches or builds
   anyway; showing them costs no request.
 - `label`: English, shown verbatim, naming the station, the product and
   what is counted.
-- `under` (only in the `first` stage of a composite's product, S24b): the
+- `under` (in the `first` **and `build`** stages of a composite's product,
+  S24b; the build was added with the stage itself, S35): the
   composite's own newest frame (`REF`), a complete `frame` object with its
   stable texture names, which the engine keeps published while it is
   here. While `state.frame` is the loading placeholder a client draws
   `under` in its place, with `under`'s own legend and name, and shows the
-  progress beside it. It is absent when the composite has no frame.
+  progress beside it. `state.frame` stays the placeholder until the built
+  frame is drawn, and the build is part of that wait, so `under` goes when
+  the frame that replaces it arrives, not when the build starts. It is
+  absent when the composite has no frame.
 - `stages` (S35, additive): the whole load in order, one entry per stage,
   so a client can draw **one segmented bar** whose earlier segments stay
   full instead of a single number that starts again at each stage. Present
@@ -1518,14 +1525,20 @@ What each load counts:
   `history` is the backfill: the frames its poller will bring after the
   first (those the tilt store holds first, then those it fetches), counted
   as each joins the timeline. A backfill that stops early (a network
-  failure) ends the stage at 100. Its shares are `first` 40, `build` 10,
-  `history` 50.
+  failure) ends the stage at 100. It has **no `build` stage**: its frame is
+  a decode and a send its poller has already done, over before the bar
+  could draw it, so planning one would only move the divisions. Its shares
+  are `first` 44, `history` 56.
 - **My mosaic and a composite's products** (`volumes`, S25, S24b): `first`
   counts, over the frame time the engine is closest to completing, the
   volumes each counted radar still has to deliver before that time's own
   (its poller fetches newest first), so the percentage rises while the
   newer volumes come in; volumes the tilt store already holds are done at
-  once. It reaches a true 100 when every counted radar is in — the wait
+  once. A radar counts as in only when its scan is one the frame can
+  actually be built from: a short scan whose longer predecessor has not
+  arrived yet is in hand but still owes that volume, and the engine will
+  not build until it comes, so the stage does not read full over that
+  wait. It reaches a true 100 when every counted radar is in — the wait
   that follows is `build`, not the last percent of `first` (before S35 it
   was held at 99 until the frame was on screen, which hid the build, the
   ~1 MB frame and the draw behind one number). The label names how many
@@ -1536,17 +1549,17 @@ What each load counts:
   load ends once every frame time of the window is built; the next live
   frame five minutes later starts no load. Its shares are `first` 55,
   `build` 20, `history` 25.
-- **The build** (`steps`, S35): every load has one, between `first` and
-  `history`. `total` is 2: `done` 0 while the frame is being built
+- **The build** (`steps`, S35): a made load has one, between `first` and
+  `history`; a radar's load has none (above). `total` is 2: `done` 0 while the frame is being built
   (`Nordic Rain mass: building 14:25Z`), 1 once it is built and sent
   (`… drawing 14:25Z`), and 2 when it is in the client's timeline. It ends
   on the same signal as before — the frame reaching the timeline — but
   that signal no longer depends on the client following the newest frame,
   so a client scrubbed back into the past still sees the bar advance. A
-  radar's build is a decode and a send that the poller has already done, so
-  it is over within a tick and the segment is normally absent; a made
-  frame's build is the assembly of every radar's volume into one grid, and
-  is the segment that was invisible before S35.
+  made frame's build is the assembly of every radar's volume into one
+  grid — about ten seconds for a Nordic grid — and is the segment that was
+  invisible before S35. A build that is over before the bar ever draws it
+  (a frame the tilt store made at once) leaves no segment.
 - **A silent radar does not count**: a radar whose poller reports it
   silent (it has published nothing for the provider's `unavailable` age,
   30 minutes for SMHI and ORD; Kiruna from 07:15Z on 2026-09-15) leaves

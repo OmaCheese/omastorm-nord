@@ -69,6 +69,12 @@ Item {
 
     visible: !!bar.loading
     implicitHeight: bar.thickness + (bar.names ? nameRow.implicitHeight + 3 : 0)
+    // Review NIT4: an Item anchored left/right/bottom keeps its default
+    // height of 0 unless it is given one, and its children then hang below
+    // the anchor line. The rule is drawn at the top of this item, so a
+    // host anchors the bar's bottom at `-thickness - implicitHeight` from
+    // where it wants the rule, names or no names.
+    height: bar.implicitHeight
 
     Repeater {
         model: bar.segments

@@ -1,6 +1,7 @@
 singleton PluginSession 1.0 PluginSession.qml
 Config 1.0 Config.qml
 Engine 1.0 Engine.qml
+LoadingBar 1.0 LoadingBar.qml
 LocationPicker 1.0 LocationPicker.qml
 LocationPrompt 1.0 LocationPrompt.qml
 MosaicPicker 1.0 MosaicPicker.qml

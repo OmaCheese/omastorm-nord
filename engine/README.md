@@ -397,9 +397,24 @@ until `Event::HistoryEnd`. My mosaic and a composite's product report from
 the volumes each counted radar still delivers, newest first, down to the
 frame time closest to completion, then the window's unbuilt times; volumes in
 the tilt store count at once, and the fill stops reporting once its window is
-built. `Tracker` keeps the percentage from going down within a stage, holds a
-made first stage at 99 until its frame is shown, lets 100 stand a second,
-and sends counts at most once a second (a stage's start, 100 and end at once).
+built. `Tracker` keeps the percentage from going down within a stage, lets
+100 stand a second, and sends counts at most once a second (a stage's start,
+100 and end at once).
+
+S35: a load is a list of stages, sent as `state.loading.stages` so a client
+draws one segmented bar whose finished segments stay full. A made load has
+`first`, `build` and `history` (shares 55/20/25); a radar's has `first` and
+`history` (44/56) and no build, its frame being a decode and a send its
+poller already did. `first` is no longer held at 99 until the frame is on
+screen — that cap hid the last radars' volumes, the build, the ~1 MB frame
+and the draw behind one number — and reaches a true 100 when every counted
+radar is in with a scan the frame can be built from (`Schedule::ready_with`,
+the same test `complete` makes, so the stage is exactly as patient as the
+schedule). What follows is `build`, reported by `mosaic::build_and_send`
+(`Event::Building`: the build's start, then the built frame's send) and
+ended by `Tracker::shown` — which `main.rs` now calls whether or not the
+timeline is following the newest frame, so a viewer scrubbed back into the
+past no longer watches a frozen bar.
 
 A radar its poller calls silent (nothing published for the provider's
 `unavailable` age, 30 minutes) no longer holds a frame time back:

@@ -1421,10 +1421,12 @@ impl Shared {
         }
         let following = self.timeline.following();
         self.state.connection.status = ConnectionStatus::Ok;
-        // S31: the load's first frame is on screen.
-        if following {
-            self.loading.shown(Instant::now());
-        }
+        // S31: the load's first frame is on screen. S35: whether or not the
+        // timeline is following it. The frame is made and in the timeline,
+        // which is what the load was waiting for; a viewer scrubbed back
+        // into the past is still told the load has moved on, instead of
+        // watching the bar freeze until the whole fill ends.
+        self.loading.shown(Instant::now());
         let shown = if complete {
             self.frame_ms = Some(start_ms);
             self.pending = None;
@@ -2014,6 +2016,24 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
                     && shared.variant() == variant
                 {
                     shared.loading.progress(progress, Instant::now());
+                    shared.broadcast();
+                }
+            }
+            // S35: a made frame's build started or its frame was sent. The
+            // build is the load's own stage, so the wait that used to hide
+            // behind the first stage's 99 % is drawn.
+            providers::Event::Building {
+                site,
+                variant,
+                time,
+                building,
+            } => {
+                let mut shared = shared.lock().unwrap();
+                if shared.state.site.id == site
+                    && shared.state.source == Source::Live
+                    && shared.variant() == variant
+                {
+                    shared.loading.building(&time, building, Instant::now());
                     shared.broadcast();
                 }
             }
@@ -3009,6 +3029,68 @@ mod tests {
         assert!(
             shared.state.referenced_files().any(|p| p == under.texture),
             "kept from the texture cleanup"
+        );
+        // Review M1: the composite's build starts. `state.frame` is still
+        // the placeholder, so the composite must go on being drawn under
+        // it — a Nordic grid takes about ten seconds to build, and
+        // dropping `under` at the build's start blanked the map for all
+        // of it. This is the composite product's own load, end to end, at
+        // no request: the one load type the live runs did not reach.
+        shared.loading.building("10:10Z", true, Instant::now());
+        shared.snapshot();
+        let build = shared.state.loading.clone().unwrap();
+        assert_eq!(build.stage, loading::Stage::Build);
+        assert_eq!(build.label, "Nordic Column max: building 10:10Z");
+        let held = build.under.expect("the composite stays under the build");
+        assert_eq!(held.id, frame.id);
+        assert!(
+            shared.state.referenced_files().any(|p| p == held.texture),
+            "and its files are still kept from the texture cleanup"
+        );
+        assert!(
+            shared.state.frame.scan_time.is_empty(),
+            "the placeholder is what `under` is drawn in place of"
+        );
+        // Built and sent. A real Nordic build takes about ten seconds, so
+        // the counts reach the wire on the next throttle tick, not this
+        // millisecond.
+        shared.loading.building("10:10Z", false, Instant::now());
+        let sent = shared.loading.wire(later()).unwrap();
+        assert_eq!((sent.percent, sent.done, sent.total), (50, 1, 2));
+        assert_eq!(sent.label, "Nordic Column max: drawing 10:10Z");
+        assert!(sent.under.is_some(), "and through the send");
+        // S35: the load's frame arrives while the viewer is scrubbed back
+        // into the past. Before S35 `shown` waited on the timeline
+        // following the newest frame, so the bar froze at 99 % until the
+        // whole fill ended; the frame is made either way, so the stage
+        // ends either way.
+        shared.timeline.shown = Some("some-older-frame".into());
+        assert!(!shared.timeline.following(), "scrubbed back");
+        let mut arrived = fixture_frame();
+        arrived.id = "nordic-20260914T101000Z-cmax".into();
+        let arrival = Arrival {
+            frame: arrived,
+            texture: b"sweep".to_vec(),
+            lut: b"lut".to_vec(),
+            start_ms: 1_789_380_600_000,
+            end_ms: 1_789_380_660_000,
+            stored: None,
+        };
+        shared.arrived(arrival, false).unwrap();
+        shared.snapshot();
+        let scrubbed = shared.state.loading.clone().unwrap();
+        assert_eq!(
+            scrubbed.percent, 100,
+            "the stage ends though the viewer is not looking at the frame"
+        );
+        assert_eq!(
+            scrubbed
+                .stages
+                .iter()
+                .find(|s| s.stage == loading::Stage::First)
+                .map(|s| s.state),
+            Some(loading::SegmentState::Done),
+            "and its segment stays full"
         );
         // Its first frame on screen: 100, and no composite under it.
         shared.loading.shown(Instant::now());

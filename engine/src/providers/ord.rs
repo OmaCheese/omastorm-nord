@@ -1859,6 +1859,9 @@ mod tests {
             Event::Offline { reason, .. } => format!("offline {reason}"),
             Event::Silent { reason, .. } => format!("silent {reason}"),
             Event::Progress { .. } => "progress".into(),
+            Event::Building { building, .. } => {
+                format!("building {building}")
+            }
             Event::HistoryPlan { frames, .. } => format!("plan {frames}"),
             Event::HistoryEnd { .. } => "history end".into(),
         }

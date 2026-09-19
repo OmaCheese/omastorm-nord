@@ -3,14 +3,21 @@
 //! set, and the rules that keep it honest. The engine counts what it
 //! fetches and builds anyway; nothing here asks for anything.
 //!
-//! A load has up to two stages. `first` lasts until the load's first frame
-//! is on screen; `history` until the frames behind it are in the timeline.
-//! Within a stage the percentage never goes down, and it reaches 100 only
-//! when the stage's frame is shown (`Tracker::shown`) or its last frame is
-//! in (`history_end`, a made fill's end). At 100 a stage stays for
-//! `LINGER`, then gives way to the next stage or to `null`. Counts reach
-//! the wire at most once a second (`THROTTLE`); a stage's start, its 100
-//! and its end go at once.
+//! A load has up to three stages (S35). `first` lasts until the volumes
+//! that load's first frame needs are all in; `build` until that frame is
+//! assembled, sent and on screen (`Tracker::shown`); `history` until the
+//! frames behind it are in the timeline. Within a stage the percentage
+//! never goes down, and a stage that is over stays full: `wire` sends the
+//! whole load as `stages`, one `Segment` per stage, so a client draws one
+//! segmented bar rather than a number that starts again three times. At
+//! 100 a stage stays for `LINGER`, then gives way to the next stage or to
+//! `null`. Counts reach the wire at most once a second (`THROTTLE`); a
+//! stage's start, its 100 and its end go at once.
+//!
+//! Before S35 the first stage was held at 99 until the frame was on
+//! screen, so the last radars' volumes, the build, the ~1 MB frame and the
+//! draw all hid behind one number. `first` now reaches a true 100 when
+//! every counted radar is in, and the wait that follows is `build`'s.
 //!
 //! Who reports what:
 //! - a radar's or a provider composite's poller: its live frame (`shown`),
@@ -18,7 +25,8 @@
 //!   `Event::HistoryPlan`/`HistoryEnd`), each backfilled frame
 //!   (`backfilled`);
 //! - My mosaic and a composite's product (`mosaic::run`): a `Progress`
-//!   while the fill lasts, `None` once it is over.
+//!   while the fill lasts, `None` once it is over, and the build's start
+//!   and end (`building`, from `Event::Building`).
 
 use crate::products::Want;
 use crate::protocol::{Frame, SiteKind, Station};
@@ -34,7 +42,22 @@ pub const LINGER: Duration = Duration::from_secs(1);
 #[serde(rename_all = "lowercase")]
 pub enum Stage {
     First,
+    /// S35: the frame assembled, sent and drawn. Before S35 this wait had
+    /// no stage of its own and hid inside `First`'s last percent.
+    Build,
     History,
+}
+
+impl Stage {
+    /// Where the stage comes in a load, so `wire` can tell a segment that
+    /// is over from one still to come.
+    fn order(self) -> usize {
+        match self {
+            Stage::First => 0,
+            Stage::Build => 1,
+            Stage::History => 2,
+        }
+    }
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -42,6 +65,37 @@ pub enum Stage {
 pub enum Unit {
     Volumes,
     Frames,
+    /// S35, the build stage: 0 building, 1 built and sent, 2 on screen.
+    Steps,
+}
+
+/// The build's two steps (`Unit::Steps`).
+const BUILD_STEPS: u32 = 2;
+
+/// How far a load's whole build is: 0 building, 1 sent, 2 on screen.
+type Built = u32;
+
+/// S35: what a client draws segments of. `state` says whether the segment
+/// is over (and so stays full), running, or still to come.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum SegmentState {
+    Done,
+    Active,
+    Waiting,
+}
+
+/// One stage of the load as the bar draws it (docs/protocol.md, Loading
+/// progress). `share` is the segment's width; a load's shares sum to 100.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+pub struct Segment {
+    pub stage: Stage,
+    pub share: u32,
+    pub percent: u32,
+    pub done: u32,
+    pub total: u32,
+    pub unit: Unit,
+    pub state: SegmentState,
 }
 
 /// `state.loading` as sent.
@@ -57,6 +111,9 @@ pub struct Loading {
     /// stage (docs/protocol.md, `under`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub under: Option<Frame>,
+    /// S35: the whole load in order, the fields above being exactly the
+    /// `active` segment's. Filled by `wire`, empty everywhere else.
+    pub stages: Vec<Segment>,
 }
 
 impl Loading {
@@ -69,8 +126,92 @@ impl Loading {
             unit,
             label,
             under: None,
+            stages: Vec::new(),
         }
     }
+}
+
+/// The stages a load of `kind` goes through, in order, each with its share
+/// of the bar. Fixed per kind rather than guessed from how long a stage
+/// may take, so the segment boundaries never move while the load runs.
+///
+/// Review S1: a radar's load has no build stage at all. Its frame is a
+/// decode and a send its poller has already done — no poller sends
+/// `Event::Building`, and `shown` marks the build over before the first
+/// stage can even finish — so a planned build could only ever be drawn
+/// dim and then vanish, moving the divisions the load is supposed to keep
+/// still (§S35 item 6).
+fn plan_of(kind: Kind) -> &'static [(Stage, u32)] {
+    match kind {
+        Kind::Radar => &[(Stage::First, 44), (Stage::History, 56)],
+        Kind::Made => &[(Stage::First, 55), (Stage::Build, 20), (Stage::History, 25)],
+    }
+}
+
+/// What a stage of a load of `kind` will count to before it has started,
+/// where that is known in advance. Review S3: the build's two steps are,
+/// so a waiting build reads `0 of 2 steps` rather than `0 of 0`; a first
+/// stage's volumes and a backfill's frames are not known until they are
+/// counted, and stay 0.
+fn total_of(stage: Stage) -> u32 {
+    match stage {
+        Stage::Build => BUILD_STEPS,
+        _ => 0,
+    }
+}
+
+/// What a stage of a load of `kind` counts in.
+fn unit_of(kind: Kind, stage: Stage) -> Unit {
+    match (kind, stage) {
+        (_, Stage::Build) => Unit::Steps,
+        (Kind::Radar, _) => Unit::Frames,
+        (Kind::Made, _) => Unit::Volumes,
+    }
+}
+
+/// `weights` as whole shares of 100 that sum to exactly 100, by largest
+/// remainder, none of them 0 (a segment a client could not draw).
+fn shares(weights: &[u32]) -> Vec<u32> {
+    let n = weights.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let sum: u64 = weights.iter().map(|w| u64::from((*w).max(1))).sum();
+    let mut out = Vec::with_capacity(n);
+    let mut rest: Vec<(u64, usize)> = Vec::with_capacity(n);
+    for (i, w) in weights.iter().enumerate() {
+        let scaled = u64::from((*w).max(1)) * 100;
+        out.push(((scaled / sum) as u32).max(1));
+        rest.push((scaled % sum, i));
+    }
+    let mut total: u32 = out.iter().sum();
+    // The largest remainders take what rounding down left over.
+    rest.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut k = 0;
+    while total < 100 {
+        out[rest[k % n].1] += 1;
+        total += 1;
+        k += 1;
+    }
+    // The floor of 1 can overshoot when a load has many tiny stages; the
+    // widest segment gives the excess back.
+    while total > 100 {
+        let Some(i) = (0..n).filter(|i| out[*i] > 1).max_by_key(|i| out[*i]) else {
+            break;
+        };
+        out[i] -= 1;
+        total -= 1;
+    }
+    out
+}
+
+/// What a finished stage keeps for its segment: it draws full, with the
+/// counts it ended on.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Final {
+    done: u32,
+    total: u32,
+    unit: Unit,
 }
 
 /// `done` of `total` as a whole percentage, rounded down; 0 of nothing.
@@ -158,6 +299,19 @@ pub struct Tracker {
     published_at: Option<Instant>,
     /// A stage started, finished or ended: sent with the next broadcast.
     urgent: bool,
+    /// S35: the load in words, for the build stage's own label.
+    name: String,
+    /// S35: the frame time being built, `14:25Z` (`building`); empty until
+    /// the builder says.
+    frame_time: String,
+    /// S35: how far the whole build is (0 building, 1 sent, 2 on screen).
+    built: Built,
+    /// S35: the stages published as the current one. A stage whose work
+    /// ended before it was ever published was never drawn, and is left out
+    /// of `stages` rather than flashing past (an instant build).
+    seen: Vec<Stage>,
+    /// S35: the counts each finished stage ended on, for its full segment.
+    finals: Vec<(Stage, Final)>,
 }
 
 impl Tracker {
@@ -172,6 +326,7 @@ impl Tracker {
             published: self.published.take(),
             published_at: self.published_at,
             urgent: true,
+            name: name.to_owned(),
             ..Tracker::default()
         };
         if has_frame {
@@ -205,8 +360,29 @@ impl Tracker {
             published: self.published.take(),
             published_at: self.published_at,
             urgent: true,
+            name: std::mem::take(&mut self.name),
             ..Tracker::default()
         };
+    }
+
+    /// S35: the stage showing is over. Its segment keeps the counts it
+    /// ended on and draws full from here on.
+    fn retire(&mut self) {
+        let Some(current) = &self.current else {
+            return;
+        };
+        let (stage, ended) = (
+            current.stage,
+            Final {
+                done: current.done,
+                total: current.total,
+                unit: current.unit,
+            },
+        );
+        match self.finals.iter_mut().find(|(s, _)| *s == stage) {
+            Some((_, f)) => *f = ended,
+            None => self.finals.push((stage, ended)),
+        }
     }
 
     /// Show `stage` now, or after the stage at 100 has lingered.
@@ -216,8 +392,125 @@ impl Tracker {
             self.next = stage;
             return;
         }
+        self.retire();
         self.finished_at = stage.as_ref().filter(|s| s.percent >= 100).map(|_| now);
         self.current = stage;
+    }
+
+    /// S35: the stage that just reached 100. The first stage's end is the
+    /// build's start, so the bar moves on to the build rather than holding
+    /// at 99 until the frame is on screen.
+    fn stage_finished(&mut self, stage: Stage, now: Instant) {
+        if stage == Stage::First {
+            self.queue_build(now);
+        }
+    }
+
+    /// S35: show `stage` now, without waiting out the 100's `LINGER`. The
+    /// stage behind it stays full in the bar, which is what the linger was
+    /// for, and holding a finished stage's last label over a wait it is no
+    /// longer part of reads as a lie (`100 % … waiting for Vara`).
+    fn hand_over(&mut self, stage: Loading, now: Instant) {
+        self.retire();
+        self.finished_at = None;
+        self.next = None;
+        self.current = Some(stage);
+        self.urgent = true;
+        if self.current.as_ref().is_some_and(|s| s.percent >= 100) {
+            self.finished_at = Some(now);
+        }
+    }
+
+    /// S35: the build stage, after the first. Nothing is queued once the
+    /// frame is already on screen (a radar's decode and send, or a frame
+    /// the tilt store made at once): the segment is then never drawn.
+    fn queue_build(&mut self, now: Instant) {
+        if self.built >= BUILD_STEPS {
+            return;
+        }
+        let stage = self.build_stage();
+        self.set_stage(Some(stage), now);
+    }
+
+    /// Review M1: the build stage as it is drawn, carrying the composite
+    /// the viewer is looking at. `state.frame` is the placeholder until
+    /// the built frame is drawn, and the build is now part of that wait,
+    /// so dropping `under` at the build's start would blank the composite
+    /// for the whole build (about ten seconds for a Nordic grid).
+    fn build_stage(&self) -> Loading {
+        Loading {
+            under: self.under.clone(),
+            ..Loading::new(
+                Stage::Build,
+                self.built,
+                BUILD_STEPS,
+                Unit::Steps,
+                self.build_label(),
+            )
+        }
+    }
+
+    /// `Nordic Rain mass: building 14:25Z`, then `… drawing 14:25Z`: the
+    /// build stage is honest about which of the two it waits on (S35).
+    fn build_label(&self) -> String {
+        let what = if self.frame_time.is_empty() {
+            "the frame"
+        } else {
+            &self.frame_time
+        };
+        let verb = if self.built >= 1 {
+            "drawing"
+        } else {
+            "building"
+        };
+        format!("{}: {verb} {what}", self.name)
+    }
+
+    /// S35: a made frame's build began (`started`), or the built frame was
+    /// sent (`started` false). The first stage's work ends when the build
+    /// begins; `shown` still ends the build.
+    pub fn building(&mut self, time: &str, started: bool, now: Instant) {
+        let showing = self.current.as_ref().map(|c| c.stage);
+        // Review NIT3: every frame of the backfill is built too, and those
+        // builds report here. Only a build the bar is actually waiting on
+        // may name the frame time or move the build's steps on; a history
+        // frame's must not overwrite either.
+        if !matches!(showing, Some(Stage::First) | Some(Stage::Build)) {
+            return;
+        }
+        if !time.is_empty() {
+            self.frame_time = time.to_owned();
+        }
+        if !started {
+            self.built = self.built.max(1);
+        }
+        match showing {
+            // Still on the first stage (or its 100 lingering): it is over,
+            // and the build takes over at once — the first segment stays
+            // full, so there is nothing left for its linger to show, and
+            // its label ("waiting for Vara") is no longer true.
+            Some(Stage::First) => {
+                self.finish(now);
+                if self.built < BUILD_STEPS {
+                    let counts = self.build_stage();
+                    self.hand_over(counts, now);
+                } else {
+                    self.next = self.next.take().filter(|n| n.stage != Stage::Build);
+                }
+            }
+            Some(Stage::Build) => {
+                let counts = Loading::new(
+                    Stage::Build,
+                    self.built,
+                    BUILD_STEPS,
+                    Unit::Steps,
+                    self.build_label(),
+                );
+                self.update(counts, now);
+            }
+            // Past it (a history frame's build), or no load: nothing.
+            _ => {}
+        }
     }
 
     /// New counts for the stage showing: taken when they say as much as or
@@ -233,12 +526,17 @@ impl Tracker {
         {
             return;
         }
-        if counts.percent >= 100 {
+        let reached = counts.percent >= 100;
+        let stage = counts.stage;
+        if reached {
             self.finished_at = Some(now);
             self.urgent = true;
         }
         let under = current.under.clone();
         self.current = Some(Loading { under, ..counts });
+        if reached {
+            self.stage_finished(stage, now);
+        }
     }
 
     fn finish(&mut self, now: Instant) {
@@ -251,18 +549,48 @@ impl Tracker {
             current.under = None;
             self.finished_at = Some(now);
             self.urgent = true;
+            let stage = current.stage;
+            self.stage_finished(stage, now);
         }
     }
 
-    /// A frame of the load reached the screen: the first stage is done.
+    /// The load's frame reached the client's timeline: the first stage and
+    /// the build are both done. S35: it no longer depends on the client
+    /// following the newest frame (`main.rs`), so a timeline scrubbed back
+    /// into the past does not freeze the bar.
     pub fn shown(&mut self, now: Instant) {
         self.first_shown = true;
-        if self
-            .current
-            .as_ref()
-            .is_some_and(|c| c.stage == Stage::First)
-        {
-            self.finish(now);
+        self.built = BUILD_STEPS;
+        // Review M1: the frame the viewer waited for is drawn, so the
+        // composite held under the placeholder is no longer needed —
+        // here, and not at the build's start.
+        self.under = None;
+        match self.current.as_ref().map(|c| c.stage) {
+            Some(Stage::First) => {
+                self.finish(now);
+                // The build was over before it was ever drawn: no segment
+                // for it (a radar's decode and send, a frame from the
+                // tilt store).
+                self.next = self.next.take().filter(|n| n.stage != Stage::Build);
+            }
+            Some(Stage::Build) => {
+                let counts = Loading::new(
+                    Stage::Build,
+                    BUILD_STEPS,
+                    BUILD_STEPS,
+                    Unit::Steps,
+                    self.build_label(),
+                );
+                self.update(counts, now);
+                self.finish(now);
+            }
+            _ => {}
+        }
+        // Review M1: whatever stage that ended on, the drawn frame has
+        // replaced the composite (`update` carries `under` forward on its
+        // own, so clearing the tracker's copy is not enough).
+        if let Some(current) = &mut self.current {
+            current.under = None;
         }
     }
 
@@ -371,32 +699,31 @@ impl Tracker {
         );
         let showing = self.current.as_ref().map(|c| c.stage);
         match (showing, report.stage) {
-            // The first stage counts on, and stays short of 100 until its
-            // frame is on screen.
-            (Some(Stage::First), Stage::First) => {
-                let capped = counts.percent.min(99);
-                self.update(
-                    Loading {
-                        percent: capped,
-                        ..counts
-                    },
-                    now,
-                );
-            }
+            // S35: the first stage counts on and reaches a true 100 when
+            // every counted radar is in. What follows it is the build's
+            // own segment, not the last percent of this one.
+            (Some(Stage::First), Stage::First) => self.update(counts, now),
             (Some(Stage::History), Stage::History) => self.update(counts, now),
-            // Never back to the first stage once past it.
-            (Some(Stage::History), Stage::First) => {}
+            // Never back to an earlier stage once past it.
+            (Some(Stage::Build) | Some(Stage::History), Stage::First) => {}
+            (Some(Stage::History), Stage::Build) | (Some(Stage::First), Stage::Build) => {}
+            (Some(Stage::Build), Stage::Build) => self.update(counts, now),
             (None, Stage::First) if self.first_shown => {}
             (None, Stage::First) => {
-                let capped = counts.percent.min(99);
                 self.set_stage(
                     Some(Loading {
-                        percent: capped,
                         under: self.under.clone(),
                         ..counts
                     }),
                     now,
                 );
+            }
+            (None, Stage::Build) => {}
+            // The fill has moved on to the backfill, so whatever the build
+            // was waiting on is over.
+            (Some(Stage::Build), Stage::History) => {
+                self.finish(now);
+                self.set_stage(Some(counts), now);
             }
             (Some(Stage::First) | None, Stage::History) => {
                 if self.finished_at.is_some() || self.current.is_none() {
@@ -404,6 +731,7 @@ impl Tracker {
                 } else {
                     // Past the first frame without seeing it: the frame
                     // went to history (a newer one was catalogued).
+                    self.retire();
                     self.current = None;
                     self.set_stage(Some(counts), now);
                 }
@@ -445,6 +773,7 @@ impl Tracker {
         if let Some(at) = self.finished_at
             && now.duration_since(at) >= LINGER
         {
+            self.retire();
             self.current = self.next.take();
             self.finished_at = None;
             self.refresh_history(now);
@@ -460,11 +789,102 @@ impl Tracker {
         if due && self.published != self.current {
             self.published = self.current.clone();
             self.published_at = Some(now);
+            if let Some(stage) = self.published.as_ref().map(|p| p.stage)
+                && !self.seen.contains(&stage)
+            {
+                self.seen.push(stage);
+            }
         }
         if due {
             self.urgent = false;
         }
-        self.published.clone()
+        let mut wire = self.published.clone()?;
+        wire.stages = self.segments(&wire);
+        Some(wire)
+    }
+
+    /// Review NIT2: the load is over — its fill has stopped (a made load)
+    /// or its backfill has ended (a radar) — so no stage still marked
+    /// waiting will ever run.
+    fn over(&self) -> bool {
+        match self.kind {
+            Kind::Made => !self.active,
+            Kind::Radar => self.ended,
+        }
+    }
+
+    /// S35: the whole load as segments, in order, for one bar. The stages
+    /// before the one showing are full, those after it are dim, and a
+    /// stage that ended before it was ever published is left out, so the
+    /// number of segments is what the load really went through. The shares
+    /// sum to 100 over the segments drawn.
+    fn segments(&self, showing: &Loading) -> Vec<Segment> {
+        let here = showing.stage.order();
+        let over = self.over();
+        let drawn: Vec<(Stage, u32)> = plan_of(self.kind)
+            .iter()
+            .copied()
+            .filter(|(stage, _)| {
+                if stage.order() > here {
+                    // Review NIT2: nothing more is coming, so a stage
+                    // still to come never will — a made load whose
+                    // backfill window was already built used to end
+                    // showing a dim history that never filled.
+                    return !over;
+                }
+                stage.order() == here || self.seen.contains(stage)
+            })
+            .collect();
+        let widths = shares(&drawn.iter().map(|(_, w)| *w).collect::<Vec<u32>>());
+        drawn
+            .iter()
+            .zip(widths)
+            .map(|(&(stage, _), share)| match stage.order().cmp(&here) {
+                std::cmp::Ordering::Less => {
+                    let ended = self
+                        .finals
+                        .iter()
+                        .find(|(s, _)| *s == stage)
+                        .map(|(_, f)| *f)
+                        .unwrap_or(Final {
+                            done: 0,
+                            total: 0,
+                            unit: unit_of(self.kind, stage),
+                        });
+                    Segment {
+                        stage,
+                        share,
+                        percent: 100,
+                        done: ended.done,
+                        total: ended.total,
+                        unit: ended.unit,
+                        state: SegmentState::Done,
+                    }
+                }
+                std::cmp::Ordering::Equal => Segment {
+                    stage,
+                    share,
+                    percent: showing.percent,
+                    done: showing.done,
+                    total: showing.total,
+                    unit: showing.unit,
+                    state: if showing.percent >= 100 {
+                        SegmentState::Done
+                    } else {
+                        SegmentState::Active
+                    },
+                },
+                std::cmp::Ordering::Greater => Segment {
+                    stage,
+                    share,
+                    percent: 0,
+                    done: 0,
+                    total: total_of(stage),
+                    unit: unit_of(self.kind, stage),
+                    state: SegmentState::Waiting,
+                },
+            })
+            .collect()
     }
 }
 
@@ -627,8 +1047,17 @@ mod tests {
         assert_eq!(t.wire(at(t0, 200)), None);
     }
 
+    /// The shape of a segment, for the assertions below.
+    fn seg(s: &Segment) -> (Stage, u32, u32, SegmentState) {
+        (s.stage, s.share, s.percent, s.state)
+    }
+
+    /// S35, the stream's reason for being: the first stage reaches a true
+    /// 100 when every counted radar is in, and the wait that follows —
+    /// the build, the frame's send, the draw — is its own segment instead
+    /// of hiding behind 99 %.
     #[test]
-    fn a_made_first_stage_never_goes_down_and_waits_for_its_frame() {
+    fn a_made_first_stage_reaches_100_and_the_build_is_its_own_segment() {
         let t0 = Instant::now();
         let mut t = Tracker::default();
         t.begin(Kind::Made, "Nordic Rain mass", false, None);
@@ -641,36 +1070,202 @@ mod tests {
         // A lower count (the target time moved) does not show.
         t.progress(report(Stage::First, 20, 80), at(t0, 2000));
         assert_eq!(t.wire(at(t0, 2000)).unwrap().percent, 36);
-        // Every volume in: 99 until the frame is on screen.
+        // Every volume in: a true 100, not 99 (S31's cap, gone).
         t.progress(report(Stage::First, 82, 82), at(t0, 3000));
-        assert_eq!(t.wire(at(t0, 3000)).unwrap().percent, 99);
-        t.shown(at(t0, 3500));
-        assert_eq!(t.wire(at(t0, 3500)).unwrap().percent, 100);
-        t.progress(report(Stage::History, 41, 123), at(t0, 3600));
-        assert_eq!(t.wire(at(t0, 4000)).unwrap().stage, Stage::First);
-        let history = t.wire(at(t0, 4600)).unwrap();
+        let full = t.wire(at(t0, 3000)).unwrap();
+        assert_eq!((full.stage, full.percent), (Stage::First, 100));
+        assert_eq!(
+            full.stages.iter().map(seg).collect::<Vec<_>>(),
+            vec![
+                (Stage::First, 55, 100, SegmentState::Done),
+                (Stage::Build, 20, 0, SegmentState::Waiting),
+                (Stage::History, 25, 0, SegmentState::Waiting),
+            ]
+        );
+        // The build says so, and takes over once the first has lingered.
+        t.building("14:25Z", true, at(t0, 3100));
+        let building = t.wire(at(t0, 4100)).unwrap();
+        assert_eq!(
+            (building.stage, building.percent, building.unit),
+            (Stage::Build, 0, Unit::Steps)
+        );
+        assert_eq!(building.label, "Nordic Rain mass: building 14:25Z");
+        assert_eq!(
+            building.stages.iter().map(seg).collect::<Vec<_>>(),
+            vec![
+                (Stage::First, 55, 100, SegmentState::Done),
+                (Stage::Build, 20, 0, SegmentState::Active),
+                (Stage::History, 25, 0, SegmentState::Waiting),
+            ],
+            "the stage behind it stays full"
+        );
+        // Built and sent: half the segment, and the label says which of
+        // the two it is waiting on.
+        t.building("14:25Z", false, at(t0, 4200));
+        let drawing = t.wire(at(t0, 5200)).unwrap();
+        assert_eq!((drawing.percent, drawing.done), (50, 1));
+        assert_eq!(drawing.label, "Nordic Rain mass: drawing 14:25Z");
+        t.shown(at(t0, 5300));
+        let drawn = t.wire(at(t0, 5300)).unwrap();
+        assert_eq!(
+            (drawn.stage, drawn.percent, drawn.done),
+            (Stage::Build, 100, 2)
+        );
+        t.progress(report(Stage::History, 41, 123), at(t0, 5400));
+        assert_eq!(t.wire(at(t0, 5400)).unwrap().stage, Stage::Build, "lingers");
+        let history = t.wire(at(t0, 6400)).unwrap();
         assert_eq!((history.stage, history.percent), (Stage::History, 33));
-        // Never back to the first stage.
-        t.progress(report(Stage::First, 1, 2), at(t0, 6000));
-        assert_eq!(t.wire(at(t0, 6000)).unwrap().stage, Stage::History);
-        t.progress(None, at(t0, 7000));
-        assert_eq!(t.wire(at(t0, 7000)).unwrap().percent, 100);
-        assert_eq!(t.wire(at(t0, 8100)), None);
+        assert_eq!(
+            history.stages.iter().map(seg).collect::<Vec<_>>(),
+            vec![
+                (Stage::First, 55, 100, SegmentState::Done),
+                (Stage::Build, 20, 100, SegmentState::Done),
+                (Stage::History, 25, 33, SegmentState::Active),
+            ]
+        );
+        // Never back to an earlier stage.
+        t.progress(report(Stage::First, 1, 2), at(t0, 7500));
+        assert_eq!(t.wire(at(t0, 7500)).unwrap().stage, Stage::History);
+        t.progress(None, at(t0, 8500));
+        assert_eq!(t.wire(at(t0, 8500)).unwrap().percent, 100);
+        assert_eq!(t.wire(at(t0, 9600)), None);
         // Over: a later report starts nothing.
-        t.progress(report(Stage::History, 1, 41), at(t0, 9000));
-        assert_eq!(t.wire(at(t0, 10_000)), None);
+        t.progress(report(Stage::History, 1, 41), at(t0, 10_500));
+        assert_eq!(t.wire(at(t0, 11_500)), None);
+    }
+
+    /// Review S1: a radar's load has no build stage at all — its frame is
+    /// a decode and a send its poller already did — so the divisions do
+    /// not move under the viewer. Before the review it planned one, drew
+    /// it dim, then dropped it, shifting 40/10/50 to 44/56 in the load's
+    /// first second.
+    #[test]
+    fn a_radars_load_is_two_segments_from_the_first_tick() {
+        let t0 = Instant::now();
+        let mut t = Tracker::default();
+        t.begin(Kind::Radar, "Vara Reflectivity 0.5°", false, None);
+        let first = t.wire(t0).unwrap();
+        let shape = vec![
+            (Stage::First, 44, 0, SegmentState::Active),
+            (Stage::History, 56, 0, SegmentState::Waiting),
+        ];
+        assert_eq!(first.stages.iter().map(seg).collect::<Vec<_>>(), shape);
+        // The frame arrives and is on screen in one go.
+        t.shown(at(t0, 200));
+        let shown = t.wire(at(t0, 200)).unwrap();
+        assert_eq!(shown.percent, 100);
+        assert_eq!(
+            shown.stages.iter().map(|s| s.stage).collect::<Vec<_>>(),
+            vec![Stage::First, Stage::History],
+            "the divisions have not moved"
+        );
+        t.plan("Vara Reflectivity 0.5°", 11, at(t0, 300));
+        let history = t.wire(at(t0, 1400)).unwrap();
+        assert_eq!(history.stage, Stage::History);
+        assert_eq!(
+            history.stages.iter().map(seg).collect::<Vec<_>>(),
+            vec![
+                (Stage::First, 44, 100, SegmentState::Done),
+                (Stage::History, 56, 0, SegmentState::Active),
+            ],
+            "the same two segments, 44 + 56 = 100"
+        );
+    }
+
+    /// S35: a load that opened on a frame already on screen has no first
+    /// stage and no build, so its bar is the history alone, full width.
+    #[test]
+    fn a_history_only_load_is_one_full_width_segment() {
+        let t0 = Instant::now();
+        let mut t = Tracker::default();
+        t.begin(Kind::Radar, "Vara Rain mass", true, None);
+        t.plan("Vara Rain mass", 4, at(t0, 100));
+        let only = t.wire(at(t0, 100)).unwrap();
+        assert_eq!(
+            only.stages.iter().map(seg).collect::<Vec<_>>(),
+            vec![(Stage::History, 100, 0, SegmentState::Active)]
+        );
+    }
+
+    /// S35: the segments are the load, not the client's view of it. The
+    /// build ends when the frame reaches the timeline, which `main.rs`
+    /// reports whether or not the timeline is following the newest frame,
+    /// so a viewer scrubbed back still sees the bar advance.
+    #[test]
+    fn the_build_ends_without_the_client_looking_at_the_frame() {
+        let t0 = Instant::now();
+        let mut t = Tracker::default();
+        t.begin(Kind::Made, "Nordic Rain mass", false, None);
+        t.progress(report(Stage::First, 82, 82), at(t0, 1000));
+        t.building("14:25Z", true, at(t0, 1100));
+        assert_eq!(t.wire(at(t0, 2100)).unwrap().stage, Stage::Build);
+        t.building("14:25Z", false, at(t0, 2200));
+        // `shown` is the only signal, and it no longer waits on following.
+        t.shown(at(t0, 2300));
+        assert_eq!(t.wire(at(t0, 2300)).unwrap().percent, 100);
+        t.progress(report(Stage::History, 2, 4), at(t0, 2400));
+        assert_eq!(t.wire(at(t0, 3400)).unwrap().stage, Stage::History);
     }
 
     #[test]
-    fn under_goes_with_the_first_stage() {
+    fn the_shares_sum_to_100_whatever_the_weights() {
+        assert_eq!(shares(&[]), Vec::<u32>::new());
+        assert_eq!(shares(&[7]), vec![100]);
+        assert_eq!(shares(&[55, 20, 25]), vec![55, 20, 25]);
+        assert_eq!(shares(&[40, 50]), vec![44, 56]);
+        assert_eq!(shares(&[1, 1, 1]), vec![34, 33, 33]);
+        for weights in [
+            vec![40u32, 10, 50],
+            vec![55, 20, 25],
+            vec![10, 50],
+            vec![0, 0, 1],
+            vec![1; 7],
+        ] {
+            let got = shares(&weights);
+            assert_eq!(got.iter().sum::<u32>(), 100, "{weights:?} -> {got:?}");
+            assert!(got.iter().all(|s| *s >= 1), "{weights:?} -> {got:?}");
+        }
+    }
+
+    /// Review M1: `under` belongs to the first stage **and the build**. A
+    /// composite's product draws the composite's own frame where the
+    /// placeholder is, and `state.frame` stays the placeholder until the
+    /// built frame is drawn — so dropping `under` when the build starts
+    /// blanked the map for the whole build (about ten seconds for a
+    /// Nordic grid). It goes at `shown`, with the frame that replaces it.
+    #[test]
+    fn under_goes_with_the_first_stage_and_the_build() {
         let t0 = Instant::now();
         let mut t = Tracker::default();
         let frame: Frame = serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
         t.begin(Kind::Made, "Nordic Column max", false, Some(frame));
         t.progress(report(Stage::First, 3, 10), at(t0, 1000));
         assert!(t.wire(at(t0, 1000)).unwrap().under.is_some());
-        t.shown(at(t0, 1100));
-        assert!(t.wire(at(t0, 1100)).unwrap().under.is_none());
+        // The build starts: the first stage is over, the composite is not.
+        t.building("14:25Z", true, at(t0, 1100));
+        let building = t.wire(at(t0, 1100)).unwrap();
+        assert_eq!(building.stage, Stage::Build);
+        assert!(
+            building.under.is_some(),
+            "the composite stays drawn through the build"
+        );
+        t.building("14:25Z", false, at(t0, 2200));
+        let drawing = t.wire(at(t0, 2200)).unwrap();
+        assert_eq!((drawing.stage, drawing.percent), (Stage::Build, 50));
+        assert!(drawing.under.is_some(), "and through the send");
+        // The built frame is drawn: it replaces the composite.
+        t.shown(at(t0, 2300));
+        assert!(t.wire(at(t0, 2300)).unwrap().under.is_none());
+        // And a first stage that reaches 100 on its own count hands the
+        // composite to the build as well.
+        let frame: Frame = serde_json::from_str(include_str!("../data/fixture.json")).unwrap();
+        let mut t = Tracker::default();
+        t.begin(Kind::Made, "Nordic Column max", false, Some(frame));
+        t.progress(report(Stage::First, 10, 10), at(t0, 3000));
+        assert_eq!(t.wire(at(t0, 3000)).unwrap().percent, 100);
+        let queued = t.wire(at(t0, 4100)).unwrap();
+        assert_eq!(queued.stage, Stage::Build);
+        assert!(queued.under.is_some(), "queued behind the first stage too");
     }
 
     #[test]
@@ -688,16 +1283,21 @@ mod tests {
 
     #[test]
     fn the_wire_serializes_as_documented() {
-        let l = Loading::new(
-            Stage::First,
-            52,
-            82,
-            Unit::Volumes,
-            "Nordic Rain mass: 26 of 40 radars in for 14:25Z (1 silent)".into(),
+        let t0 = Instant::now();
+        let mut t = Tracker::default();
+        t.begin(Kind::Made, "Nordic Rain mass", false, None);
+        t.progress(
+            Some(Progress {
+                stage: Stage::First,
+                done: 52,
+                total: 82,
+                label: "Nordic Rain mass: 26 of 40 radars in for 14:25Z (1 silent)".into(),
+            }),
+            at(t0, 1000),
         );
         assert_eq!(
-            serde_json::to_string(&l).unwrap(),
-            r#"{"stage":"first","percent":63,"done":52,"total":82,"unit":"volumes","label":"Nordic Rain mass: 26 of 40 radars in for 14:25Z (1 silent)"}"#
+            serde_json::to_string(&t.wire(at(t0, 1000)).unwrap()).unwrap(),
+            r#"{"stage":"first","percent":63,"done":52,"total":82,"unit":"volumes","label":"Nordic Rain mass: 26 of 40 radars in for 14:25Z (1 silent)","stages":[{"stage":"first","share":55,"percent":63,"done":52,"total":82,"unit":"volumes","state":"active"},{"stage":"build","share":20,"percent":0,"done":0,"total":2,"unit":"steps","state":"waiting"},{"stage":"history","share":25,"percent":0,"done":0,"total":0,"unit":"volumes","state":"waiting"}]}"#
         );
     }
 }

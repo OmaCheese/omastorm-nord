@@ -271,18 +271,15 @@ FocusScope {
                     Layout.fillWidth: true
                     implicitHeight: 14
                     // S31: the load's progress, a thin bar under the ticks.
-                    Rectangle {
-                        visible: !!connection.loading
+                    // S35: one segment per stage of the load, the earlier
+                    // ones staying full. The strip has no room for the
+                    // stage names; the label under it names the one
+                    // running, as it did.
+                    LoadingBar {
+                        loading: connection.loading
+                        theme: card.theme
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                        anchors.bottomMargin: -3
-                        height: 2
-                        color: Qt.alpha(card.theme.accent, .18)
-                        Rectangle {
-                            height: parent.height
-                            width: connection.loading ? Math.round(parent.width * Math.max(0, Math.min(100, connection.loading.percent)) / 100) : 0
-                            color: card.theme.accent
-                            Behavior on width { NumberAnimation { duration: 300 } }
-                        }
+                        anchors.bottomMargin: -1 - implicitHeight
                     }
                     Repeater {
                         model: card.slots

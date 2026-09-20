@@ -10,7 +10,7 @@
 
 Open-source, live weather radar for the Omarchy desktop. Beta.
 
-[![Omastorm window: live take with loop, search, keys, and treatments](https://github.com/<owner>/omastorm-se/releases/download/v26.9.0/omastorm-preview.gif)](https://github.com/<owner>/omastorm-se/releases/download/v26.9.0/omastorm-demo.mp4)
+[![Omastorm window: live take with loop, search, keys, and treatments](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/omastorm-preview.gif)](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/omastorm-demo.mp4)
 
 Live over Vara, in Västra Götaland. The media is made by
 `scripts/capture-readme.sh` and `scripts/capture-demo.sh`.
@@ -20,9 +20,9 @@ the actual scan time. Click the map (or press Enter) for the full window: every
 SMHI radar and the national composite, reflectivity at native resolution, a
 timeline you can scrub, all drawn in your Omarchy theme.
 
-![The Omastorm window, live](https://github.com/<owner>/omastorm-se/releases/download/v26.9.0/window-live.png)
+![The Omastorm window, live](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/window-live.png)
 
-![The Omastorm popover, live](https://github.com/<owner>/omastorm-se/releases/download/v26.9.0/popover.png)
+![The Omastorm popover, live](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/popover.png)
 
 A headless Rust engine fetches and decodes SMHI's ODIM HDF5 volumes and
 national composite and prepares GPU-ready radar textures. An Omarchy plugin built with Quickshell/QML is the
@@ -54,11 +54,8 @@ client: it displays those textures in the bar popover and full window.
 
 Omarchy 4 on x86_64 and aarch64.
 
-From a contributor's checkout instead: `mise setup`, then `mise plugin-link`
-links the plugin to it and the bar runs the checkout's own engine build.
-
 ```sh
-omarchy plugin add https://github.com/<owner>/omastorm-se.git --enable
+omarchy plugin add https://github.com/OmaCheese/omastorm-se.git --enable
 ```
 
 This clones the plugin into `~/.config/omarchy/plugins/rb.omastorm-se` and
@@ -67,6 +64,9 @@ the pinned engine binary from this repository's GitHub Releases, verifies its
 sha256 against `engine/release.pin`, and installs it under
 `~/.local/share/omastorm-se/bin`. Runtime files, cached data, remembered view state, and configuration stay
 inside Omastorm's own directories.
+
+From a checkout instead, to work on it: `mise setup`, then `mise plugin-link`
+points the bar at the checkout, which runs its own engine build.
 
 On first use, Omastorm uses your Omarchy weather location when available.
 Otherwise, choose a place manually or click **Use approximate location** to
@@ -233,7 +233,7 @@ and opening the popover again retries. To restart the engine by hand:
 ```
 
 The next popover or window starts it again. Please attach both logs to a
-[bug report](https://github.com/<owner>/omastorm-se/issues).
+[bug report](https://github.com/OmaCheese/omastorm-se/issues).
 
 ## Remove
 
@@ -251,7 +251,7 @@ Then delete the `o.bind` line if you added one.
 
 This is a beta. Bugs, rough edges, and ideas about the radars, the map, or
 anything else this fork changed go to
-[its own issues](https://github.com/<owner>/omastorm-se/issues). Something that
+[its own issues](https://github.com/OmaCheese/omastorm-se/issues). Something that
 upstream Omastorm has too belongs
 [upstream](https://github.com/wesleygrimes/omastorm/issues), where the fix helps
 both.

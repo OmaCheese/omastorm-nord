@@ -3,9 +3,9 @@
   "id": "rb.omastorm-se",
   "name": "Omastorm SE",
   "version": "26.9.0",
-  "author": "Wes Grimes",
+  "author": "OmaCheese",
   "license": "MIT",
-  "homepage": "https://omastorm.com",
+  "homepage": "https://github.com/OmaCheese/omastorm-se",
   "description": "Live Nordic and Iberian weather radar for the Omarchy desktop, a fork of Omastorm",
   "kinds": [
     "bar-widget",

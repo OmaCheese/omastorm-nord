@@ -102,7 +102,7 @@ unlink() {
     mv -- "$backup" "$target" || die "Removed the link but could not restore $backup"
     printf 'Restored installed clone at %s\n' "$target"
   else
-    printf 'Unlinked %s. No clone to restore; omarchy plugin add https://github.com/wesleygrimes/omastorm --enable\n' "$target"
+    printf 'Unlinked %s. No clone to restore; omarchy plugin add https://github.com/OmaCheese/omastorm-se --enable\n' "$target"
   fi
   rescan
 }

@@ -2,7 +2,8 @@
 
 The pictures the README shows are not in the repository. The plugin is a full
 clone of this repository, so media travels as assets on the plugin's GitHub
-Release (`v0.1.0`), and the README links to them by URL.
+Release (`v26.9.0` for this fork's first), and the README links to them by
+URL.
 
 Regenerate from a working desktop OpenGL session:
 

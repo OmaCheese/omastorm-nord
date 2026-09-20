@@ -143,7 +143,7 @@ are hidden by default and the legend says so; `w` shows them.
 | `Rain mass` | the water in the column, kg/m² | over about 25 heavy rain; very high in summer usually means hail, which reflects far more than rain. A sudden collapse over a cell suggests a downburst |
 | `Lowest beam` (composites) | which radar sees a point lowest | a data-quality map: where the composite sees near the ground, and where all of it is aloft |
 | A composite (`Sweden`, `Nordic`) | the provider’s combined picture | country-wide rain at a glance; each point may come from a different radar at a different height |
-| `My mosaic` | only the radars you pick | leaves out a radar whose distant, high coverage misleads |
+| `My mosaic` | only the radars you pick | leaves out a radar whose distant, high coverage misleads. Rain mass over your own set too |
 | A section, and a profile on long press | a vertical slice, and one column’s numbers | structure: a flat layer with a bright band at 1–3 km is steady rain melting; a narrow column to 8–12 km is convection; echo that stops short of the ground is rain evaporating on the way down |
 | `Relief` | `Storm height` drawn as a lit surface | the same data made readable: cells stand up, flat rain looks flat |
 

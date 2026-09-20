@@ -342,8 +342,8 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 {"type":"profile","lat":58.70,"lon":13.40}
 ```
 
-- `set_mosaic` (S25) chooses My mosaic's radars, each one's reach and the
-  combine rule. The rules are in [My mosaic](#my-mosaic).
+- `set_mosaic` (S25) chooses My mosaic's radars and the combine rule (S37
+  took the per-radar reach out). The rules are in [My mosaic](#my-mosaic).
 - `set_section` (S24c) sets, moves or (with neither point) clears the
   vertical cut in `state.section`; `profile` (S24c) asks for one column's
   values, answered with `profile` to the sender only, like `places`. Both
@@ -707,8 +707,9 @@ made from them; the lowest angle (`REF`, elevation index 0) is what every
 frame was before S20, and stays the default. On a composite `REF` is the
 provider's composite itself; since S24b `sweden` and `nordic` also offer
 products made from their radars ([The composites'
-products](#the-composites-products)). My mosaic has none: its set's rule
-says what it shows.
+products](#the-composites-products)). My mosaic offers `REF` — its set's rule says what that shows — and, since
+S37, `VIL` (Rain mass), made from the set's own radars over the box their
+ranges cover, exactly as a composite's product is made.
 
 `hello.products` is the vocabulary, in the order a chooser lists them:
 
@@ -995,16 +996,18 @@ scan ends at ~184 km (367 gates of 500 m), the others at 250 km.
 Additive since S25 (still version 2). The providers' composites (`sweden`,
 `nordic`) have every radar of their network baked in. My mosaic is a
 composite the engine makes itself, from the **lowest scan** of up to 12
-radars a client chooses, of any provider, so a radar can be left out or
-trimmed (plan §S25: over the Skagerrak Hurum's beam is 3–5 km up where
-Vara's and Sindal's are under 2 km).
+radars a client chooses, of any provider, so a radar can be left out
+(plan §S25: over the Skagerrak Hurum's beam is 3–5 km up where Vara's and
+Sindal's are under 2 km).
 
 **The station.** `hello.sites` lists `mymosaic`, "My mosaic", after the
 composites: `kind` `grid`, `provider` `mosaic`, `country` empty, `rangeKm`
-0, no products and no angles. It is selected with `select_site` like any
-composite and never a hand-off target. `hello.mosaic` (above) names it and
-the limits: `maxSites` radars, a reach of at least `minReachKm`, and the
-combine `rules` in the order a chooser lists them, with display names.
+0, `products` `["REF","VIL"]` (S37) and no angles. It is selected with
+`select_site` like any composite and never a hand-off target.
+`hello.mosaic` (above) names it and the limits: `maxSites` radars, the
+combine `rules` in the order a chooser lists them, with display names, and
+`minReachKm`, which S37 left in place for clients written against S25 and
+which now bounds nothing.
 
 **`set_mosaic`.**
 
@@ -1017,14 +1020,13 @@ combine `rules` in the order a chooser lists them, with display names.
   station id or alias from `hello.sites` (as in `select_site`); it must be
   a radar (`kind` `polar`). Reference sites are not stations, so their ids
   are unknown.
-- `reachKm`: how far from the antenna this radar counts, in km of ground
-  distance (the great circle on the 6,371 km sphere, as the lookup rule
-  measures it). At least `minReachKm`; absent, or at or past the radar's
-  `rangeKm`, it is the radar's full range. The same unit, range and meaning
-  as S29's per-radar reach slider, with one difference: S29's reach is a
-  client's view clip of one radar on screen, while this reach is applied by
-  the engine when it combines, so a trimmed radar's area falls to its
-  neighbours.
+- `reachKm`: **ignored since S37** (the human, 2026-09-20: "remove the
+  range tuning"). Every chosen radar counts as far as its own `rangeKm`.
+  The field is still accepted, so a set kept by an older client loads
+  instead of failing, and is still refused when it is not a number; it no
+  longer trims anything, no longer makes two sets different, and is
+  echoed back in `state.mosaic` as the radar's full range. S29's per-radar
+  reach slider went at the same time.
 - `rule`: `lowest` (the default when absent), `strongest`, or (S30)
   `height` (below).
 - `heightM` and `above` (S30, with `height` only): the slice's height in

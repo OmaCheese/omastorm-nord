@@ -68,7 +68,10 @@ use tokio::time::timeout;
 pub const STATION: &str = "mymosaic";
 /// The most radars a set holds.
 pub const MAX_SITES: usize = 12;
-/// The shortest reach a radar may be given, km.
+/// The shortest reach a radar could be given, km. S37 took reach tuning
+/// out — every chosen radar reaches as far as it reaches — but the value
+/// stays in `hello.mosaic` so a client written against S25 still reads the
+/// field it expects. Nothing trims a radar by it any more.
 pub const MIN_REACH_KM: f64 = 25.0;
 /// Frame times a selection builds back, counting the newest: an hour.
 pub const BACKFILL: usize = 12;
@@ -508,34 +511,27 @@ pub fn choose_with(
         if chosen.iter().any(|s| s.id == station.id) {
             return Err(format!("{} is in the list twice.", station.name));
         }
+        // S37 (the human, 2026-09-20: "remove the range tuning"): every
+        // chosen radar reaches as far as it reaches. `reachKm` is still
+        // accepted so a set kept by an older client loads instead of
+        // failing, and still refused when it is not a number, but the
+        // value no longer trims anything.
         let full = station.range_km;
-        let reach_km = match reach {
-            None | Some(Value::Null) => full,
-            Some(value) => {
-                let km = value
-                    .as_f64()
-                    .filter(|km| km.is_finite())
-                    .ok_or_else(|| format!("reachKm of {id} must be a number of km."))?;
-                if km < MIN_REACH_KM {
-                    return Err(format!(
-                        "reachKm {km} of {id} is under the {MIN_REACH_KM} km minimum."
-                    ));
-                }
-                if km >= full {
-                    full
-                } else {
-                    (km * 10.0).round() / 10.0
-                }
-            }
-        };
+        if let Some(value) = reach.filter(|v| !matches!(v, Value::Null)) {
+            value
+                .as_f64()
+                .filter(|km| km.is_finite())
+                .ok_or_else(|| format!("reachKm of {id} must be a number of km."))?;
+        }
+        let reach_km = full;
         chosen.push(SiteReach {
             id: station.id.clone(),
             reach_km,
         });
     }
     // Review N4: a height above the ground over a radar with no terrain
-    // under it (a Spanish one) is above sea level, as `set_product` keeps
-    // it, so `state.mosaic` says what is made.
+    // under it is above sea level, as `set_product` keeps it, so
+    // `state.mosaic` says what is made.
     let bare = chosen.iter().any(|c| {
         crate::providers::resolve(sites, &c.id).is_some_and(|s| !crate::products::has_terrain(s))
     });
@@ -818,6 +814,31 @@ impl Layout {
             want,
         };
         Layout::place(&set, sites, Some(bbox), job)
+    }
+
+    /// My mosaic's own product (S37): the chosen set's radars, over the box
+    /// of their reach circles like `new`, but making `want` from their
+    /// volumes the way a composite's product is made (`grid`). The set's
+    /// rule is not consulted — a maximum over the column is the same
+    /// whichever rule would have picked the lowest scan — so a height set
+    /// switched to Rain mass builds the rain mass, not a slice.
+    pub fn mine_grid(
+        set: &Set,
+        station: &Station,
+        want: Want,
+        sites: &[Station],
+    ) -> Result<Layout, String> {
+        let flat = Set {
+            sites: set.sites.clone(),
+            rule: Rule::Lowest,
+            height_m: None,
+            above: None,
+        };
+        let job = Job::Grid {
+            station: Box::new(station.clone()),
+            want,
+        };
+        Layout::place(&flat, sites, None, job)
     }
 
     /// `new`'s placement over `bbox` when given, else over the box of the
@@ -3086,6 +3107,26 @@ pub async fn poll_grid(
     run(site, name, place, events, cached).await;
 }
 
+/// My mosaic's own product (S37): `main.rs` starts it while My mosaic is
+/// selected showing something other than its lowest scan, and aborts it on
+/// any switch or a new set. The radars are the set's; the frames are My
+/// mosaic's, under the product's own catalog ring.
+pub async fn poll_mine_grid(
+    set: Set,
+    station: Station,
+    want: Want,
+    sites: Vec<Station>,
+    events: Sender<Event>,
+    cached: Vec<i64>,
+) {
+    if set.is_empty() {
+        return std::future::pending().await;
+    }
+    let (site, name) = (station.id.clone(), station.name.clone());
+    let place = move || Layout::mine_grid(&set, &station, want, &sites);
+    run(site, name, place, events, cached).await;
+}
+
 /// Place the radars, then poll them and build the frames of `site` (named
 /// `name` in words) until aborted.
 async fn run(
@@ -3473,8 +3514,9 @@ mod tests {
             .iter()
             .map(|s| (s.id.as_str(), s.reach_km))
             .collect();
-        // An alias names the radar; a reach at or past the range is full.
-        assert_eq!(got, [("vara", 240.0), ("nohur", 150.0), ("dksin", 238.0)]);
+        // An alias names the radar. S37: a reachKm sent by an older client
+        // is accepted and ignored — every radar reaches its full range.
+        assert_eq!(got, [("vara", 240.0), ("nohur", 240.0), ("dksin", 238.0)]);
         // The same set in another order is the same set, and names itself
         // the same; another reach or rule is another set.
         let again = choose(
@@ -3493,6 +3535,8 @@ mod tests {
             crate::products::variant_of(&format!("mymosaic-x-{}", set.variant())),
             set.variant()
         );
+        // S37: a different reachKm no longer makes a different set, because
+        // no reach is applied; the same radars are the same mosaic.
         let trimmed = choose(
             &sites,
             &[
@@ -3503,8 +3547,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(!set.same(&trimmed));
-        assert_ne!(set.variant(), trimmed.variant());
+        assert!(set.same(&trimmed));
+        assert_eq!(set.variant(), trimmed.variant());
         let strongest = choose(
             &sites,
             &[
@@ -3519,7 +3563,7 @@ mod tests {
         // state.mosaic as sent.
         assert_eq!(
             serde_json::to_value(&set).unwrap(),
-            serde_json::json!({"sites":[{"id":"vara","reachKm":240.0},{"id":"nohur","reachKm":150.0},
+            serde_json::json!({"sites":[{"id":"vara","reachKm":240.0},{"id":"nohur","reachKm":240.0},
                                         {"id":"dksin","reachKm":238.0}],"rule":"lowest"})
         );
         // Refusals.
@@ -3543,7 +3587,15 @@ mod tests {
             )
             .contains("twice")
         );
-        assert!(error(&[arg("vara", Some(24.9))], None).contains("minimum"));
+        // S37: a reachKm under the old minimum is no longer an error, it
+        // is simply ignored like any other reach.
+        assert_eq!(
+            choose(&sites, &[arg("vara", Some(24.9))], None)
+                .unwrap()
+                .sites[0]
+                .reach_km,
+            240.0
+        );
         let text = SiteArg::Site {
             id: "vara".into(),
             reach_km: Some(serde_json::json!("far")),

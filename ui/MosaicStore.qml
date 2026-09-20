@@ -3,12 +3,12 @@ import Quickshell
 import Quickshell.Io
 import "Mosaic.js" as Mosaic
 
-// My mosaic's last set (S25): the radars, each one's reach and the rule, as
+// My mosaic's last set (S25): the radars and the rule, as
 // state.mosaic last named them, in mosaic.json beside state.json. The
 // session sends it again to an engine whose state.mosaic is empty (a
 // restarted engine), once per connection, and the window's checklist starts
 // from it. OMASTORM_STATE puts the file beside that one; OMASTORM_CONFIG
-// without OMASTORM_STATE keeps it in memory, as Reach.qml does.
+// without OMASTORM_STATE keeps it in memory.
 QtObject {
     id: root
     readonly property string path: {
@@ -17,12 +17,14 @@ QtObject {
         if (Quickshell.env("OMASTORM_CONFIG")) return "";
         return (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omastorm-se/mosaic.json";
     }
-    /// {sites: [{id, reachKm}], rule}, and for a height set heightM and
+    /// {sites: [{id}], rule}, and for a height set heightM and
     /// above (S30), or null before any.
     property var set: null
     property string error: ""
     function text(value) {
-        var kept = { sites: value.sites.map(s => ({ id: s.id, reachKm: s.reachKm })), rule: value.rule || "lowest" };
+        // S37: no reach is kept; a set written by an older build still
+        // loads, its reachKm simply ignored here and by the engine.
+        var kept = { sites: value.sites.map(s => ({ id: s.id })), rule: value.rule || "lowest" };
         if (kept.rule === "height") {
             kept.heightM = Mosaic.validHeight(value.heightM) ? value.heightM : 2000;
             kept.above = value.above === "ground" ? "ground" : "sea";
@@ -39,7 +41,7 @@ QtObject {
         pending = next;
         if (!writer.running) flush();
     }
-    // The next write, held while one still runs (Reach.qml's rule).
+    // The next write, held while one still runs.
     property string pending: ""
     function flush() {
         if (!pending) return;

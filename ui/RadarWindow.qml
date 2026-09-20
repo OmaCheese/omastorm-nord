@@ -354,17 +354,6 @@ Item {
                 : {type: "set_product", product: "CAPPI", heightM: app.pendingHeight})
     }
     Connections { target: engine; function onRejectionChanged() { if (engine.rejection) app.pendingHeight = 0; } }
-    // S29: the reach, remembered per radar (Reach.qml): 25 km steps from
-    // 25 km up to the whole sweep, which forgets it.
-    Reach { id: reachStore }
-    readonly property real reachKm: reachStore.km(app.siteId)
-    // A radar frame on screen: not a composite, not the loading placeholder.
-    readonly property bool reachable: map.drawable && !map.grid && app.siteId !== ""
-    function stepReach(delta) {
-        var full = Math.round(map.coverageKm), now = reachKm > 0 && reachKm < full ? reachKm : full;
-        var next = delta < 0 ? Math.max(25, Math.ceil(now / 25) * 25 - 25) : Math.floor(now / 25) * 25 + 25;
-        reachStore.set(app.siteId, next >= full ? 0 : next);
-    }
     function run(action) {
         switch (action) {
         case "search": treatmentMenu.close(); picker.show(""); break;
@@ -401,11 +390,11 @@ Item {
         function productChooser(open: bool): void { if (open) productMenu.show(); else productMenu.close(); }
         function products(): string {
             return JSON.stringify({label: app.productLabel, rows: app.productRows, menu: productMenu.opened,
-                                   heightM: app.heightM, reachKm: app.reachKm, coverageKm: map.coverageKm, rings: map.rings, ringNote: map.ringNote});
+                                   heightM: app.heightM, coverageKm: map.coverageKm, rings: map.rings, ringNote: map.ringNote});
         }
-        // S29: the menu's height and reach steps, for checks and captures.
+        // S29: the menu's height steps, for checks and captures (S37 took
+        // the reach steps out).
         function setHeight(m: int): void { if (app.heightM > 0) { app.pendingHeight = m; heightSend.restart(); } }
-        function setReach(km: int): void { reachStore.set(app.siteId, km); }
         function field(name: string): string { var value = JSON.parse(status())[name]; return value === undefined ? "" : String(value); }
         function status(): string {
             return JSON.stringify({sheet: sheet.open, menu: treatmentMenu.opened, treatment: app.treatment, weakFloor: app.weakFloor === null ? "off" : app.weakFloor, error: app.configError,
@@ -490,7 +479,6 @@ Item {
         function close(): void { mosaicPicker.close(); }
         function accept(): void { mosaicPicker.accept(); }
         function toggle(id: string): void { mosaicPicker.toggle(id); }
-        function step(id: string, delta: int): void { if (id) mosaicPicker.stepReach(id, delta); else mosaicPicker.stepAll(delta); }
         function rule(id: string): void { mosaicPicker.setRule(id); }
         // S30: the height rule's height (metres) and what it is above.
         function height(m: int): void { mosaicPicker.setHeight(m); }
@@ -816,11 +804,14 @@ Item {
                             MouseArea {
                                 id: productTextArea
                                 anchors.fill: parent
-                                enabled: app.productRows.length > 0 || (app.mosaicShown && !!engine.mosaic)
+                                enabled: app.productRows.length > 0
                                 hoverEnabled: true
                                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                onClicked: app.mosaicShown ? mosaicPicker.show()
-                                    : productMenu.opened ? productMenu.close() : productMenu.show()
+                                // S37: My mosaic has products of its own now
+                                // (REF and Rain mass), so this opens the
+                                // product menu for it too; its radar list is
+                                // on the RADARS chip.
+                                onClicked: productMenu.opened ? productMenu.close() : productMenu.show()
                             }
                         }
                         // The source's credit, verbatim (SMHI, MET Norway, FMI, DMI, OPERA).
@@ -879,7 +870,6 @@ Item {
                     labelSize: win.compact ? 10 : 12
                     locked: app.locked
                     product: app.state ? app.state.product : null
-                    reachKm: app.reachKm
                     relief: app.relief
                     interactive: !app.store.needsLocation && !locationPicker.open
                     onNavigated: (lat, lon, spanKm) => app.store.userNavigated(lat, lon, spanKm)
@@ -1242,6 +1232,33 @@ Item {
                 }
                 Item { width: 6 }
                 Item { Layout.fillWidth: true }
+                // The radars chip (S37, the human 2026-09-20: "i cant see
+                // the list until i click on the product"): while My mosaic
+                // is shown, its checklist has a control of its own instead
+                // of hiding behind the product label, which since S37 opens
+                // the product menu like every other station's.
+                Button {
+                    id: radarsChip
+                    visible: app.mosaicShown
+                    implicitHeight: 30
+                    implicitWidth: contentItem.implicitWidth + 18
+                    padding: 0
+                    opacity: mosaicPicker.open || hovered || activeFocus ? 1 : .7
+                    onClicked: mosaicPicker.open ? mosaicPicker.close() : mosaicPicker.show()
+                    contentItem: RowLayout {
+                        spacing: 6
+                        Item { Layout.fillWidth: true }
+                        LabelText { text: "RADARS · " + ((app.mosaicSet && app.mosaicSet.sites.length) || 0) }
+                        Glyph { glyph: "chevron"; implicitWidth: 12 }
+                        Item { Layout.fillWidth: true }
+                    }
+                    background: Rectangle {
+                        color: mosaicPicker.open || radarsChip.hovered || radarsChip.activeFocus ? Qt.alpha(app.theme.accent, .18) : "transparent"
+                        border.width: 1
+                        border.color: mosaicPicker.open || radarsChip.activeFocus ? app.theme.accent : Qt.alpha(app.theme.foreground, .22)
+                    }
+                }
+                Item { width: 6; visible: radarsChip.visible }
                 // The product chip (S20): the engine's product for a live
                 // radar; click opens the station's products and angles.
                 Button {
@@ -1334,7 +1351,6 @@ Item {
             engine: engine
             theme: app.theme
             store: app.store.mosaicStore
-            reach: reachStore
             centerLat: map.centerLat
             centerLon: map.centerLon
             compact: win.compact
@@ -1499,8 +1515,7 @@ Item {
                             MouseArea { id: productArea; anchors.fill: parent; hoverEnabled: true; onClicked: app.chooseProduct(productRow.modelData) }
                         }
                     }
-                    // S29: Height's height above sea level, and this radar's
-                    // reach, each with its steps.
+                    // S29: Height's height above sea level, with its steps.
                     ColumnLayout {
                         Layout.fillWidth: true
                         Layout.topMargin: 4
@@ -1531,30 +1546,6 @@ Item {
                             LabelText { text: "FROM"; opacity: .6; Layout.fillWidth: true }
                             MenuStep { label: "SEA"; enabled: app.chosenAbove !== "sea"; onActivated: app.setAbove("sea") }
                             MenuStep { label: "GROUND"; enabled: app.chosenAbove !== "ground"; onActivated: app.setAbove("ground") }
-                        }
-                    }
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 4
-                        Layout.leftMargin: 10; Layout.rightMargin: 10
-                        visible: app.reachable
-                        spacing: 2
-                        LabelText {
-                            Layout.fillWidth: true
-                            wrapMode: Text.Wrap
-                            text: "REACH · THIS RADAR DRAWN ONLY THIS FAR OUT"
-                            font.pixelSize: 9; opacity: .55
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 24
-                            spacing: 4
-                            // The reach in force: one past this frame's data
-                            // (200 km remembered, 148 km of 8° data) is full.
-                            LabelText { text: map.reachShownKm > 0 ? Math.round(map.reachShownKm) + " KM" : "FULL, " + Math.round(map.coverageKm) + " KM"; color: app.theme.accent; Layout.fillWidth: true }
-                            MenuStep { label: "−"; enabled: map.reachShownKm === 0 || map.reachShownKm > 25; onActivated: app.stepReach(-1) }
-                            MenuStep { label: "+"; enabled: map.reachShownKm > 0; onActivated: app.stepReach(1) }
-                            MenuStep { label: "FULL"; enabled: app.reachKm > 0; onActivated: reachStore.set(app.siteId, 0) }
                         }
                     }
                     // S24d: Relief, while a storm height shows.

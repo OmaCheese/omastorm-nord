@@ -1,6 +1,6 @@
 .pragma library
 // My mosaic (S25, docs/protocol.md "My mosaic") for the Qt surfaces: a set
-// as state.mosaic names it ({sites: [{id, reachKm}], rule}) and the
+// as state.mosaic names it ({sites: [{id}], rule}) and the
 // set_mosaic command that asks an engine for it.
 
 var NOMINAL_KM = 240;
@@ -8,11 +8,11 @@ var NOMINAL_KM = 240;
 // A radar's full range (hello.sites[].rangeKm).
 function fullKm(site) { return site && site.rangeKm > 0 ? site.rangeKm : NOMINAL_KM; }
 
-// An entry's reach in force: its reachKm, at most the full range.
-function reachOf(entry, site) {
-    var full = fullKm(site);
-    return entry && entry.reachKm > 0 ? Math.min(entry.reachKm, full) : full;
-}
+// An entry's reach in force. S37 took reach tuning out (the human,
+// 2026-09-20: "remove the range tuning"), so it is the radar's full range
+// whatever a set kept by an older build carries; the engine ignores
+// reachKm too.
+function reachOf(entry, site) { return fullKm(site); }
 
 function valid(set) {
     return !!set && Array.isArray(set.sites) && set.sites.length > 0
@@ -23,7 +23,7 @@ function valid(set) {
 function validHeight(m) { return typeof m === "number" && m >= 500 && m <= 12000 && m % 500 === 0; }
 
 // set_mosaic for `set`, leaving out radars `sites` (hello.sites) no longer
-// lists; a full reach is sent as none. A height set (S30) sends its height
+// lists. S37: no reach is ever sent. A height set (S30) sends its height
 // and what it is above, and goes as lowest beam to an engine whose
 // hello.mosaic `rules` has no height.
 function command(set, sites, rules) {
@@ -32,8 +32,7 @@ function command(set, sites, rules) {
         var s = set.sites[i];
         var site = sites.find(function (x) { return x.id === s.id; });
         if (!site) continue;
-        var r = reachOf(s, site);
-        out.push(r < fullKm(site) ? { id: s.id, reachKm: Math.round(r) } : { id: s.id });
+        out.push({ id: s.id });
     }
     var rule = set.rule || "lowest";
     if (rule === "height" && rules && !rules.some(function (x) { return x.id === "height"; })) rule = "lowest";

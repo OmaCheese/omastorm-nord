@@ -551,6 +551,16 @@ pub fn for_station(station: &Station) -> (Vec<&'static str>, Vec<Elevation>) {
         // one decides the other); My mosaic has its set's rule instead.
         let products = if crate::mosaic::grid_box(station).is_some() {
             GRID_PRODUCTS.to_vec()
+        } else if station.provider == ProviderId::Mosaic {
+            // S37 (the human, 2026-09-20: "enable rain mass for mosaic"):
+            // My mosaic's own box is its set's, known only when a set is
+            // chosen, so it has no `grid_box`; its products are fixed here
+            // instead. `REF` is the set's own rule (S25), `VIL` the rain
+            // mass asked for, built from the set's radars exactly as a
+            // composite's is (S24b). The other grid products stay off:
+            // each costs a volume read per radar per frame time, and none
+            // was asked for.
+            vec![REF, VIL]
         } else {
             Vec::new()
         };
@@ -1874,13 +1884,14 @@ mod tests {
             ..polar(ProviderId::Smhi, "SE")
         };
         // S24b: a provider's composite offers the products the engine makes
-        // from its radars, no angles; My mosaic offers none.
+        // from its radars, no angles. S37: My mosaic offers its own rule
+        // and Rain mass, whatever set is chosen.
         assert_eq!(for_station(&grid), (GRID_PRODUCTS.to_vec(), vec![]));
         let mine = Station {
             provider: ProviderId::Mosaic,
             ..grid.clone()
         };
-        assert_eq!(for_station(&mine), (vec![], vec![]));
+        assert_eq!(for_station(&mine), (vec![REF, VIL], vec![]));
         // Review N3: a grid station the mosaic knows no box for offers none.
         let unknown = Station {
             provider: ProviderId::Ord,

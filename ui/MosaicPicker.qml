@@ -5,24 +5,21 @@ import "Mosaic.js" as Mosaic
 
 // My mosaic's checklist (S25, docs/protocol.md "My mosaic"): every radar by
 // country, the country nearest the map centre first and the nearest radars
-// first inside it, a tick each (at most hello.mosaic.maxSites), each ticked
-// radar's reach in 25 km steps from 25 km to its full range, one step for
-// all of them, and the combine rule. SHOW sends set_mosaic and hands the set
-// to `shown`, which selects My mosaic. The card sits at the map's right with
-// no scrim, so the map keeps showing the ticked radars' reach circles
-// (`circles`, drawn by RadarMap). Up and Down move, Space ticks, Left and
-// Right step the reach, R switches the rule, Return shows, Escape or a
-// click beside the card closes.
-// A radar's reach here is the engine's: past it the radar gives the mosaic
-// nothing and its neighbours take over. The product menu's REACH (S29) is
-// the same distance for one radar on screen; a radar ticked here starts at
-// that reach when one is set.
+// first inside it, a tick each (at most hello.mosaic.maxSites), and the
+// combine rule. SHOW sends set_mosaic and hands the set to `shown`, which
+// selects My mosaic. The card sits at the map's right with no scrim, so the
+// map keeps showing the ticked radars' reach circles (`circles`, drawn by
+// RadarMap). Up and Down move, Space ticks, R switches the rule, Return
+// shows, Escape or a click beside the card closes.
+// S37 (the human, 2026-09-20: "remove the range tuning") took the per-radar
+// reach steps out: every ticked radar reaches as far as it reaches, the row
+// shows that range, and the engine ignores any reachKm a set carries. The
+// wheel over the card scrolls the list and never reaches the map.
 Item {
     id: picker
     property var engine
     property var theme
     property var store              // MosaicStore: the last set
-    property var reach              // Reach: S29's per-radar reach
     property real centerLat: 0
     property real centerLon: 0
     property bool compact: false
@@ -109,38 +106,14 @@ Item {
         var sites = draft.sites.slice();
         var at = sites.findIndex(s => s.id === id);
         if (at >= 0) sites.splice(at, 1);
-        else if (sites.length < maxSites) {
-            var full = Mosaic.fullKm(siteOf(id)), r = reach ? reach.km(id) : 0;
-            sites.push({ id: id, reachKm: r > 0 && r < full ? r : full });
-        }
+        // S37: no reach to carry — a ticked radar reaches as far as it
+        // reaches, and the engine ignores any reachKm sent.
+        else if (sites.length < maxSites) sites.push({ id: id });
         draft = withSites(sites);
     }
     /// The draft with other radars, the rule and height kept.
     function withSites(sites) { return { sites: sites, rule: draft.rule, heightM: draft.heightM, above: draft.above }; }
-    // 25 km steps; past the radar's range is its full range.
-    function stepped(now, delta) {
-        return delta < 0 ? Math.max(25, Math.ceil(now / 25) * 25 - 25) : Math.floor(now / 25) * 25 + 25;
-    }
-    function stepReach(id, delta) {
-        draft = withSites(draft.sites.map(s => {
-            if (s.id !== id) return s;
-            var site = siteOf(s.id), full = Mosaic.fullKm(site), next = stepped(Mosaic.reachOf(s, site), delta);
-            return { id: s.id, reachKm: next >= full ? full : next };
-        }));
-    }
     // Every radar to one reach: a step from the longest set now.
-    function stepAll(delta) {
-        if (!draft.sites.length) return;
-        var base = Math.max.apply(null, draft.sites.map(s => Mosaic.reachOf(s, siteOf(s.id))));
-        var next = stepped(base, delta);
-        draft = withSites(draft.sites.map(s => {
-            var full = Mosaic.fullKm(siteOf(s.id));
-            return { id: s.id, reachKm: next >= full ? full : next };
-        }));
-    }
-    function fullAll() {
-        draft = withSites(draft.sites.map(s => ({ id: s.id, reachKm: Mosaic.fullKm(siteOf(s.id)) })));
-    }
     function setRule(id) { draft = { sites: draft.sites, rule: id, heightM: draft.heightM, above: draft.above }; }
     // S30: the height rule's height, 500 m steps, and what it is above.
     function stepHeight(delta) {
@@ -170,17 +143,6 @@ Item {
         engine.send(Mosaic.command(set, engine.sites, info ? info.rules : null));
         shown(set);
     }
-    function reachText(entry) {
-        var site = siteOf(entry.id), km = Mosaic.reachOf(entry, site);
-        return km >= Mosaic.fullKm(site) ? "FULL" : Math.round(km) + " KM";
-    }
-    readonly property string allText: {
-        var sites = draft.sites;
-        if (!sites.length) return "";
-        if (sites.every(s => Mosaic.reachOf(s, siteOf(s.id)) >= Mosaic.fullKm(siteOf(s.id)))) return "FULL";
-        var first = Math.round(Mosaic.reachOf(sites[0], siteOf(sites[0].id)));
-        return sites.every(s => Math.round(Mosaic.reachOf(s, siteOf(s.id))) === first) ? first + " KM" : "MIXED";
-    }
     onCursorChanged: if (open) list.positionViewAtIndex(cursor, ListView.Contain)
     Keys.onPressed: event => {
         if (!open) return;
@@ -190,7 +152,6 @@ Item {
         else if (event.key === Qt.Key_Up) cursor = Math.max(0, cursor - 1);
         else if (event.key === Qt.Key_Down) cursor = Math.min(radars.length - 1, cursor + 1);
         else if (event.key === Qt.Key_Space && row) toggle(row.site.id);
-        else if ((event.key === Qt.Key_Left || event.key === Qt.Key_Right) && row && picked(row.site.id)) stepReach(row.site.id, event.key === Qt.Key_Left ? -1 : 1);
         else if (event.key === Qt.Key_R) nextRule();
         else if ((event.key === Qt.Key_BracketLeft || event.key === Qt.Key_BracketRight) && draft.rule === "height") stepHeight(event.key === Qt.Key_BracketLeft ? -1 : 1);
         else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) accept();
@@ -208,6 +169,24 @@ Item {
         border.width: 1
         border.color: picker.theme.foreground
         MouseArea { anchors.fill: parent } // a click on the card stays on the card
+        // S37 (the human, 2026-09-20: "i dont want to zoom when i scroll"):
+        // the card has no scrim, so a wheel over it used to reach the map's
+        // WheelHandler and zoom at the pointer. This takes every wheel
+        // event over the card and gives it to the list, which scrolls if it
+        // has anywhere to go and swallows it either way.
+        WheelHandler {
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            onWheel: event => {
+                list.flick(0, 0);
+                var step = event.angleDelta.y !== 0 ? event.angleDelta.y : event.angleDelta.x;
+                if (step !== 0 && list.contentHeight > list.height) {
+                    var top = Math.max(0, Math.min(list.contentHeight - list.height,
+                                                   list.contentY - step * 26 / 120));
+                    list.contentY = top;
+                }
+                event.accepted = true;
+            }
+        }
         ColumnLayout {
             id: column
             anchors.fill: parent
@@ -255,16 +234,6 @@ Item {
                 Step { label: "+"; enabled: (picker.draft.heightM || 2000) < 12000; onActivated: picker.stepHeight(1) }
                 Step { visible: picker.groundOffered; label: "SEA"; enabled: picker.draft.above === "ground"; onActivated: picker.setAbove("sea") }
                 Step { visible: picker.groundOffered; label: "GROUND"; enabled: picker.draft.above !== "ground"; onActivated: picker.setAbove("ground") }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 4
-                visible: picker.draft.sites.length > 1
-                Word { text: "EVERY RADAR'S REACH"; font.pixelSize: 10; opacity: .6; Layout.fillWidth: true }
-                Word { text: picker.allText; color: picker.theme.accent; font.pixelSize: 10 }
-                Step { label: "−"; onActivated: picker.stepAll(-1) }
-                Step { label: "+"; onActivated: picker.stepAll(1) }
-                Step { label: "FULL"; enabled: picker.allText !== "FULL"; onActivated: picker.fullAll() }
             }
             Rectangle { Layout.fillWidth: true; height: 1; color: Qt.alpha(picker.theme.foreground, .17) }
             ListView {
@@ -314,10 +283,8 @@ Item {
                         }
                         Word { text: row.modelData.site.id; font.bold: true; color: row.ink; Layout.preferredWidth: 84 }
                         Word { text: row.modelData.site.name.toUpperCase(); color: row.ink; opacity: .9; Layout.fillWidth: true }
-                        Word { text: row.modelData.site.country; font.pixelSize: 10; opacity: .55; visible: !row.entry }
-                        Step { visible: !!row.entry; label: "−"; enabled: !!row.entry && Mosaic.reachOf(row.entry, row.modelData.site) > 25; onActivated: picker.stepReach(row.modelData.site.id, -1) }
-                        Word { visible: !!row.entry; text: row.entry ? picker.reachText(row.entry) : ""; color: picker.theme.accent; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; Layout.preferredWidth: 50 }
-                        Step { visible: !!row.entry; label: "+"; enabled: !!row.entry && Mosaic.reachOf(row.entry, row.modelData.site) < Mosaic.fullKm(row.modelData.site); onActivated: picker.stepReach(row.modelData.site.id, 1) }
+                        Word { text: row.modelData.site.country; font.pixelSize: 10; opacity: .55 }
+                        Word { text: Math.round(Mosaic.fullKm(row.modelData.site)) + " KM"; font.pixelSize: 10; opacity: row.entry ? .8 : .45; color: row.ink; horizontalAlignment: Text.AlignRight; Layout.preferredWidth: 50 }
                     }
                 }
             }
@@ -325,7 +292,7 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 12
-                Word { text: picker.draft.rule === "height" ? "SPACE TICK · ← → REACH · [ ] HEIGHT · ↵ SHOW" : "SPACE TICK · ← → REACH · R RULE · ↵ SHOW"; font.pixelSize: 10; opacity: .55; Layout.fillWidth: true; visible: !picker.compact }
+                Word { text: picker.draft.rule === "height" ? "SPACE TICK · [ ] HEIGHT · R RULE · ↵ SHOW" : "SPACE TICK · R RULE · ↵ SHOW"; font.pixelSize: 10; opacity: .55; Layout.fillWidth: true; visible: !picker.compact }
                 Item { Layout.fillWidth: true; visible: picker.compact }
                 Rectangle {
                     implicitWidth: showText.implicitWidth + 18

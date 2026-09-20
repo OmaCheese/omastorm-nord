@@ -805,12 +805,9 @@ mod tests {
         }
         // Every 1:10m vertex sits in an envelope (build.rs: Nordic, Iberia,
         // the Canaries) or next to one that does, and each envelope has lines.
-        let boxes = [
-            [3.0, 33.0, 53.0, 71.5],
-            [-11.0, 5.0, 34.0, 46.0],
-            [-19.5, -12.5, 25.5, 31.0],
-        ];
-        let mut per_box = [0usize; 3];
+        // One envelope since S36 (build.rs): the Nordic box.
+        let boxes = [[3.0, 33.0, 53.0, 71.5]];
+        let mut per_box = [0usize; 1];
         for polyline in geography.sets[1].layers.iter().flat_map(|l| &l.polylines) {
             let inside: Vec<bool> = polyline
                 .points
@@ -843,42 +840,48 @@ mod tests {
                 .iter()
                 .any(|p| p.name == "Oklahoma City" && p.class == "city" && p.rank == 3)
         );
-        // Nordic 61 k, Iberia 18 k and the Canaries 500 (S32).
+        // Nordic 61 k.
         assert!(per_box[0] > 50_000, "{per_box:?}");
-        assert!(per_box[1] > 15_000 && per_box[2] > 300, "{per_box:?}");
-        // Natural Earth's Nordic and Iberian misspellings and exonyms are
-        // corrected (build.rs).
+        // Natural Earth's Nordic misspellings and exonyms are corrected
+        // (build.rs).
         let names: Vec<&str> = geography.places.iter().map(|p| p.name.as_str()).collect();
         for (wrong, right) in [
             ("Vannersborg", "Vänersborg"),
             ("Liepaga", "Liepāja"),
             ("Panevežys", "Panevėžys"),
-            ("Seville", "Sevilla"),
-            ("La Coruña", "A Coruña"),
-            ("Lisbon", "Lisboa"),
-            ("Granada\u{200e}", "Granada"),
         ] {
             assert!(names.contains(&right) && !names.contains(&wrong), "{right}");
         }
     }
 
     #[test]
-    fn place_search_finds_iberian_places_in_their_own_spelling() {
-        // S32: Spain, Portugal, Andorra and Gibraltar joined the gazetteer,
-        // in the local spelling, found with or without the accents.
+    fn the_gazetteer_is_the_nordic_countries_alone() {
+        // S36 reversed S32: Spain, Portugal, Andorra and Gibraltar left the
+        // gazetteer with the radars, so their places are gone and a search
+        // for one finds nothing rather than a place no radar can see.
         let first = |q: &str| search_places(q, None, 1).into_iter().next();
+        for query in [
+            "a coru",
+            "coruna",
+            "girona",
+            "lleida",
+            "cordoba",
+            "lisboa",
+            "lisbon",
+            "andorra la",
+            "gibraltar",
+            "las palmas de",
+            "funchal",
+        ] {
+            assert!(first(query).is_none(), "{query}");
+        }
+        // The Nordic countries and the Baltics stay, accents or not.
         for (query, name, country) in [
-            ("a coru", "A Coruña", "ES"),
-            ("coruna", "A Coruña", "ES"),
-            ("girona", "Girona", "ES"),
-            ("lleida", "Lleida", "ES"),
-            ("cordoba", "Córdoba", "ES"),
-            ("níjar", "Níjar", "ES"),
-            ("lisboa", "Lisboa", "PT"),
-            ("lisbon", "Lisboa", "PT"),
-            ("andorra la", "Andorra la Vella", "AD"),
-            ("gibraltar", "Gibraltar", "GI"),
-            ("las palmas de", "Las Palmas de Gran Canaria", "ES"),
+            ("goteborg", "Göteborg", "SE"),
+            ("gothenburg", "Göteborg", "SE"),
+            ("helsingfors", "Helsinki", "FI"),
+            ("tromso", "Tromsø", "NO"),
+            ("arhus", "Århus", "DK"),
         ] {
             let hit = first(query).unwrap_or_else(|| panic!("{query}: nothing"));
             assert_eq!(
@@ -887,13 +890,6 @@ mod tests {
                 "{query}"
             );
         }
-        // The regions are GeoNames' admin-1 names, in Spanish where GeoNames
-        // gives them in English (build.rs `REGION_LOCAL`).
-        let sevilla = first("sevilla").expect("Sevilla");
-        assert_eq!(sevilla.region, "Andalucía");
-        assert_eq!(first("lleida").expect("Lleida").region, "Cataluña");
-        // Madeira and the Azores lie outside every box: no radar reaches them.
-        assert!(first("funchal").is_none());
     }
 
     #[test]

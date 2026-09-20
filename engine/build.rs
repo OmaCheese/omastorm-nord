@@ -1,8 +1,8 @@
 //! Converts the Natural Earth GeoJSON that `scripts/extract-fixtures.sh`
 //! extracts into the geography the binary embeds (DESIGN.md, basemap tiles,
 //! shipped geography): one polyline blob holding the 1:50m world set and the
-//! 1:10m set clipped to the radars' envelopes (Nordic, and since S32 Iberia
-//! and the Canary Islands), and the populated places for low-zoom labels.
+//! 1:10m set clipped to the radars' Nordic envelope, and the populated
+//! places for low-zoom labels.
 //! GeoNames cities with population ≥ 5000, clipped to the same envelopes and
 //! the gazetteer's countries, become the location-picker gazetteer. Reruns
 //! only when an input changes.
@@ -24,64 +24,35 @@ const THEMES: [(&str, usize); 4] = [
     ("coastline", 1),
     ("lakes", 1),
 ];
-/// The boxes the radars reach with their 240–250 km range, as west, east,
-/// south and north in degrees:
-/// - the Nordic box, 3–33° E and 53–71.5° N, from Denmark and the Baltics
-///   to North Cape;
-/// - Iberia (S32), 11° W–5° E and 34–46° N: the Spanish peninsular radars'
-///   reach (San Sebastián's to 45.7° N, Gelida's to 4.9° E, Alhaurín's to
-///   34.4° N), the Balearics, Ceuta and Melilla, and Portugal's coast with
-///   room for its radars (S33's composite);
-/// - the Canary Islands (S32), 19.5–12.5° W and 25.5–31° N: Artenara's and
-///   Buenavista del Norte's reach.
+/// The box the radars reach with their 240–250 km range, as west, east,
+/// south and north in degrees: the Nordic box, 3–33° E and 53–71.5° N, from
+/// Denmark and the Baltics to North Cape. S32's Iberian and Canary
+/// envelopes left with Spain in S36.
 ///
 /// `scripts/extract-fixtures.sh --regenerate` pre-clips the vendored 1:10m
-/// lines to the same boxes.
-const ENVELOPES: [[f64; 4]; 3] = [
-    [3.0, 33.0, 53.0, 71.5],
-    [-11.0, 5.0, 34.0, 46.0],
-    [-19.5, -12.5, 25.5, 31.0],
-];
+/// lines to the same box.
+const ENVELOPES: [[f64; 4]; 1] = [[3.0, 33.0, 53.0, 71.5]];
 fn in_envelope(lon: f64, lat: f64) -> bool {
     ENVELOPES.iter().any(|&[west, east, south, north]| {
         (south..=north).contains(&lat) && (west..=east).contains(&lon)
     })
 }
 /// The gazetteer's countries (GeoNames codes): Sweden, Norway, Finland with
-/// Åland, Denmark, and the Baltics; since S32 Spain, Portugal, Andorra and
-/// Gibraltar. The boxes alone would also take in north Germany, Poland,
-/// Belarus, north-west Russia, south-west France and the Maghreb.
-const COUNTRIES: [&str; 12] = [
-    "SE", "NO", "FI", "AX", "DK", "EE", "LV", "LT", "ES", "PT", "AD", "GI",
-];
+/// Åland, Denmark, and the Baltics. The box alone would also take in north
+/// Germany, Poland, Belarus and north-west Russia.
+const COUNTRIES: [&str; 8] = ["SE", "NO", "FI", "AX", "DK", "EE", "LV", "LT"];
 /// GeoNames primary names that are English exonyms, by country; prefer the
 /// local spelling in the location picker. Alternatenames also hold archaic
-/// forms (Hälsingborg, Döderhultsvik), so this stays an explicit list
-/// (Spain and Portugal checked 2026-09-15: only Lisbon; bilingual names
-/// such as "Donostia / San Sebastián" are GeoNames' own and stay).
-const LOCAL_NAMES: &[(&str, &str, &str)] =
-    &[("SE", "Gothenburg", "Göteborg"), ("PT", "Lisbon", "Lisboa")];
+/// forms (Hälsingborg, Döderhultsvik), so this stays an explicit list.
+const LOCAL_NAMES: &[(&str, &str, &str)] = &[("SE", "Gothenburg", "Göteborg")];
 /// GeoNames' admin-1 names that are English, by code: the regions read in
-/// the local language (S32; the same list as `scripts/fetch-ord-sites.sh`
-/// uses for the radars' regions).
-const REGION_LOCAL: &[(&str, &str)] = &[
-    ("ES.51", "Andalucía"),
-    ("ES.52", "Aragón"),
-    ("ES.53", "Canarias"),
-    ("ES.54", "Castilla-La Mancha"),
-    ("ES.55", "Castilla y León"),
-    ("ES.56", "Cataluña"),
-    ("ES.59", "País Vasco"),
-    ("ES.60", "Comunitat Valenciana"),
-    ("ES.07", "Illes Balears"),
-    ("ES.32", "Navarra"),
-    ("PT.14", "Lisboa"),
-];
+/// the local language. Empty since S36 took Spain out; the Nordic regions
+/// are already local in GeoNames.
+const REGION_LOCAL: &[(&str, &str)] = &[];
 /// Natural Earth names in the gazetteer's countries that are misspelled or
-/// exonyms against GeoNames (Nordic checked 2026-09-14, Iberia 2026-09-15,
-/// by nearest GeoNames place and name); the map's low-zoom labels use the
-/// corrected spelling, as the tile labels do. Natural Earth's "Granada"
-/// ends in an invisible left-to-right mark.
+/// exonyms against GeoNames (Nordic checked 2026-09-14, by nearest GeoNames
+/// place and name); the map's low-zoom labels use the corrected spelling,
+/// as the tile labels do.
 const NE_LOCAL_NAMES: &[(&str, &str)] = &[
     ("Vannersborg", "Vänersborg"),
     ("Liepaga", "Liepāja"),

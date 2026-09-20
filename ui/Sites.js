@@ -12,9 +12,7 @@
 var COUNTRIES = {
     SE: ["Sweden", "Sverige"], NO: ["Norway", "Norge"], FI: ["Finland", "Suomi"],
     DK: ["Denmark", "Danmark"], AX: ["Åland"], EE: ["Estonia", "Eesti"],
-    LV: ["Latvia", "Latvija"], LT: ["Lithuania", "Lietuva"],
-    // S32: Iberia.
-    ES: ["Spain", "España"], PT: ["Portugal"], AD: ["Andorra"], GI: ["Gibraltar"]
+    LV: ["Latvia", "Latvija"], LT: ["Lithuania", "Lietuva"]
 };
 function countryName(code) { return code && COUNTRIES[code] ? COUNTRIES[code][0] : code || ""; }
 function isGrid(site) { return site.kind === "grid"; }
@@ -24,8 +22,8 @@ function stateName(county) { return county || ""; }
 function place(site) { var s = stateName(site.state); return site.name.toUpperCase() + (s ? ", " + s.toUpperCase() : ""); }
 // Lower case with the Nordic letters folded one for one (å ä → a, ö ø → o,
 // æ → a, é → e), so "ostersund" finds Östersund and a hit's position in the
-// folded text is its position in the shown one; since S32 the Spanish and
-// Portuguese ones too (í → i, ñ → n, ç → c: "nijar" finds Níjar).
+// folded text is its position in the shown one. The Iberian folds (í → i,
+// ñ → n, ç → c) stay: they cost nothing and a query may still carry them.
 function fold(text) {
     return text.toLowerCase().replace(/[åäàáâãæ]/g, "a").replace(/[öøóòôõ]/g, "o").replace(/[éèêë]/g, "e")
         .replace(/[üúùû]/g, "u").replace(/[íìîï]/g, "i").replace(/ñ/g, "n").replace(/ç/g, "c");
@@ -105,7 +103,7 @@ function match(site, query) {
 // antenna), its tag (the country code, or COMPOSITE), whether it starts a
 // new group, and the matched letter positions for the two columns.
 // S33: a provider's composite whose middle is farther than this from the
-// centre (iberia seen from Sweden) does not lead the list: it ranks as a
+// centre (a far composite seen from Sweden) does not lead the list: it ranks as a
 // group of its own at its distance, after the nearer radars.
 var NEAR_COMPOSITE_KM = 1500;
 function rank(sites, query, lat, lon, limit, metric) {

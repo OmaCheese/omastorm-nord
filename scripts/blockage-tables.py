@@ -125,7 +125,7 @@ def main():
     p.add_argument("--cache", required=True)
     p.add_argument("--out", default="engine/data/blockage.json")
     # S32: keep the radars --out already holds, byte for byte, and add or
-    # replace only the ones named (Spain's 11 beside S26's 29).
+    # replace only the ones named (S32 added Spain's 11 beside S26's 29; S36 took them out again).
     p.add_argument("--merge", action="store_true")
     p.add_argument("radars", nargs="+")
     args = p.parse_args()

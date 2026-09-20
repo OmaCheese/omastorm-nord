@@ -42,9 +42,10 @@ composite (`sweden`), which covers many radars at once. A grid station's
 centring the map. It has no antenna, so a client draws no station marker,
 range ring, or coverage circle for it. Since S24b the provider composites
 (`sweden`, `nordic`) also offer products the engine makes from their radars'
-volumes ([The composites' products](#the-composites-products)). `iberia`
-(S33, OPERA's Iberian crop) offers none: its `products` is empty, so a
-client shows no product chooser, and the composite is all it shows.
+volumes ([The composites' products](#the-composites-products)). A grid
+station whose `products` is empty offers none, and a client then shows no
+product chooser: the composite is all it shows. S33's `iberia` was such a
+station until S36 took it out with Spain.
 
 Every station also carries the following fields, always sent (S14). They
 are additive, so the version stays 2 and an older client ignores them:
@@ -52,7 +53,7 @@ are additive, so the version stays 2 and an older client ignores them:
 - `id`: the station id every command and `state.site.id` use (DEC-12). A
   Swedish radar's id is its SMHI area key (`vara`, `balsta`); every other
   radar's is its ODIM node code in lowercase (`nohur`, `fikor`, `dksin`); a
-  composite's is a region word (`sweden`, `nordic`, `iberia`). Ids are unique across
+  composite's is a region word (`sweden`, `nordic`). Ids are unique across
   the table, aliases included. Clients treat them as opaque.
 - `aliases`: other ids the engine accepts for this station in `select_site`,
   so a stored or typed id keeps working. A Swedish radar lists its ODIM node
@@ -164,9 +165,8 @@ It is small (a few KB) so clients replace rather than merge.
   judged against the station's provider's cadence (DEC-9 generalized):
   `stale` from the cadence plus 10 minutes, `unavailable` from the larger of
   30 minutes and the stale threshold plus one cadence, unless a provider
-  documents its own (S32: an ORD station's cadence is its country's, 10
-  minutes for Spain's radars, so `stale` from 20 minutes and `unavailable`
-  from 30). For SMHI (5-minute cadence) that is `ok` under 15
+  documents its own (S32: an ORD station's cadence is its country's; every
+  ORD country left after S36 publishes every 5 minutes). For SMHI (5-minute cadence) that is `ok` under 15
   minutes, `stale` from 15 minutes, `unavailable` from 30 minutes (SMHI is
   up and the station is silent: maintenance or an outage; Leksand has
   published nothing since January 2026). A healthy SMHI frame is already 5 to
@@ -374,14 +374,10 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
   releasing the lock hands off on the next settle, not at once. A `grid`
   station is never a hand-off target. While one is selected, `view_center`
   hands off to nothing: the composite already covers the view, so only a
-  `select_site` leaves it. S33's exception: `iberia` (its radars in
-  Portugal have no volumes) is a target with the centre inside its box
-  where the composite alone shows the radars there: nearer one of its
-  box's `referenceSites` (Portugal's) than to any station radar, or beyond
-  1.3 × the nearest radar's `rangeKm` (Porto, Lisbon, Galicia's coast; a
-  place in Spain still follows a Spanish radar). Selected, `iberia` holds
-  while the centre stays in its box and hands off by the nearest-radar
-  rule once it leaves.
+  `select_site` leaves it. S33's exception, `iberia`, went with Spain
+in S36, so no grid station is a hand-off target today; the rule stays in
+the engine for any future crop whose radars publish no volumes of their
+own.
 - `search_places` ranks the embedded gazetteer (GeoNames populated places
   with population ≥ 5000 in Sweden, Norway, Finland, Åland, Denmark and the
   Baltics, clipped to the SMHI network's Nordic envelope) for the
@@ -651,25 +647,19 @@ A provider supplies the station's listing and polling, its cadence (and so
 its staleness thresholds), its backfill depth, its range-read budget, and
 the default `attribution`, `country`, and `rangeKm` of its rows in
 `engine/data/sites.json`. SMHI: the poller above, a 5-minute cadence,
-60-frame backfill, and DEC-2's range reads. `ord` (S15, DEC-13; Spain since
-S32, DEC-16): EUMETNET Open Radar Data's 24-hour S3 cache, credited to each
-national owner (`MET Norway`, `FMI`, `DMI`, `© AEMET`, CC BY 4.0), a
-5-minute cadence (Spain's AEMET radars 10 minutes; of their two volumes
-every 10 minutes the long-range one is read, not the Doppler one), and a
-backfill of up to 60 files over the last five hours. `opera` (S16, DEC-14): the grid
+60-frame backfill, and DEC-2's range reads. `ord` (S15, DEC-13): EUMETNET Open Radar
+Data's 24-hour S3 cache, credited to each national owner (`MET Norway`,
+`FMI`, `DMI`, CC BY 4.0), a 5-minute cadence, and a backfill of up to 60
+files over the last five hours. S32's Spanish radars, with their 10-minute
+cadence, left in S36; the provider keeps their handling. `opera` (S16, DEC-14): the grid
 station `nordic`, EUMETNET OPERA's European composite from the Open Radar
 Data 24-hour S3 cache, cut to 3–33° E, 53–71.5° N (a 1670 × 2297 texture,
 larger than Sweden's 1364 × 1983 and above WebGL2's guaranteed 2048), read
 11 of its 30 chunks at a time (~0.9 MB a frame), a 5-minute cadence and a
 24-frame backfill, credited `EUMETNET OPERA, CC BY 4.0`, `country` empty.
-Since S33 (DEC-17) `opera` also lists `iberia`, the same composite cut to
-10.5° W–4.5° E, 35–44.5° N (mainland Portugal and Spain with the Balearics;
-an 835 × 690 texture, 5 of the 30 chunks, ~47 KB a frame), with the same
-cadence, reads and backfill, credited `EUMETNET OPERA (AEMET, IPMA,
-Météo-France), CC BY 4.0` (the box takes in southern France), `country`
-empty, at the middle of its box (39.75° N, 3° W). Portugal's
-radars have no volumes in Open Radar Data, so they show only through it.
-`iberia` offers no products (`products` empty). One read of a file serves
+S33 (DEC-17) also listed `iberia`, the same composite cut to the Iberian
+box; S36 took it out with Spain's radars, so `opera` lists `nordic` alone.
+The cut machinery stays, and so do its shared reads. One read of a file serves
 every OPERA box the engine is polling (the selected one and any keep-warm
 one): the engine's OPERA pollers share the read and the listing, so two
 boxes shown cost the listings and file opens of one, plus the other box's
@@ -704,9 +694,9 @@ ORD radars and `nordic` read the Open Radar Data S3 caches, not the ORD
 API, so they do not count against its 200 requests an hour (DEC-13,
 DEC-14); SMHI's API has no published limit, and the pollers stay as polite
 as for a selected station. `nordic` is not recommended warm for its volume.
-`iberia` warm costs about as many requests as `nordic` but ~47 KB a frame
-(~0.6 MB an hour); warm beside a selected `nordic` (or the other way round)
-it adds no listing or file open, only its chunks in the same reads (S33).
+A second OPERA box kept warm beside a selected one adds no listing and no
+file open, only its own chunks in the same reads (S33); since S36 there is
+one box to keep warm.
 
 ## Products
 
@@ -758,16 +748,14 @@ Each `hello.sites[]` entry names what the station can show and its angles:
   S24a, FMI's, whose files hold one angle each in ORD's cache: the engine
   reads the five files of one nominal time as one volume ([FMI's
   volumes](#fmis-volumes)). Before S24a FMI's radars offered `REF` alone,
-  with `elevations` `[]`. Since S32 AEMET's eleven (Spain) offer them too,
-  from their three angles (0.5, 1.3, 2.1°; Valladolid and San Sebastián
-  0.5, 1.4, 2.3°), so their storm height and rain mass see little above
-  a few kilometres far out. `HYBRID` is offered only where the engine also
-  has a blockage table (none for FMI's radars yet).
+  with `elevations` `[]`. S32 added AEMET's eleven, which left
+  again in S36. `HYBRID` is offered only where the engine also has a
+  blockage table (none for FMI's radars yet).
 - `above` (S32): what `CAPPI`'s height can be measured from at this
   station, a subset of `hello.products`' `above`: `["sea","ground"]` where
-  the terrain grid holds the radar's whole reach (every Nordic radar, and
-  the Nordic composites), `["sea"]` elsewhere (Spain's radars: the grid is
-  Nordic, [Terrain](#terrain)). Sent only with `CAPPI` in `products`.
+  the terrain grid holds the radar's whole reach — since S36 every shipped
+  radar and composite — and `["sea"]` for any radar beyond it
+  ([Terrain](#terrain)). Sent only with `CAPPI` in `products`.
   Clients offer "above the ground" only where it is listed, and for My
   mosaic only when every chosen radar lists it. A `ground` choice on a
   station without it is made above sea level (a switch carries it over as
@@ -1621,8 +1609,9 @@ hides radar and latches the error until relaunch.
 - `state.frame.kind` (`polar` or `grid`) is new and always sent. Polar
   frames are otherwise unchanged. A `grid` frame carries `frame.grid`, an
   empty `azimuthLut`, and zero polar geometry.
-- `view_center` never hands off to or from a `grid` station, except
-  `iberia` (S33, above).
+- `view_center` never hands off to or from a `grid` station (S33's
+  `iberia` exception left with Spain in S36; the rule stays in the
+  engine).
 
 Additive since (S14, still version 2):
 

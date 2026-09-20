@@ -3611,13 +3611,13 @@ mod handoff_tests {
     #[test]
     fn the_site_table_is_the_nordic_network() {
         let sites = site_table().sites;
-        // SMHI's 12 radars and ORD's 29 (NO, FI, DK: S15) and 11 (ES: S32)
-        // from sites.json, then the composites: SMHI's (S8) and OPERA's
-        // Nordic and Iberian crops (S16, S33), and My mosaic (S25).
-        assert_eq!(sites.len(), 56);
+        // SMHI's 12 radars and ORD's 29 (NO, FI, DK: S15) from sites.json,
+        // then the composites: SMHI's (S8) and OPERA's Nordic crop (S16),
+        // and My mosaic (S25). S36 took Spain and Iberia out.
+        assert_eq!(sites.len(), 44);
         assert_eq!(
             sites.iter().filter(|s| s.kind == SiteKind::Polar).count(),
-            52
+            41
         );
         assert_eq!(
             sites
@@ -3625,7 +3625,7 @@ mod handoff_tests {
                 .filter(|s| s.kind == SiteKind::Grid)
                 .map(|s| &s.id[..])
                 .collect::<Vec<_>>(),
-            ["sweden", "nordic", "iberia", "mymosaic"]
+            ["sweden", "nordic", "mymosaic"]
         );
         // My mosaic is never a target, and nothing is handed off to from it.
         assert!(handoff(&sites, "mymosaic", 57.71, 11.97).is_none());
@@ -3634,76 +3634,30 @@ mod handoff_tests {
         // selected nothing is handed off to.
         assert!(handoff(&sites, "nordic", 59.33, 18.07).is_none());
         assert!(handoff(&sites, "", 62.25, 18.0).is_some_and(|s| s.kind == SiteKind::Polar));
-        for s in sites.iter().filter(|s| s.id != "iberia") {
-            // The Nordic box, or (S32) Spain's: the peninsula and the Canaries.
-            let nordic = (53.0..=71.5).contains(&s.lat) && (3.0..=33.0).contains(&s.lon);
-            let iberia = (34.0..=46.0).contains(&s.lat) && (-11.0..=5.0).contains(&s.lon)
-                || (25.5..=31.0).contains(&s.lat) && (-19.5..=-12.5).contains(&s.lon);
-            assert!(nordic != iberia, "{}", s.id);
-            assert_eq!(iberia, s.country == "ES", "{}", s.id);
+        for s in &sites {
+            // Every station is inside the Nordic box: S36 took Spain's
+            // radars and the Iberian composite out, and with them the
+            // Iberian and Canary envelopes.
+            assert!(
+                (53.0..=71.5).contains(&s.lat) && (3.0..=33.0).contains(&s.lon),
+                "{}",
+                s.id
+            );
+            assert_ne!(s.country, "ES", "{}", s.id);
         }
-        // S32: a place in Spain follows a Spanish radar, never a composite,
-        // from nowhere, from a Nordic radar, or from another Spanish one.
+        // A place in Spain has no radar to follow at all now: the nearest
+        // station is a Nordic one, and nothing hands off to a composite.
         let nearest = |lat, lon| handoff(&sites, "", lat, lon).map(|s| s.id.clone());
-        assert_eq!(nearest(40.42, -3.70).as_deref(), Some("estjv"), "Madrid");
-        assert_eq!(nearest(36.72, -4.42).as_deref(), Some("esahr"), "Málaga");
-        assert_eq!(nearest(41.39, 2.17).as_deref(), Some("esgld"), "Barcelona");
-        assert_eq!(
-            nearest(28.12, -15.43).as_deref(),
-            Some("esatn"),
-            "Las Palmas"
-        );
-        assert_eq!(nearest(43.26, -2.93).as_deref(), Some("essse"), "Bilbao");
-        assert_eq!(
-            handoff(&sites, "vara", 40.42, -3.70).map(|s| &s.id[..]),
-            Some("estjv")
-        );
-        assert_eq!(
-            handoff(&sites, "estjv", 37.39, -5.98).map(|s| &s.id[..]),
-            Some("esclg"),
-            "Madrid to Sevilla"
+        assert!(
+            nearest(40.42, -3.70).is_some_and(|id| {
+                sites
+                    .iter()
+                    .any(|s| s.id == id && s.kind == SiteKind::Polar)
+            }),
+            "Madrid"
         );
         assert!(handoff(&sites, "nordic", 40.42, -3.70).is_none());
         assert!(handoff(&sites, "sweden", 40.42, -3.70).is_none());
-        // S33 (review SF4): iberia takes the hand-off only where the
-        // composite alone shows the radars: nearer one of Portugal's
-        // reference radars than any table radar (Porto, Lisbon, Faro), or
-        // beyond 1.3 × the nearest radar's range (Galicia's coast).
-        let place =
-            |current: &str, lat, lon| handoff(&sites, current, lat, lon).map(|s| s.id.clone());
-        assert_eq!(place("", 41.15, -8.61).as_deref(), Some("iberia"), "Porto");
-        assert_eq!(place("", 38.72, -9.14).as_deref(), Some("iberia"), "Lisbon");
-        assert_eq!(place("", 37.02, -7.93).as_deref(), Some("iberia"), "Faro");
-        // Valencia: 252 km from Perdiguera, inside 1.3 × 250 km.
-        assert_eq!(
-            place("", 39.47, -0.38).as_deref(),
-            Some("espdg"),
-            "Valencia"
-        );
-        // A Coruña and Vigo: 346 and 341 km from Valladolid, beyond 1.3 ×
-        // 240 km (and nearer Arouca): the composite.
-        assert_eq!(
-            place("", 43.37, -8.40).as_deref(),
-            Some("iberia"),
-            "A Coruña"
-        );
-        assert_eq!(place("", 42.24, -8.72).as_deref(), Some("iberia"), "Vigo");
-        // Menorca and Ibiza: 262 and 280 km from Gelida, inside 1.3 × 250 km.
-        assert_eq!(place("", 39.89, 4.26).as_deref(), Some("esgld"), "Menorca");
-        assert_eq!(place("", 38.91, 1.43).as_deref(), Some("esgld"), "Ibiza");
-        // Huelva, by Portugal's border: Castillo de las Guardas is nearer
-        // than Loulé.
-        assert_eq!(place("", 37.26, -6.95).as_deref(), Some("esclg"), "Huelva");
-        // From a Spanish radar too: Madrid's to Lisbon.
-        assert_eq!(place("estjv", 38.72, -9.14).as_deref(), Some("iberia"));
-        // Review SF3: following holds iberia inside its box (Porto, Madrid)
-        // and leaves it outside: Porto -> iberia -> Vara -> vara.
-        assert!(place("iberia", 41.15, -8.61).is_none());
-        assert!(place("iberia", 40.42, -3.70).is_none());
-        assert_eq!(place("iberia", 58.26, 12.95).as_deref(), Some("vara"));
-        // nordic and sweden still hold anywhere.
-        assert!(place("nordic", 41.15, -8.61).is_none());
-        assert!(place("sweden", 58.26, 12.95).is_none());
         // Following from Gothenburg settles on Vara; from Stockholm, Bålsta.
         let nearest = |lat, lon| handoff(&sites, "", lat, lon).map(|s| s.id.clone());
         assert_eq!(nearest(57.71, 11.97).as_deref(), Some("vara"));

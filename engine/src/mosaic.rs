@@ -4948,12 +4948,19 @@ mod tests {
         assert!(!ground.same(&sea) && !sea.same(&plain));
         assert_ne!(ground.variant(), sea.variant());
         assert_ne!(sea.variant(), plain.variant());
-        // Review N4: above the ground over a radar with no terrain (Spain's)
-        // is above sea level, and the set says so.
-        let with_spain = [SiteArg::Id("nohur".into()), SiteArg::Id("esahr".into())];
+        // Review N4: above the ground over a radar with no terrain is above
+        // sea level, and the set says so. Spain's radars were the ones with
+        // no terrain until S36 took them out, so the radar is made here:
+        // one of the table's, moved off the terrain grid.
+        let mut sites = sites.clone();
+        let mut away = sites.iter().find(|s| s.id == "nohur").unwrap().clone();
+        (away.id, away.lat, away.lon) = ("noterrain".to_owned(), 36.6, -4.6);
+        assert!(!crate::products::has_terrain(&away));
+        sites.push(away);
+        let with_bare = [SiteArg::Id("nohur".into()), SiteArg::Id("noterrain".into())];
         let bare = choose_with(
             &sites,
-            &with_spain,
+            &with_bare,
             Some("height"),
             Some(3000),
             Some("ground"),

@@ -313,8 +313,8 @@ Item {
     // S30: a height may be above the ground (hello.products' CAPPI entry
     // says so; an older engine's does not, and the choice stays hidden).
     // S32: and the station's own hello.sites[].above has it (the terrain
-    // grid is Nordic: none of Spain's radars); an engine before S32 sends
-    // no per-station list.
+    // grid is Nordic, and since S36 every radar sits on it); an engine
+    // before S32 sends no per-station list.
     readonly property bool groundOffered: {
         var p = engine.products.find(x => x.id === "CAPPI");
         if (!p || !Array.isArray(p.above) || p.above.indexOf("ground") < 0) return false;

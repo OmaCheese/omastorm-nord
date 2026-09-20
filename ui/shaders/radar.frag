@@ -65,6 +65,12 @@ layout(std140, binding = 0) uniform buf {
     int relief;
     float codeScale;
     float codeOffset;
+    // S38: 1 under a light Omarchy theme. The palette is the engine's, the
+    // same for every client, but it was drawn for a dark ground: on a pale
+    // one the sparse treatments leave too little ink for the weakest bands
+    // to read. This fills the two weakest quartiles one step denser and
+    // deepens every band slightly, so light and dark carry the same echo.
+    int lightGround;
 };
 // The sweep: one row per radial in ascending azimuth, one texel per gate.
 // For a grid frame, the Web Mercator texture instead, row 0 north.
@@ -362,16 +368,24 @@ vec4 shade(vec4 code, vec2 pixel) {
     // Treatments grade coverage by quartile of the palette, whatever its length.
     int group=(b*4)/bands;
     float alpha=1.0;
+    // S38: a light ground needs more ink in the weak bands (the strong ones
+    // are already near solid, so they are left alone).
+    int lift = lightGround == 1 && group < 2 ? 1 : 0;
     if (treatment == 1) {
         int count=group==0 ? 2 : group==1 ? 4 : group==2 ? 7 : 9;
+        count += lift * 2;
         int slot=int(floor(phase.y))*3+int(floor(phase.x));
         alpha=densityAt(slot)<count ? 1.0 : 0.0;
     } else if (treatment == 2) {
         float side=group==0 ? 1.75 : group==1 ? 2.0 : group==2 ? 2.25 : 2.5;
+        side += float(lift) * .35;
         vec2 coverage=clamp(vec2(side*.5+.5)-abs(phase-1.5),0.0,1.0);
         alpha=coverage.x*coverage.y;
     }
     vec3 color=texture(swatches, vec2((float(b)+.5)/float(bands), .5)).rgb;
+    // S38: the same swatch, deepened on a pale ground so it is not washed
+    // out by it. Strong bands keep their hue; only their lightness moves.
+    if (lightGround == 1) color *= .82;
     // S24d: relief. The legend's colour, darkened on a slope facing away
     // from the light, lifted toward white on one facing it.
     if (reliefLight != 1.0)

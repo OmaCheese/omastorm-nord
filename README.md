@@ -42,7 +42,9 @@ client: it displays those textures in the bar popover and full window.
 - **Three treatments.** Glyphs, Pixels, and Stipple sample the same gate and
   paint the cell differently.
 - **Native.** Colors, font, and spacing come from the active Omarchy theme and
-  change with it.
+  change with it, **light themes included**: the theme says whether it is light
+  or dark, and the map's ground, lines and echo follow. Radar sites are drawn
+  in their own color, so an antenna is never mistaken for a town.
 - **Keyboard first.** Everything the pointer reaches is a keystroke, and every
   key is rebindable.
 - **Honest.** Actual scan times. Missing and below-threshold returns are drawn

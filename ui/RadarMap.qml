@@ -405,10 +405,17 @@ Item {
                 onStatusChanged: map.imageReady(key, path, status === Image.Ready)
                 Component.onCompleted: map.imageReady(key, path, status === Image.Ready)
             }
-            property color boundaries: Qt.alpha(map.theme.foreground, .32)
-            property color water: Qt.alpha(map.theme.accent, .55)
-            property color minorRoads: Qt.alpha(map.theme.foreground, .24)
-            property color majorRoads: Qt.alpha(map.theme.foreground, .48)
+            // S38 (the human, 2026-09-20: "dark mode should have a bit more
+            // visible state and country border lines and even streets"):
+            // every line carries more weight than it did, and a light theme
+            // needs less of it than a dark one, because dark ink on a pale
+            // ground already reads. Country and state borders share the
+            // mask's R channel (engine/src/osm.rs), so they take one weight
+            // between them.
+            property color boundaries: Qt.alpha(map.theme.foreground, map.lightTheme ? .55 : .62)
+            property color water: Qt.alpha(map.theme.accent, map.lightTheme ? .5 : .6)
+            property color minorRoads: Qt.alpha(map.theme.foreground, map.lightTheme ? .34 : .42)
+            property color majorRoads: Qt.alpha(map.theme.foreground, map.lightTheme ? .5 : .66)
             fragmentShader: "shaders/tile.frag.qsb"
             onStatusChanged: if (status === ShaderEffect.Error) map.error = "Basemap GPU shader failed: " + log
         }
@@ -584,6 +591,15 @@ Item {
     // beam 2 km up.
     readonly property var faintSites: !drawable || !site || grid ? []
         : rings.filter(r => !r.strong).map(r => ({id:siteId, lat:site.lat, lon:site.lon, km:r.km}))
+    // S38: the antenna colour, resolved once. A harness theme (the checks,
+    // the captures) carries only background, foreground and accent, so this
+    // falls back the way Theme.qml does.
+    readonly property color antennaInk: theme && theme.antenna ? theme.antenna
+        : theme && theme.accent ? theme.accent : "#7aa2f7"
+    // S38: a light Omarchy theme, as Theme.qml decides it; a harness theme
+    // without the flag is treated as dark, which is what it draws.
+    readonly property bool lightTheme: !!(theme && theme.light)
+
     // S25: My mosaic's chosen radars at their reach, [{id, lat, lon, km}]:
     // the checklist's while it is open, the set's while My mosaic shows.
     property var mosaicCircles: []
@@ -738,6 +754,9 @@ Item {
         // S24d: a storm height lit as a surface while Relief is on; the
         // frame's scale and offset give each texel's height.
         property int relief: map.relief && map.scan && map.scan.product === "ETOP" ? 1 : 0
+        // S38: the palette is drawn for a dark ground; under a light Omarchy
+        // theme the shader lifts the weak bands and deepens every swatch.
+        property int lightGround: map.lightTheme ? 1 : 0
         property real codeScale: map.scan && map.scan.scale > 0 ? map.scan.scale : 1
         property real codeOffset: map.scan && map.scan.offset ? map.scan.offset : 0
         property color hatchInk: map.theme ? map.theme.foreground : "white"
@@ -863,19 +882,23 @@ Item {
                 x: (map.mercatorX(modelData.lon)-map.siteMx)*map.worldPixels-2
                 y: (map.mercatorY(modelData.lat)-map.siteMy)*map.worldPixels-2
                 width: 4; height: 4; radius: 2
-                color: Qt.alpha(map.theme.foreground, .35)
+                color: Qt.alpha(map.antennaInk, .45)
                 antialiasing: true
             }
         }
         Repeater {
             model: map.sites.filter(s => s.id !== map.siteId && s.kind !== "grid")
+            // S38 (the human, 2026-09-20: "distinguish with a special color
+            // where the antennas are, so not to confuse with cities"): a
+            // radar is a filled square in the antenna colour, a city a
+            // 2 px foreground dot. Shape and colour both differ now.
             Rectangle {
                 required property var modelData
                 x: (map.mercatorX(modelData.lon)-map.siteMx)*map.worldPixels-3
                 y: (map.mercatorY(modelData.lat)-map.siteMy)*map.worldPixels-3
                 width: 6; height: 6
-                color: map.theme.background
-                border.width: 1; border.color: Qt.alpha(map.theme.foreground, .7)
+                color: Qt.alpha(map.antennaInk, .55)
+                border.width: 1; border.color: map.antennaInk
             }
         }
         Repeater {
@@ -889,7 +912,7 @@ Item {
                 color: Qt.alpha(map.theme.background, .88)
                 Text {
                     x: 3; anchors.verticalCenter: parent.verticalCenter
-                    text: modelData.name; color: Qt.alpha(map.theme.foreground, .75)
+                    text: modelData.name; color: Qt.alpha(map.antennaInk, .95)
                     font.family: map.theme.font; font.pixelSize: map.labelSize
                 }
             }
@@ -919,8 +942,8 @@ Item {
                 }
             }
         }
-        Rectangle { x: -7; y: -.5; width: 14; height: 1; color: map.theme.foreground; visible: map.siteId !== "" && !map.grid }
-        Rectangle { x: -.5; y: -7; width: 1; height: 14; color: map.theme.foreground; visible: map.siteId !== "" && !map.grid }
+        Rectangle { x: -7; y: -.5; width: 14; height: 1; color: map.antennaInk; visible: map.siteId !== "" && !map.grid }
+        Rectangle { x: -.5; y: -7; width: 1; height: 14; color: map.antennaInk; visible: map.siteId !== "" && !map.grid }
         // The lock: an accent 1 px frame on the marker and the tag.
         Rectangle {
             x: -6; y: -6; width: 12; height: 12; color: "transparent"

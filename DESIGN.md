@@ -10,8 +10,16 @@ violating them.
 ## Picture
 
 Weather occupies the view. Geography stays quiet: thin lines, sparse labels,
-rings, a crosshair. Chrome follows the Omarchy theme; radar color comes only
-from `frame.palette`, shared by the legend and the shader.
+rings, a crosshair — quiet, not invisible: since S38 borders, coasts and
+roads carry enough weight to read under rain. Chrome follows the Omarchy
+theme, light themes included: the theme's own `mode` decides, and the map
+reads that one flag. Radar color comes only from `frame.palette`, shared by
+the legend and the shader; on a light ground the shader deepens every swatch
+and fills the two weakest quartiles denser, because the palette is drawn for
+a dark one and is the engine's to decide, not a client's to replace. Radar
+sites are the one thing on the map with a color of their own (the theme's
+cyan, else its green, else the accent), so an antenna is never read as a
+town.
 
 Pixels, Glyphs, and Stipple all stay. They sample the same cell and palette
 and differ only in how the 3 px cell is painted. Glyphs is the default. A

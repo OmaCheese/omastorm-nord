@@ -27,7 +27,8 @@ for arg in "$@"; do
   esac
 done
 
-repo=wesleygrimes/omastorm
+repo=$(awk -F= '/^repo=/{print $2}' engine/release.pin)
+[[ -n $repo ]] || die "engine/release.pin names no repo; the release lives where the pin says."
 source scripts/engine-pin.sh
 machine=$(engine_machine "$(uname -m)")
 asset=omastorm-engine-$machine-unknown-linux-gnu

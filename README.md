@@ -1,27 +1,28 @@
 # Omastorm SE
 
 > **Omastorm SE** is a fork of [Omastorm](https://github.com/wesleygrimes/omastorm)
-> that shows Swedish weather radar from [SMHI](https://www.smhi.se/) instead of
-> NOAA NEXRAD: the 12 SMHI radars and SMHI's national composite. It installs
-> beside upstream under its own plugin id (`rb.omastorm-se`) and directories
-> (`omastorm-se`).
+> that shows European weather radar instead of NOAA NEXRAD: 52 radars — the 12
+> [SMHI](https://www.smhi.se/) radars in Sweden, 12 in Norway, 12 in Finland, 5
+> in Denmark and 11 in Spain — plus SMHI's national composite, EUMETNET OPERA's
+> Nordic and Iberian composites, and a mosaic of the radars you choose. It
+> installs beside upstream under its own plugin id (`rb.omastorm-se`) and
+> directories (`omastorm-se`).
 
 Open-source, live weather radar for the Omarchy desktop. Beta.
 
-[![Omastorm window: live take with loop, search, keys, and treatments](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/omastorm-preview.gif)](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/omastorm-demo.mp4)
+[![Omastorm window: live take with loop, search, keys, and treatments](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/omastorm-preview.gif)](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/omastorm-demo.mp4)
 
-Upstream Omastorm's demo, live over Jacksonville (NEXRAD). The fork's own
-media, over Vara, is made by `scripts/capture-readme.sh` and
-`scripts/capture-demo.sh` and replaces these links with its first release.
+Live over Vara, in Västra Götaland. The media is made by
+`scripts/capture-readme.sh` and `scripts/capture-demo.sh`.
 
 A radar that lives in your bar. The popover shows the station nearest you with
 the actual scan time. Click the map (or press Enter) for the full window: every
 SMHI radar and the national composite, reflectivity at native resolution, a
 timeline you can scrub, all drawn in your Omarchy theme.
 
-![The Omastorm window, live](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/window-live.png)
+![The Omastorm window, live](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/window-live.png)
 
-![The Omastorm popover, live](https://github.com/wesleygrimes/omastorm/releases/download/media-2026-09-10/popover.png)
+![The Omastorm popover, live](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/popover.png)
 
 A headless Rust engine fetches and decodes SMHI's ODIM HDF5 volumes and
 national composite and prepares GPU-ready radar textures. An Omarchy plugin built with Quickshell/QML is the
@@ -29,11 +30,14 @@ client: it displays those textures in the bar popover and full window.
 
 ## Features
 
-- **Live.** A Rust engine polls SMHI's open data every minute. SMHI publishes
-  one scan per radar every 5 minutes, about 5 minutes after it is taken; the
-  scan appears whole. Stale data says it is stale.
+- **Live.** A Rust engine polls each service's open data every minute: SMHI for
+  Sweden, EUMETNET's Open Radar Data cache for Norway, Finland, Denmark and
+  Spain, and OPERA for the composites. Most publish one scan per radar every 5
+  minutes (Spain every 10), a few minutes after it is taken; the scan appears
+  whole. Stale data says it is stale.
 - **Every radar.** Pan the map and it follows the nearest station, or search by
-  station, town, or county. Pick Sweden for the national composite.
+  station, town, or county. Pick Sweden, Nordic or Iberia for a composite, or My
+  mosaic for the radars you chose.
 - **Timeline.** Up to 60 scans per station, cached locally. Play, step, scrub.
 - **Three treatments.** Glyphs, Pixels, and Stipple sample the same gate and
   paint the cell differently.
@@ -43,18 +47,15 @@ client: it displays those textures in the bar popover and full window.
   key is rebindable.
 - **Honest.** Actual scan times. Missing and below-threshold returns are drawn
   distinctly from measured values. Displays one radar's lowest sweep at a time,
-  or SMHI's composite.
+  or a composite. Each radar names the service that owns it, and the radars are
+  not identical: see "The radars are not identical" below.
 
 ## Install
 
 Omarchy 4 on x86_64 and aarch64.
 
-The fork is not on GitHub yet, and has published no engine release. Until it
-has, install from a checkout: `mise setup`, then `mise plugin-link` links the
-plugin to it and the bar runs the checkout's own engine build. Once published:
-
 ```sh
-omarchy plugin add https://github.com/<owner>/omastorm-se.git --enable
+omarchy plugin add https://github.com/OmaCheese/omastorm-se.git --enable
 ```
 
 This clones the plugin into `~/.config/omarchy/plugins/rb.omastorm-se` and
@@ -63,6 +64,9 @@ the pinned engine binary from this repository's GitHub Releases, verifies its
 sha256 against `engine/release.pin`, and installs it under
 `~/.local/share/omastorm-se/bin`. Runtime files, cached data, remembered view state, and configuration stay
 inside Omastorm's own directories.
+
+From a checkout instead, to work on it: `mise setup`, then `mise plugin-link`
+points the bar at the checkout, which runs its own engine build.
 
 On first use, Omastorm uses your Omarchy weather location when available.
 Otherwise, choose a place manually or click **Use approximate location** to
@@ -229,7 +233,7 @@ and opening the popover again retries. To restart the engine by hand:
 ```
 
 The next popover or window starts it again. Please attach both logs to a
-[bug report](https://github.com/wesleygrimes/omastorm/issues).
+[bug report](https://github.com/OmaCheese/omastorm-se/issues).
 
 ## Remove
 
@@ -245,10 +249,12 @@ Then delete the `o.bind` line if you added one.
 
 ## Feedback
 
-This is a beta. Bugs, rough edges, and ideas go to
-[GitHub issues](https://github.com/wesleygrimes/omastorm/issues) when upstream
-Omastorm has them too; anything SMHI-specific belongs to this fork's own
-tracker once it is published.
+This is a beta. Bugs, rough edges, and ideas about the radars, the map, or
+anything else this fork changed go to
+[its own issues](https://github.com/OmaCheese/omastorm-se/issues). Something that
+upstream Omastorm has too belongs
+[upstream](https://github.com/wesleygrimes/omastorm/issues), where the fix helps
+both.
 
 ## Data and licenses
 

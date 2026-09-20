@@ -24,10 +24,12 @@ lock_version=$(awk '/^name = "omastorm-engine"$/{getline; print}' Cargo.lock | a
   || die "engine/Cargo.toml says $version but Cargo.lock says $lock_version; run mise engine-bump and commit the lock."
 tag=engine-$version
 pinned=$(awk -F= '/^tag=/{print $2}' engine/release.pin)
+repo=$(awk -F= '/^repo=/{print $2}' engine/release.pin)
+[[ -n $repo ]] || die "engine/release.pin names no repo; the release lives where the pin says."
 [[ $tag != "$pinned" ]] || die "$tag is already the pinned release; bump with mise engine-bump first."
 ! git rev-parse -q --verify "refs/tags/$tag" > /dev/null || die "Tag $tag already exists locally."
 ! git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null 2>&1 || die "Tag $tag already exists on origin."
-! gh release view "$tag" -R wesleygrimes/omastorm > /dev/null 2>&1 \
+! gh release view "$tag" -R "$repo" > /dev/null 2>&1 \
   || die "Release $tag already exists. Releases are immutable; bump the version instead of replacing it."
 
 # Annotated: CI's gh release create --verify-tag rejects a lightweight tag.

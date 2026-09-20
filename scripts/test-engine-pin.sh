@@ -43,7 +43,7 @@ other_sum=$(sha256sum -- "$scratch/other" | awk '{print $1}')
 pin=$scratch/release.pin
 cat > "$pin" <<PIN
 tag=engine-test
-repo=wesleygrimes/omastorm
+repo=OmaCheese/omastorm-se
 asset_$native=omastorm-engine-$native-unknown-linux-gnu
 sha256_$native=$sum
 asset_$other=omastorm-engine-$other-unknown-linux-gnu
@@ -120,7 +120,7 @@ chmod +x "$scratch/bin/curl"
 for arch in x86_64 aarch64; do
   rm -f "$dest"
   PATH="$scratch/bin:$PATH" DOWNLOAD_FIXTURES=$scratch/downloads OMASTORM_ENGINE_MACHINE=$arch "${install_cmd[@]}"
-  [[ $(cat "$scratch/downloads/url") == "https://github.com/wesleygrimes/omastorm/releases/download/engine-test/omastorm-engine-$arch-unknown-linux-gnu" ]] \
+  [[ $(cat "$scratch/downloads/url") == "https://github.com/OmaCheese/omastorm-se/releases/download/engine-test/omastorm-engine-$arch-unknown-linux-gnu" ]] \
     || fail "Wrong download URL for $arch"
 done
 rm -f "$dest"

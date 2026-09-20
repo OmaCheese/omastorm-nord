@@ -1,13 +1,17 @@
 # Contributing
 
-Report bugs and propose work in [GitHub issues](https://github.com/wesleygrimes/omastorm/issues).
+Report bugs and propose work in
+[this fork's issues](https://github.com/OmaCheese/omastorm-se/issues). A bug
+upstream Omastorm has too belongs
+[upstream](https://github.com/wesleygrimes/omastorm/issues), where the fix
+helps both.
 Track pending work in issues and projects; discuss new features there before
 implementation.
 
 ## Issues
 
 For a bug, use the
-[bug report template](https://github.com/wesleygrimes/omastorm/issues/new?template=bug-report.md).
+[bug report template](https://github.com/OmaCheese/omastorm-se/issues/new?template=bug-report.md).
 Say what happened, what you expected, and your Omarchy version, plugin commit,
 engine, and GPU as the template asks.
 

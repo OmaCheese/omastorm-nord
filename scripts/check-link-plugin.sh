@@ -94,7 +94,7 @@ out=$(bash scripts/link-plugin.sh --unlink)
 if rg -q 'enablePlugin' "$OMASTORM_SHELL_LOG"; then
   fail 'unlink enabled the plugin'
 fi
-printf '%s\n' "$out" | rg -q 'omarchy plugin add https://github.com/wesleygrimes/omastorm --enable' \
+printf '%s\n' "$out" | rg -q 'omarchy plugin add https://github.com/OmaCheese/omastorm-se --enable' \
   || fail "unlink without clone should name plugin add: $out"
 
 if bash scripts/link-plugin.sh --unlink 2>"$scratch/unlink.err"; then

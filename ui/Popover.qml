@@ -63,7 +63,6 @@ FocusScope {
         onLoopRequested: site => card.session.loopSite = site
     }
     // The reach the window's product menu set for each radar (S29).
-    Reach { id: reachStore }
     function step(delta) { connection.stepBy(delta); }
     function play() { connection.togglePlay(); }
     // Respect the same config keys as the window; Enter always expands.
@@ -163,10 +162,9 @@ FocusScope {
                         var r = connection.sites.find(x => x.id === s.id);
                         if (!r) return null;
                         var full = r.rangeKm > 0 ? r.rangeKm : 240;
-                        return { lat: r.lat, lon: r.lon, km: s.reachKm > 0 ? Math.min(s.reachKm, full) : full };
+                        return { lat: r.lat, lon: r.lon, km: full };
                     }).filter(c => c !== null);
                 }
-                reachKm: reachStore.km(siteId)
                 radarOpacity: card.condition === "unavailable" ? .6 : 1
                 interactive: !card.session.needsLocation
                 onNavigated: (lat, lon, spanKm) => card.session.userNavigated(lat, lon, spanKm)

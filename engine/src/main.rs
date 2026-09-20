@@ -923,40 +923,60 @@ impl Shared {
             let name = self.load_name(&station, want);
             self.loading.begin(kind, &name, has_frame, under);
         }
-        self.live = Some(if station.provider == providers::ProviderId::Mosaic {
-            // My mosaic polls its set's radars itself (S25).
-            tokio::spawn(mosaic::poll(
-                self.state.mosaic.clone(),
-                self.sites.clone(),
-                self.events.clone(),
-                cached,
-            ))
-        } else if station.kind == SiteKind::Grid && !want.is_lowest() {
-            // A composite's product (S24b): made from its radars, only
-            // while it is shown.
-            tokio::spawn(mosaic::poll_grid(
-                station,
-                want,
-                self.sites.clone(),
-                self.events.clone(),
-                cached,
-            ))
-        } else {
-            tokio::spawn(providers::poll(
-                station,
-                self.events.clone(),
-                cached,
-                skip_known,
-                want,
-            ))
-        });
+        self.live = Some(
+            if station.provider == providers::ProviderId::Mosaic && !want.is_lowest() {
+                // My mosaic's own product (S37: Rain mass): its set's radars,
+                // its own box, the product made as a composite's is.
+                tokio::spawn(mosaic::poll_mine_grid(
+                    self.state.mosaic.clone(),
+                    station,
+                    want,
+                    self.sites.clone(),
+                    self.events.clone(),
+                    cached,
+                ))
+            } else if station.provider == providers::ProviderId::Mosaic {
+                // My mosaic polls its set's radars itself (S25).
+                tokio::spawn(mosaic::poll(
+                    self.state.mosaic.clone(),
+                    self.sites.clone(),
+                    self.events.clone(),
+                    cached,
+                ))
+            } else if station.kind == SiteKind::Grid && !want.is_lowest() {
+                // A composite's product (S24b): made from its radars, only
+                // while it is shown.
+                tokio::spawn(mosaic::poll_grid(
+                    station,
+                    want,
+                    self.sites.clone(),
+                    self.events.clone(),
+                    cached,
+                ))
+            } else {
+                tokio::spawn(providers::poll(
+                    station,
+                    self.events.clone(),
+                    cached,
+                    skip_known,
+                    want,
+                ))
+            },
+        );
         self.last_live_restart = Instant::now();
     }
     /// The catalog ring `station` shows under `want`: the product's
     /// (`Want::variant`), or for My mosaic the set's (S25).
     fn variant_for(&self, station: &Station, want: Want) -> String {
         if station.provider == providers::ProviderId::Mosaic {
-            self.state.mosaic.variant()
+            let set = self.state.mosaic.variant();
+            // S37: a mosaic product is its own ring — the same set shows a
+            // different thing — so the want joins the set's name.
+            if want.is_lowest() {
+                set
+            } else {
+                format!("{set}-{}", want.variant())
+            }
         } else {
             want.variant()
         }

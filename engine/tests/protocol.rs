@@ -253,7 +253,8 @@ fn fixture_transport_and_shared_commands() {
         );
         assert_eq!(offer(grid)["elevations"], json!([]));
     }
-    assert_eq!(offer("mymosaic")["products"], json!([]));
+    // S37: My mosaic offers its own rule and Rain mass, made from the set.
+    assert_eq!(offer("mymosaic")["products"], json!(["REF", "VIL"]));
     assert_eq!(offer("mymosaic")["elevations"], json!([]));
     // S36: no Iberian crop, and no Spanish radar, in hello.
     assert!(!sites.iter().any(|s| s["id"] == "iberia"));
@@ -312,7 +313,7 @@ fn fixture_transport_and_shared_commands() {
     let mine = offer("mymosaic");
     assert_eq!(
         (&mine["kind"], &mine["provider"], &mine["products"]),
-        (&json!("grid"), &json!("mosaic"), &json!([]))
+        (&json!("grid"), &json!("mosaic"), &json!(["REF", "VIL"]))
     );
     assert_eq!(sites.last().unwrap()["id"], "mymosaic");
     assert_eq!(initial["mosaic"], json!({"sites":[],"rule":"lowest"}));
@@ -324,10 +325,6 @@ fn fixture_transport_and_shared_commands() {
             "twice",
         ),
         (json!({"type":"set_mosaic","sites":["XXXX"]}), "XXXX"),
-        (
-            json!({"type":"set_mosaic","sites":[{"id":"vara","reachKm":10}]}),
-            "minimum",
-        ),
         (
             json!({"type":"set_mosaic","sites":["vara"],"rule":"mean"}),
             "Unknown rule",
@@ -353,11 +350,20 @@ fn fixture_transport_and_shared_commands() {
         assert_eq!(e["command"], "set_mosaic");
         assert!(e["message"].as_str().unwrap().contains(word), "{e}");
     }
+    // S37: reachKm is accepted and ignored — a short one is no longer an
+    // error, and the radar still reaches as far as it reaches.
+    send(
+        &mut second,
+        json!({"type":"set_mosaic","sites":[{"id":"vara","reachKm":10}]}),
+    );
+    state(&mut second, |s| {
+        s["mosaic"]["sites"] == json!([{"id":"vara","reachKm":240.0}])
+    });
     send(
         &mut second,
         json!({"type":"set_mosaic","sites":[{"id":"sevax"},{"id":"nohur","reachKm":150},"dksin"]}),
     );
-    let chosen = json!({"sites":[{"id":"vara","reachKm":240.0},{"id":"nohur","reachKm":150.0},
+    let chosen = json!({"sites":[{"id":"vara","reachKm":240.0},{"id":"nohur","reachKm":240.0},
                                  {"id":"dksin","reachKm":238.0}],"rule":"lowest"});
     for client in [&mut first, &mut second] {
         state(client, |s| s["mosaic"] == chosen);
@@ -369,7 +375,7 @@ fn fixture_transport_and_shared_commands() {
         json!({"type":"set_mosaic","sites":[{"id":"sevax"},{"id":"nohur","reachKm":150},"dksin"],
                "rule":"height","heightM":3000,"above":"ground"}),
     );
-    let high = json!({"sites":[{"id":"vara","reachKm":240.0},{"id":"nohur","reachKm":150.0},
+    let high = json!({"sites":[{"id":"vara","reachKm":240.0},{"id":"nohur","reachKm":240.0},
                                {"id":"dksin","reachKm":238.0}],"rule":"height","heightM":3000,"above":"ground"});
     for client in [&mut first, &mut second] {
         state(client, |s| s["mosaic"] == high);

@@ -20,6 +20,9 @@ echo "Zoom hold pixel difference: $(cat "$check_dir/difference.txt")"
 # Solid synthetic masks make a missing layer unambiguous, including the swap.
 held=$(magick review/zoom-held-partial.png -format '%[pixel:p{599,419}]' info:)
 ready=$(magick review/zoom-ready.png -format '%[pixel:p{599,419}]' info:)
-[[ "$held" == *'(75,75,75'* && "$ready" == *'(47,84,131'* ]] || {
+# The values are the tint weights of RadarMap's basemap layers, premultiplied
+# by the harness theme's colours: S38 gave every line more weight (boundaries
+# .32 -> .62, water .55 -> .6), so these moved with them.
+[[ "$held" == *'(147,147,147'* && "$ready" == *'(52,92,143'* ]] || {
   echo "Unexpected held/ready map pixels: $held / $ready" >&2; exit 1;
 }

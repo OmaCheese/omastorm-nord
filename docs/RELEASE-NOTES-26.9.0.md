@@ -3,9 +3,9 @@
 The first engine release of Omastorm SE, a fork of
 [Omastorm](https://github.com/wesleygrimes/omastorm) by Wes Grimes. Where
 upstream draws NOAA NEXRAD over the United States, Omastorm SE draws European
-weather radar: 52 radars in Sweden, Norway, Finland, Denmark and Spain,
-SMHI's national composite, EUMETNET OPERA's Nordic and Iberian composites,
-and a mosaic of the radars you choose, in the Omarchy bar and window.
+weather radar: 41 radars in Sweden, Norway, Finland and Denmark, SMHI's
+national composite, EUMETNET OPERA's Nordic composite, and a mosaic of the
+radars you choose, in the Omarchy bar and window.
 
 The engine version is CalVer (`YY.M.patch`) so it can never share a tag with
 upstream's `engine-0.1.x` line.
@@ -37,23 +37,15 @@ runners (x86_64 and ARM64) from the tagged commit.
 - **Norway, Finland and Denmark.** 29 radars (12, 12 and 5) from EUMETNET
   Open Radar Data's public 24-hour cache, one provider for all three
   countries, 60 scans each.
-- **Spain.** 11 AEMET radars, nine on the peninsula and two on the Canaries,
-  from the same cache. AEMET publishes every 10 minutes rather than 5, so a
-  Spanish radar reads stale after 20 minutes, not 15.
 - **The Nordic composite** (`nordic`), cut from EUMETNET OPERA's pan-European
   maximum-reflectivity composite: the engine reads only the 11 of 30 chunks
   that cover 3–33° E, 53–71.5° N (under 1 MB of a ~1.9 MB file per frame),
   24 frames on join, up to 60 as they arrive.
-- **The Iberian composite** (`iberia`), cut from the same OPERA file over
-  10.5° W–4.5° E, 35–44.5° N — 5 chunks, about 80 KB a frame. It is the only
-  view of Portugal's radars: IPMA publishes no open single-radar volumes, and
-  the cache has nothing under `PT/`. Iberia shows the composite alone, with
-  no products.
 - **My mosaic**, a station built from the radars you pick, so a distant radar
   whose coverage is high and misleading can be left out.
-- 56 stations in all. Swedish radars keep SMHI's names (`vara`,
+- 44 stations in all. Swedish radars keep SMHI's names (`vara`,
   `balsta`, …) and also answer to their ODIM node codes (`sevax`); other
-  radars use their node codes (`nohur`, `fikor`, `dksin`, `esahr`). Each
+  radars use their node codes (`nohur`, `fikor`, `dksin`). Each
   station carries its country, provider, range and licence credit in
   `hello`.
 
@@ -97,20 +89,15 @@ checks run offline.
 
 - **Omastorm** by Wes Grimes (MIT): the engine, the Quickshell/QML plugin,
   the treatments, and the release tooling this fork builds on.
-- Radar data: **SMHI** (CC BY 4.0); **MET Norway**, **FMI**, **DMI** and
-  **AEMET** (CC BY 4.0) through **EUMETNET Open Radar Data**; the Nordic and
-  Iberian composites **EUMETNET OPERA** (AEMET, IPMA, Météo-France;
-  CC BY 4.0).
+- Radar data: **SMHI** (CC BY 4.0); **MET Norway**, **FMI** and **DMI**
+  (CC BY 4.0) through **EUMETNET Open Radar Data**; the Nordic composite
+  **EUMETNET OPERA** (CC BY 4.0).
 - Maps: © **OpenStreetMap** contributors (ODbL), vector tiles by
   **OpenFreeMap** (© OpenMapTiles);
   **Natural Earth** (public domain); places from **GeoNames** (CC BY 4.0).
 
 ## Known limits
 
-- Portugal is composite-only, and the Iberian composite carries no products:
-  IPMA publishes no open single-radar volumes.
-- Spain publishes three tilts up to about 2.1°, so its `Storm height` and
-  `Rain mass` say "at least" far sooner than a Nordic radar's do.
 - Reflectivity only: no Doppler velocity, no dual-polarization products.
 - The desktop's `release.pin` changes only after both architectures are
   published and verified (docs/RELEASING.md).

@@ -12,12 +12,13 @@
 # has put the worldwide downloads in data/raw/, it cuts them to the SMHI
 # network and rewrites the vendored copies and data/SHA256SUMS. The 1:10m
 # lines keep every feature with a vertex in one of the boxes of
-# `engine/build.rs` (Nordic 3–33° E, 53–71.5° N; since S32 Iberia 11° W–5° E,
-# 34–46° N and the Canaries 19.5–12.5° W, 25.5–31° N; build.rs then clips
+# `engine/build.rs` (Nordic 3–33° E, 53–71.5° N; S32's Iberian and Canary
+# boxes left with Spain in S36, and the vendored lines still carry them
+# until the next --regenerate, which costs nothing: build.rs then clips
 # vertex by vertex), and cities5000 and admin1 keep Sweden, Norway, Finland,
-# Åland, Denmark and the Baltics, and since S32 Spain, Portugal, Andorra and
-# Gibraltar. (S32 cut the fresh 2026-09-15 downloads for the new boxes and
-# countries and appended them: the Nordic lines of that download were
+# Åland, Denmark and the Baltics; S32's Spain, Portugal, Andorra and
+# Gibraltar left the gazetteer in S36. (S32 cut the fresh 2026-09-15
+# downloads for the new boxes and countries and appended them: the Nordic lines of that download were
 # byte-identical to the vendored ones, the Nordic cities5000 rows stayed the
 # 2026-09-14 snapshot.) The 1:50m world set, the populated places and the
 # radar volumes (lowest-tilt extracts, scripts/trim-odim.py and

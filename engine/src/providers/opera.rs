@@ -45,10 +45,6 @@ use tokio::time::sleep;
 
 /// The credit OPERA's licence asks for.
 pub const ATTRIBUTION: &str = "EUMETNET OPERA, CC BY 4.0";
-/// `iberia`'s credit also names the OPERA members whose radars it shows
-/// (S33): Spain's AEMET, Portugal's IPMA, and Météo-France, whose radars
-/// cover the box's corner of southern France (review N6).
-pub const IBERIA_ATTRIBUTION: &str = "EUMETNET OPERA (AEMET, IPMA, Météo-France), CC BY 4.0";
 /// The public 24-hour cache of EUMETNET's Open Radar Data.
 pub const BASE: &str = "https://s3.waw3-1.cloudferro.com/openradar-24h";
 /// Development only (S33, like S32's `OMASTORM_ORD_BASE`): points the
@@ -62,15 +58,6 @@ pub const NORDIC: LonLatBox = LonLatBox {
     east: 33.0,
     south: 53.0,
     north: 71.5,
-};
-/// `iberia`'s box (S33, DEC-17): mainland Portugal and Spain with the
-/// Balearics, 835 × 690 texels of 2 km, all on OPERA's grid, in 5 of its
-/// 30 chunks (~47 KB a file). The Canaries and Madeira are off the grid.
-pub const IBERIA: LonLatBox = LonLatBox {
-    west: -10.5,
-    east: 4.5,
-    south: 35.0,
-    north: 44.5,
 };
 
 /// A box the composite is cut to, listed as a grid station whose id is a
@@ -98,28 +85,16 @@ pub struct Cut {
 }
 
 /// OPERA's boxes, in `hello`'s order. `nordic` is DEC-14's, unchanged.
-pub const CUTS: [Cut; 2] = [
-    Cut {
-        id: "nordic",
-        name: "Nordic",
-        lat: 62.25,
-        lon: 18.0,
-        area: NORDIC,
-        attribution: ATTRIBUTION,
-        products: true,
-        handoff: false,
-    },
-    Cut {
-        id: "iberia",
-        name: "Iberia",
-        lat: 39.75,
-        lon: -3.0,
-        area: IBERIA,
-        attribution: IBERIA_ATTRIBUTION,
-        products: false,
-        handoff: true,
-    },
-];
+pub const CUTS: [Cut; 1] = [Cut {
+    id: "nordic",
+    name: "Nordic",
+    lat: 62.25,
+    lon: 18.0,
+    area: NORDIC,
+    attribution: ATTRIBUTION,
+    products: true,
+    handoff: false,
+}];
 
 /// The box station `id` is cut to, if it is one of OPERA's.
 pub fn cut(id: &str) -> Option<&'static Cut> {
@@ -229,14 +204,24 @@ const CUT_ROOM: usize = 16 * 1024 * 1024;
 /// What the engine's OPERA pollers share (S33): the boxes being polled and
 /// the times each already has, cuts one poller's read made for another,
 /// and the newest listing.
-#[derive(Default)]
 pub struct Hub {
+    /// The boxes this hub shares reads between: `CUTS` in use. S36 left one
+    /// shipped cut, and sharing needs two to mean anything, so the tests
+    /// build a hub over their own list (`IBERIA_TEST_CUTS`) rather than
+    /// letting the paths rot.
+    boxes: &'static [Cut],
     watching: Mutex<HashMap<String, Watch>>,
     cuts: Mutex<Vec<Cutout>>,
     listing: Mutex<Option<Listing>>,
     /// Held across "another box's listing, else list": pollers woken
     /// together (after one read served both) would otherwise both ask.
     listing_turn: tokio::sync::Mutex<()>,
+}
+
+impl Default for Hub {
+    fn default() -> Self {
+        Self::over(&CUTS)
+    }
 }
 
 #[derive(Default)]
@@ -307,6 +292,17 @@ impl Drop for Watching {
 }
 
 impl Hub {
+    /// A hub over `boxes`; `Default` is the shipped `CUTS`.
+    fn over(boxes: &'static [Cut]) -> Self {
+        Self {
+            boxes,
+            watching: Mutex::default(),
+            cuts: Mutex::default(),
+            listing: Mutex::default(),
+            listing_turn: tokio::sync::Mutex::default(),
+        }
+    }
+
     fn watch(self: &Arc<Self>, site: &str, known: &[i64]) -> Watching {
         let mut watching = lock(&self.watching);
         let w = watching.entry(site.to_owned()).or_default();
@@ -354,14 +350,14 @@ impl Hub {
     }
 
     fn cut_for(&self, site: &str, volume: &Volume, backfill: bool) -> Vec<&'static Cut> {
-        let Some(own) = cut(site) else {
+        let Some(own) = self.boxes.iter().find(|c| c.id == site) else {
             return Vec::new();
         };
         let watching = lock(&self.watching);
         let cuts = lock(&self.cuts);
         let mut room = CUT_ROOM.saturating_sub(cuts.iter().map(|c| c.grid.codes.len()).sum());
         let mut boxes = vec![own];
-        for other in CUTS.iter().filter(|c| c.id != site) {
+        for other in self.boxes.iter().filter(|c| c.id != site) {
             let Some(w) = watching.get(other.id) else {
                 continue;
             };
@@ -1074,7 +1070,7 @@ mod tests {
         assert_eq!(SPEC.backfill, 24);
         let stations = stations();
         let ids: Vec<&str> = stations.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["nordic", "iberia"]);
+        assert_eq!(ids, ["nordic"]);
         for (s, c) in stations.iter().zip(&CUTS) {
             assert_eq!((s.kind, s.provider), (SiteKind::Grid, ProviderId::Opera));
             assert_eq!((s.country.as_str(), s.range_km), ("", 0.0));
@@ -1083,22 +1079,21 @@ mod tests {
             assert_eq!(s.lon, (c.area.west + c.area.east) / 2.0);
             assert_eq!(cut(&s.id), Some(c));
         }
-        // nordic as DEC-14 lists it; iberia names the members it shows.
+        // nordic as DEC-14 lists it; since S36 it is the only cut.
         let nordic = &stations[0];
         assert_eq!(
             (nordic.name.as_str(), nordic.lat, nordic.lon),
             ("Nordic", 62.25, 18.0)
         );
         assert_eq!(nordic.attribution, "EUMETNET OPERA, CC BY 4.0");
-        assert_eq!(
-            stations[1].attribution,
-            "EUMETNET OPERA (AEMET, IPMA, Météo-France), CC BY 4.0"
-        );
+        assert_eq!(stations.len(), 1);
         assert_eq!((CUTS[0].products, CUTS[0].handoff), (true, false));
-        assert_eq!((CUTS[1].products, CUTS[1].handoff), (false, true));
         assert!(cut("sweden").is_none());
     }
 
+    /// S36 note: this guards `IBERIA_TEST`, the box the fixture and its
+    /// golden were cut for, so the fault test below keeps testing the
+    /// reader against real chunk addresses.
     #[test]
     fn the_iberian_box_is_its_goldens() {
         let golden: serde_json::Value =
@@ -1106,7 +1101,7 @@ mod tests {
                 .unwrap();
         let b = &golden["box"];
         assert_eq!(
-            IBERIA,
+            IBERIA_TEST,
             LonLatBox {
                 west: b["west"].as_f64().unwrap(),
                 east: b["east"].as_f64().unwrap(),
@@ -1124,8 +1119,8 @@ mod tests {
             (43.40333, -2.84194),
             (41.40818, 1.88489),
         ] {
-            assert!((IBERIA.south..IBERIA.north).contains(&lat));
-            assert!((IBERIA.west..IBERIA.east).contains(&lon));
+            assert!((IBERIA_TEST.south..IBERIA_TEST.north).contains(&lat));
+            assert!((IBERIA_TEST.west..IBERIA_TEST.east).contains(&lon));
         }
     }
 
@@ -1133,28 +1128,48 @@ mod tests {
     fn only_nordic_offers_products_and_only_from_radars_reaching_it() {
         let sites = crate::providers::table().sites;
         let station = |id: &str| sites.iter().find(|s| s.id == id).unwrap().clone();
-        let (nordic, iberia) = (station("nordic"), station("iberia"));
+        let nordic = station("nordic");
         assert_eq!(crate::mosaic::grid_box(&nordic), Some(NORDIC));
-        assert_eq!(crate::mosaic::grid_box(&iberia), None);
         assert!(!crate::products::for_station(&nordic).0.is_empty());
-        // iberia: the composite only (no product menu, no radars to cut).
-        assert!(crate::products::for_station(&iberia).0.is_empty());
-        // S32's reach rule over each box: nordic's products still come from
-        // its 41 radars and sweden's from SMHI's 12, never from Spain's...
+        // S32's reach rule over each box: nordic's products come from its
+        // 41 radars and sweden's from SMHI's 12. Since S36 there are no
+        // others: Spain left with the Iberian cut.
         let radars = |s: &Station| crate::mosaic::grid_radars(s, &sites);
         assert_eq!(radars(&nordic).len(), 41);
-        assert!(radars(&nordic).iter().all(|s| s.country != "ES"));
         assert_eq!(radars(&station("sweden")).len(), 12);
-        // ...and iberia's box reaches Spain's nine peninsular radars, not
-        // the Canaries (none of its products is made: no product menu).
-        let ids: Vec<String> = radars(&iberia).into_iter().map(|s| s.id).collect();
-        assert_eq!(ids.len(), 9, "{ids:?}");
-        assert!(ids.iter().all(|id| id.starts_with("es")), "{ids:?}");
-        assert!(
-            !ids.iter().any(|id| id == "esatn" || id == "esbnv"),
-            "{ids:?}"
-        );
+        assert!(sites.iter().all(|s| s.country != "ES"));
+        assert!(!sites.iter().any(|s| s.id == "iberia"));
     }
+
+    /// The box S33 shipped as `iberia` until S36 took Spain out. The
+    /// station is gone, but the reader's two-box paths — one read cut for
+    /// several boxes, and a fault in one box's chunks (review SF1) — are
+    /// machinery that outlives any one cut, and the Iberian fixture is the
+    /// only file whose chunks differ from nordic's. So the box lives on
+    /// here, in the tests, with its golden.
+    /// `CUTS` as it was until S36, so the hub's sharing paths (one read cut
+    /// for several boxes, turn-taking listings, the cut-room budget) keep a
+    /// second box to share with.
+    const IBERIA_TEST_CUTS: [Cut; 2] = [
+        CUTS[0],
+        Cut {
+            id: "iberia",
+            name: "Iberia",
+            lat: 39.75,
+            lon: -3.0,
+            area: IBERIA_TEST,
+            attribution: "EUMETNET OPERA (AEMET, IPMA, Météo-France), CC BY 4.0",
+            products: false,
+            handoff: true,
+        },
+    ];
+
+    const IBERIA_TEST: LonLatBox = LonLatBox {
+        west: -10.5,
+        east: 4.5,
+        south: 35.0,
+        north: 44.5,
+    };
 
     /// A composite served from memory in ranges.
     struct Served(Vec<u8>);
@@ -1177,7 +1192,8 @@ mod tests {
     #[test]
     fn a_fault_in_another_boxs_chunks_never_costs_the_readers_frame() {
         // Review SF1: the Iberian fixture with chunk (5, 1), which only
-        // iberia needs, spoiled in the middle of its deflate stream.
+        // the second box needs, spoiled in the middle of its deflate
+        // stream.
         let golden: serde_json::Value =
             serde_json::from_str(include_str!("../../../golden/iberia-20260915/grid.json"))
                 .unwrap();
@@ -1201,18 +1217,18 @@ mod tests {
             move || RangeReader::open_planned(Box::new(Served(bytes.clone())), PLAN, Duration::ZERO)
         };
         // Sound: one read, both grids, no retry.
-        let (grids, _, fault) = cut_boxes(opener(&good), &[NORDIC, IBERIA], || false).unwrap();
+        let (grids, _, fault) = cut_boxes(opener(&good), &[NORDIC, IBERIA_TEST], || false).unwrap();
         assert_eq!((grids.len(), fault), (2, None));
-        // Spoiled: iberia's own read fails...
-        assert!(cut_boxes(opener(&bad), &[IBERIA], || false).is_err());
-        // ...nordic's read cut for iberia too fails on iberia's chunk, so
-        // nordic's box is read again alone and nordic keeps its frame.
-        let (grids, _, fault) = cut_boxes(opener(&bad), &[NORDIC, IBERIA], || false).unwrap();
+        // Spoiled: the second box's own read fails...
+        assert!(cut_boxes(opener(&bad), &[IBERIA_TEST], || false).is_err());
+        // ...nordic's read cut for it too fails on that chunk, so nordic's
+        // box is read again alone and nordic keeps its frame.
+        let (grids, _, fault) = cut_boxes(opener(&bad), &[NORDIC, IBERIA_TEST], || false).unwrap();
         assert_eq!(grids.len(), 1);
         assert_eq!((grids[0].width, grids[0].height), (1670, 2297));
         assert!(fault.is_some());
         // A network failure is not read again: the poller backs off.
-        assert!(cut_boxes(opener(&bad), &[NORDIC, IBERIA], || true).is_err());
+        assert!(cut_boxes(opener(&bad), &[NORDIC, IBERIA_TEST], || true).is_err());
     }
 
     fn a_grid(start_ms: i64) -> Grid {
@@ -1237,7 +1253,7 @@ mod tests {
 
     #[test]
     fn a_read_is_cut_for_every_other_box_being_polled_that_lacks_it() {
-        let hub = Arc::new(Hub::default());
+        let hub = Arc::new(Hub::over(&IBERIA_TEST_CUTS));
         let v = volume(BASE, at(15, 17, 0));
         // Alone, a read is cut for its own box only.
         assert_eq!(ids(hub.boxes_for("nordic", &v)), ["nordic"]);
@@ -1279,7 +1295,7 @@ mod tests {
     fn cuts_are_made_while_they_fit_and_never_dropped_for_room() {
         // Review SF2: iberia's live reads cut for nordic (3.8 MB each) only
         // while the waiting cuts fit; none made is ever dropped.
-        let hub = Arc::new(Hub::default());
+        let hub = Arc::new(Hub::over(&IBERIA_TEST_CUTS));
         let (_n, _i) = (hub.watch("nordic", &[]), hub.watch("iberia", &[]));
         let (w, h) = composite::texture_size(NORDIC);
         let mut made = 0;
@@ -1308,7 +1324,7 @@ mod tests {
 
     #[test]
     fn a_backfill_read_is_cut_only_for_times_another_backfill_wants() {
-        let hub = Arc::new(Hub::default());
+        let hub = Arc::new(Hub::over(&IBERIA_TEST_CUTS));
         let (_n, _i) = (hub.watch("nordic", &[]), hub.watch("iberia", &[]));
         let (v1, v2) = (volume(BASE, at(15, 17, 0)), volume(BASE, at(15, 17, 5)));
         // nordic has no backfill running: iberia's backfill cuts nothing
@@ -1337,7 +1353,7 @@ mod tests {
 
     #[test]
     fn another_boxes_fresh_listing_serves() {
-        let hub = Hub::default();
+        let hub = Hub::over(&IBERIA_TEST_CUTS);
         let listed = [volume(BASE, at(15, 16, 55)), volume(BASE, at(15, 17, 0))];
         hub.remember_listing("nordic", at(15, 16, 0), &listed);
         // Never a poller's own listing: it asks again.
@@ -1461,7 +1477,7 @@ mod tests {
                 backfill_delay: Duration::from_millis(50),
                 backfill_pace: Duration::ZERO,
                 now_ms: || at(15, 17, 9),
-                hub: Arc::new(Hub::default()),
+                hub: Arc::new(Hub::over(&IBERIA_TEST_CUTS)),
             };
             let (tx, mut rx) = tokio::sync::mpsc::channel(64);
             let pollers = [

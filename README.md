@@ -1,10 +1,10 @@
 # Omastorm SE
 
 > **Omastorm SE** is a fork of [Omastorm](https://github.com/wesleygrimes/omastorm)
-> that shows European weather radar instead of NOAA NEXRAD: 52 radars — the 12
-> [SMHI](https://www.smhi.se/) radars in Sweden, 12 in Norway, 12 in Finland, 5
-> in Denmark and 11 in Spain — plus SMHI's national composite, EUMETNET OPERA's
-> Nordic and Iberian composites, and a mosaic of the radars you choose. It
+> that shows Nordic weather radar instead of NOAA NEXRAD: 41 radars — the 12
+> [SMHI](https://www.smhi.se/) radars in Sweden, 12 in Norway, 12 in Finland
+> and 5 in Denmark — plus SMHI's national composite, EUMETNET OPERA's Nordic
+> composite, and a mosaic of the radars you choose. It
 > installs beside upstream under its own plugin id (`rb.omastorm-se`) and
 > directories (`omastorm-se`).
 
@@ -31,13 +31,13 @@ client: it displays those textures in the bar popover and full window.
 ## Features
 
 - **Live.** A Rust engine polls each service's open data every minute: SMHI for
-  Sweden, EUMETNET's Open Radar Data cache for Norway, Finland, Denmark and
-  Spain, and OPERA for the composites. Most publish one scan per radar every 5
-  minutes (Spain every 10), a few minutes after it is taken; the scan appears
-  whole. Stale data says it is stale.
+  Sweden, EUMETNET's Open Radar Data cache for Norway, Finland and Denmark, and
+  OPERA for the Nordic composite. Each publishes one scan per radar every 5
+  minutes, a few minutes after it is taken; the scan appears whole. Stale data
+  says it is stale.
 - **Every radar.** Pan the map and it follows the nearest station, or search by
-  station, town, or county. Pick Sweden, Nordic or Iberia for a composite, or My
-  mosaic for the radars you chose.
+  station, town, or county. Pick Sweden or Nordic for a composite, or My mosaic
+  for the radars you chose.
 - **Timeline.** Up to 60 scans per station, cached locally. Play, step, scrub.
 - **Three treatments.** Glyphs, Pixels, and Stipple sample the same gate and
   paint the cell differently.
@@ -142,7 +142,7 @@ are hidden by default and the legend says so; `w` shows them.
 | `Storm height` | the top of the 18 dBZ echo, in km | storm depth, the best single clue to vigour: 3–6 km showers, 8–10 km thunderstorms, over 10–12 km severe with hail likely. “At least” means the highest beam still found echo, so the top is higher |
 | `Rain mass` | the water in the column, kg/m² | over about 25 heavy rain; very high in summer usually means hail, which reflects far more than rain. A sudden collapse over a cell suggests a downburst |
 | `Lowest beam` (composites) | which radar sees a point lowest | a data-quality map: where the composite sees near the ground, and where all of it is aloft |
-| A composite (`Sweden`, `Nordic`, `Iberia`) | the provider’s combined picture | country-wide rain at a glance; each point may come from a different radar at a different height |
+| A composite (`Sweden`, `Nordic`) | the provider’s combined picture | country-wide rain at a glance; each point may come from a different radar at a different height |
 | `My mosaic` | only the radars you pick | leaves out a radar whose distant, high coverage misleads |
 | A section, and a profile on long press | a vertical slice, and one column’s numbers | structure: a flat layer with a bright band at 1–3 km is steady rain melting; a narrow column to 8–12 km is convection; echo that stops short of the ground is rain evaporating on the way down |
 | `Relief` | `Storm height` drawn as a lit surface | the same data made readable: cells stand up, flat rain looks flat |
@@ -166,13 +166,11 @@ and the gate layout, not by power alone:
 | Norway (MET) | 12 | 240 km | 250 m (960 gates) | every 5 min | 0.5° |
 | Finland (FMI) | 12 | 250 km | 500 m (500 gates) | every 5 min | 0.1–0.5° |
 | Denmark (DMI) | 5 | 237.5–238 km | 500 m | every 5 min | 0.48–0.51° |
-| Spain (AEMET) | 11 | 240–250 km | 1000 m | every 10 min | 0.5° |
 
-So a Norwegian radar resolves four times finer along the beam than a Spanish
-one, Spain updates half as often, and Finland starts lower, which is why its
-radars see furthest for the same height. The number of angles differs too:
-Spain publishes three tilts up to about 2.1°, so its `Storm height` and
-`Rain mass` read “at least” much sooner than a Nordic radar’s.
+So a Norwegian radar resolves twice as finely along the beam as a Swedish or
+Danish one, and Finland starts lower, which is why its radars see furthest for
+the same height. The number of angles differs too, which is why `Storm height`
+and `Rain mass` read “at least” sooner on some radars than others.
 
 Range on its own is a file header, not what a radar can see. What matters is
 beam height: at 0.5° the beam centre is about 2 km up at 125 km and about 4 km

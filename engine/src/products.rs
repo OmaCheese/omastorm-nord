@@ -2554,40 +2554,37 @@ mod tests {
     /// ground asked of it is made above sea level, and one carried over from a
     /// Nordic radar says so. Every product but the composites' is offered.
     #[test]
-    fn a_spanish_radar_has_every_product_and_heights_above_sea_only() {
+    fn every_radar_has_terrain_now_and_one_outside_it_would_not() {
+        // S32's Spanish radars sat outside the terrain grid and offered
+        // heights above sea only; S36 took them out, so every radar left is
+        // covered. The "sea only" branch stays tested on a station placed
+        // outside the grid, because it is what any future radar beyond the
+        // Nordic terrain would get.
         let table = crate::providers::table();
         let by_id = |id: &str| table.sites.iter().find(|s| s.id == id).unwrap().clone();
-        let (esahr, nohur) = (by_id("esahr"), by_id("nohur"));
-        let entry = site_entry(esahr.clone());
-        assert_eq!(
-            entry.products,
-            ["REF", "HYBRID", "CAPPI", "CMAX", "ETOP", "VIL"]
-        );
-        assert_eq!(
-            entry.elevations.iter().map(|e| e.deg).collect::<Vec<_>>(),
-            [0.5, 1.3, 2.1]
-        );
-        assert_eq!(entry.above, ["sea"]);
+        let nohur = by_id("nohur");
         assert_eq!(site_entry(nohur.clone()).above, ["sea", "ground"]);
-        assert_eq!(
-            nominal_angles(&by_id("essse")),
-            [0.5, 1.4, 2.3],
-            "San Sebastián and Valladolid scan higher"
-        );
+        for s in table.sites.iter().filter(|s| s.kind == SiteKind::Polar) {
+            assert_eq!(above_for(s), ["sea", "ground"], "{}", s.id);
+        }
+        let mut away = nohur.clone();
+        (away.lat, away.lon) = (36.6, -4.6);
+        assert!(!has_terrain(&away));
+        assert_eq!(above_for(&away), ["sea"]);
         let ground = choose("CAPPI", 0, Some(2000), Some("ground")).unwrap();
         assert!(matches!(
             want_for(&nohur, &ground),
             Some(Want::CappiGround(..))
         ));
-        assert!(matches!(want_for(&esahr, &ground), Some(Want::Cappi(..))));
-        let carried = carry(&ground, None, &esahr);
+        assert!(matches!(want_for(&away, &ground), Some(Want::Cappi(..))));
+        let carried = carry(&ground, None, &away);
         assert_eq!(
             (carried.id.as_str(), carried.height_m, carried.above),
             ("CAPPI", Some(2000), Some(Above::Sea))
         );
         assert_eq!(carry(&ground, None, &nohur).above, Some(Above::Ground));
         // The serialized entry: `above` only where CAPPI is offered.
-        let json = serde_json::to_value(site_entry(esahr)).unwrap();
+        let json = serde_json::to_value(site_entry(away)).unwrap();
         assert_eq!(json["above"], serde_json::json!(["sea"]));
         let grid = serde_json::to_value(site_entry(by_id("mymosaic"))).unwrap();
         assert!(grid.get("above").is_none());
@@ -2608,12 +2605,12 @@ mod tests {
             .collect();
         assert_eq!(
             radars.len(),
-            52,
-            "12 SE, 12 NO, 12 FI (S24a), 5 DK and 11 ES (S32) radars"
+            41,
+            "12 SE, 12 NO, 12 FI (S24a) and 5 DK radars; Spain left in S36"
         );
         let (finnish, radars): (Vec<&Station>, Vec<&Station>) =
             radars.into_iter().partition(|s| s.country == "FI");
-        assert_eq!((finnish.len(), radars.len()), (12, 40));
+        assert_eq!((finnish.len(), radars.len()), (12, 29));
         for station in finnish {
             assert_eq!(blockage(&station.id), None, "{}", station.id);
             assert_eq!(

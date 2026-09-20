@@ -6,7 +6,7 @@
   "author": "OmaCheese",
   "license": "MIT",
   "homepage": "https://github.com/OmaCheese/omastorm-se",
-  "description": "Live Nordic and Iberian weather radar for the Omarchy desktop, a fork of Omastorm",
+  "description": "Live Nordic weather radar for the Omarchy desktop, a fork of Omastorm",
   "kinds": [
     "bar-widget",
     "panel"

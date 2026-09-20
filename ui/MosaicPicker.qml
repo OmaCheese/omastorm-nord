@@ -33,7 +33,9 @@ Item {
     property var draft: ({ sites: [], rule: "lowest", heightM: 2000, above: "sea" })
     /// S30: heights above the ground; an older engine's CAPPI entry in
     /// hello.products says nothing about them. S32: only when every chosen
-    /// radar's hello.sites[].above has it (none of Spain's).
+    /// radar's hello.sites[].above has it. Since S36 every shipped radar is
+    /// on the Nordic terrain grid, so it always does; the check stays for
+    /// any radar beyond it.
     readonly property bool groundOffered: {
         var p = engine ? engine.products.find(x => x.id === "CAPPI") : null;
         if (!p || !Array.isArray(p.above) || p.above.indexOf("ground") < 0) return false;

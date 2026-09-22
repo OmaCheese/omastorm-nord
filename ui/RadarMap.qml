@@ -433,8 +433,8 @@ Item {
     onSiteIdChanged: scheduleLayout()
     onWidthChanged: { scheduleLayout(); settle.restart(); }
     onHeightChanged: { scheduleLayout(); settle.restart(); }
-    onWorldPixelsChanged: { scheduleLayout(); Qt.callLater(refreshOverlay); if (pickMode) Qt.callLater(layoutPickLabels); }
-    onLabelSizeChanged: { scheduleLayout(); if (pickMode) Qt.callLater(layoutPickLabels); }
+    onWorldPixelsChanged: { scheduleLayout(); Qt.callLater(refreshOverlay); }
+    onLabelSizeChanged: scheduleLayout()
     onPlacesChanged: scheduleLayout()
     onThemeChanged: scheduleLayout()
     Component.onCompleted: scheduleLayout()
@@ -472,9 +472,13 @@ Item {
     readonly property string activeLabel: stationLabel(sites.find(s => s.id === siteId) || {id: siteId})
     function rebuildLabels() {
         var started = Date.now();
+        // S39: pick mode's radar labels first; place names make way for them.
+        layoutPickLabels();
         if (!scan) { labels = []; siteLabels = []; return; }
         labelMetrics.text = activeLabel;
-        var occupied = [{x:-7, y:-7, w:14, h:14},
+        // In pick mode the active radar's tag and crosshair are hidden
+        // (its pick mark stands in), so only its mark is reserved.
+        var occupied = pickMode ? [] : [{x:-7, y:-7, w:14, h:14},
                         {x:7, y:4, w:labelMetrics.advanceWidth+6, h:16}], result = [], stations = [];
         // Station IDs take priority over place names. Reserve every marker
         // first; co-located archived/test stations must not cover each other.
@@ -493,7 +497,8 @@ Item {
         }
         // Wider than a few countries (the web client's zoom 3, about 5 km a
         // pixel at 60° N) the markers stay and the names go, as on the phone.
-        if (pixelsPerKm < stationLabelMinPxPerKm) candidates = [];
+        // In pick mode the station labels are hidden: none is laid out.
+        if (pixelsPerKm < stationLabelMinPxPerKm || pickMode) candidates = [];
         for (var s of candidates) {
             var tx = (mercatorX(s.lon) - siteMx) * worldPixels;
             var ty = (mercatorY(s.lat) - siteMy) * worldPixels;
@@ -512,8 +517,10 @@ Item {
         // S39: in pick mode place names keep clear of every radar's label.
         if (pickMode) for (var l of pickLabels) {
             var ps = pickSites.find(s => s.id === l.id);
-            if (ps) occupied.push({x: (mercatorX(ps.lon) - siteMx) * worldPixels + l.x,
-                                   y: (mercatorY(ps.lat) - siteMy) * worldPixels + l.y, w: l.width, h: 16});
+            if (!ps) continue;
+            var px = (mercatorX(ps.lon) - siteMx) * worldPixels, py = (mercatorY(ps.lat) - siteMy) * worldPixels;
+            occupied.push({x: px - 6, y: py - 6, w: 12, h: 12});
+            occupied.push({x: px + l.x, y: py + l.y, w: l.width, h: 16});
         }
         for (var p of places) {
             labelMetrics.text = p.name;
@@ -627,32 +634,49 @@ Item {
     readonly property real pickRadius: 12
     readonly property real clickTravel: 4
     readonly property var pickSites: sites.filter(s => s.kind !== "grid")
-    // The nearest mark within pickRadius of the viewport point, or "".
+    // The nearest mark within pickRadius of the viewport point, else the
+    // radar whose shown label (pick mode) holds the point, else "".
     function radarAt(x, y) {
         var best = "", bestD = pickRadius;
         for (var s of pickSites) {
             var d = Math.hypot(sx(mercatorX(s.lon)) - x, sy(mercatorY(s.lat)) - y);
             if (d <= bestD) { bestD = d; best = s.id; }
         }
-        return best;
+        if (best !== "") return best;
+        for (var l of pickLabels) {
+            var ls = pickSites.find(s => s.id === l.id);
+            if (!ls) continue;
+            var lx = sx(mercatorX(ls.lon)) + l.x, ly = sy(mercatorY(ls.lat)) + l.y;
+            if (pickLabelShown(lx, ly, l.width) && x >= lx && x < lx + l.width && y >= ly && y < ly + 16) return l.id;
+        }
+        return "";
     }
-    // Label offsets from each mark, [{id, x, y, width}], laid out on zoom:
-    // every radar keeps its label; a collision only moves it to the first
-    // free side (right, left, above right, above left), else right.
+    // A pick label shows clear of the surface's corner annotations, as the
+    // station labels do; viewport position of its left top corner.
+    function pickLabelShown(lx, ly, w) { return lx >= 8 && lx + w <= width - 8 && ly >= 26 && ly + 16 <= height - 30; }
+    // Label offsets from each mark, [{id, x, y, width}], laid out with the
+    // place names (rebuildLabels): every radar keeps its label; a collision
+    // only moves it to the first free side (right, left, above right, above
+    // left, below right, below left), else right. The hot radar's halo is
+    // kept clear of the other radars' labels.
     property var pickLabels: []
-    onPickModeChanged: { if (!pickMode) pointer.hover(""); Qt.callLater(layoutPickLabels); }
-    onPickSitesChanged: Qt.callLater(layoutPickLabels)
+    onPickModeChanged: { if (!pickMode) pointer.hover(""); scheduleLayout(); }
+    onHotIdChanged: if (pickMode) scheduleLayout()
     function layoutPickLabels() {
-        if (!pickMode) { pickLabels = []; return; }
+        if (!pickMode) { if (pickLabels.length) pickLabels = []; return; }
         var marks = pickSites.map(s => ({s: s, x: mercatorX(s.lon) * worldPixels, y: mercatorY(s.lat) * worldPixels}));
-        var occupied = marks.map(m => ({x: m.x - 7, y: m.y - 7, w: 14, h: 14})), out = [];
+        var occupied = marks.map(m => ({x: m.x - 7, y: m.y - 7, w: 14, h: 14, id: m.s.id})), out = [];
+        var hot = marks.find(m => m.s.id === hotId);
+        if (hot) occupied.push({x: hot.x - 20, y: hot.y - 20, w: 40, h: 40, id: hotId});
         for (var m of marks) {
             labelMetrics.text = stationLabel(m.s);
             var tw = labelMetrics.advanceWidth + 6, chosen = null;
-            var sides = [{x: 10, y: -8}, {x: -tw - 10, y: -8}, {x: 8, y: -24}, {x: -tw - 8, y: -24}];
+            var sides = [{x: 10, y: -8}, {x: -tw - 10, y: -8}, {x: 8, y: -24}, {x: -tw - 8, y: -24},
+                         {x: 8, y: 8}, {x: -tw - 8, y: 8}];
             for (var q of sides) {
                 var bx = m.x + q.x, by = m.y + q.y;
-                if (occupied.some(o => bx < o.x + o.w && bx + tw > o.x && by < o.y + o.h && by + 16 > o.y)) continue;
+                // A mark's own box and halo never push its label away.
+                if (occupied.some(o => o.id !== m.s.id && bx < o.x + o.w && bx + tw > o.x && by < o.y + o.h && by + 16 > o.y)) continue;
                 chosen = q; break;
             }
             if (!chosen) chosen = sides[0];
@@ -660,7 +684,6 @@ Item {
             out.push({id: m.s.id, name: stationLabel(m.s), x: chosen.x, y: chosen.y, width: tw});
         }
         pickLabels = out;
-        scheduleLayout();  // place names make way for them (rebuildLabels)
     }
     function pickLabelFor(id) {
         for (var l of pickLabels) if (l.id === id) return l;
@@ -1006,17 +1029,19 @@ Item {
                 }
             }
         }
-        Rectangle { x: -7; y: -.5; width: 14; height: 1; color: map.antennaInk; visible: map.siteId !== "" && !map.grid }
-        Rectangle { x: -.5; y: -7; width: 1; height: 14; color: map.antennaInk; visible: map.siteId !== "" && !map.grid }
+        // In pick mode (S39) the active radar's pick mark stands in for its
+        // crosshair, lock frame and tag.
+        Rectangle { x: -7; y: -.5; width: 14; height: 1; color: map.antennaInk; visible: map.siteId !== "" && !map.grid && !map.pickMode }
+        Rectangle { x: -.5; y: -7; width: 1; height: 14; color: map.antennaInk; visible: map.siteId !== "" && !map.grid && !map.pickMode }
         // The lock: an accent 1 px frame on the marker and the tag.
         Rectangle {
             x: -6; y: -6; width: 12; height: 12; color: "transparent"
-            visible: map.locked && !map.grid
+            visible: map.locked && !map.grid && !map.pickMode
             border.width: 1; border.color: map.theme.accent
         }
         Rectangle {
             x: 7; y: 4; width: Math.floor(siteTag.implicitWidth) + 6; height: 16; color: map.theme.background
-            visible: map.siteId !== "" && !map.grid
+            visible: map.siteId !== "" && !map.grid && !map.pickMode
             border.width: map.locked ? 1 : 0; border.color: map.theme.accent
             Text {
                 id: siteTag
@@ -1067,7 +1092,7 @@ Item {
                     border.color: pickMark.picked ? map.theme.background : map.antennaInk
                 }
                 Rectangle {
-                    visible: !!pickMark.label
+                    visible: !!pickMark.label && map.pickLabelShown(pickMark.x + x, pickMark.y + y, width)
                     x: pickMark.label ? pickMark.label.x : 0
                     y: pickMark.label ? pickMark.label.y : 0
                     width: pickMark.label ? pickMark.label.width : 0; height: 16
@@ -1102,7 +1127,7 @@ Item {
         property bool doubled: false
         property string hovered: ""
         function hover(id) { if (hovered !== id) { hovered = id; map.radarHovered(id); } }
-        onPressed: mouse => { lastX=mouse.x; lastY=mouse.y; pressX=mouse.x; pressY=mouse.y; dragging=false; }
+        onPressed: mouse => { lastX=mouse.x; lastY=mouse.y; pressX=mouse.x; pressY=mouse.y; dragging=false; doubled=false; }
         onPositionChanged: mouse => {
             if (map.pickMode) {
                 if (!pressed) { hover(map.radarAt(mouse.x, mouse.y)); return; }
@@ -1121,7 +1146,8 @@ Item {
             var wasDrag = dragging, second = doubled;
             dragging = false; doubled = false;
             if (!wasDrag && !second) {
-                var id = map.radarAt(mouse.x, mouse.y);
+                // The press point: under clickTravel the map has not moved.
+                var id = map.radarAt(pressX, pressY);
                 if (id !== "") map.radarPicked(id);
             }
             hover(map.radarAt(mouse.x, mouse.y));

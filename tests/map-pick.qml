@@ -44,6 +44,32 @@ ShellRoot {
     property var nordic: ({lat: 62, lon: 16})
     function check(ok, message) { if (!ok) throw new Error(message); }
     function at(s) { return Qt.point(map.sx(map.mercatorX(s.lon)), map.sy(map.mercatorY(s.lat))); }
+    // A shown pick label's viewport rectangle, or null.
+    function labelRect(id) {
+        var l = map.pickLabelFor(id), s = map.pickSites.find(s => s.id === id);
+        if (!l || !s) return null;
+        var o = at(s), r = {x: o.x + l.x, y: o.y + l.y, w: l.width, h: 16};
+        return map.pickLabelShown(r.x, r.y, r.w) ? r : null;
+    }
+    function inLabel(x, y) {
+        return map.pickLabels.some(l => { var r = labelRect(l.id); return r && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; });
+    }
+    // Points `r` px around `p` that no label covers.
+    function clearAround(p, r) {
+        var out = [];
+        for (var i = 0; i < 16; i++) {
+            var q = Qt.point(p.x + r*Math.cos(i*Math.PI/8), p.y + r*Math.sin(i*Math.PI/8));
+            if (!inLabel(q.x, q.y)) out.push(q);
+        }
+        return out;
+    }
+    // Pairs of shown pick labels that overlap.
+    function labelOverlaps() {
+        var rs = map.pickLabels.map(l => labelRect(l.id)).filter(r => r), n = 0;
+        for (var i = 0; i < rs.length; i++) for (var j = i+1; j < rs.length; j++)
+            if (rs[i].x < rs[j].x+rs[j].w && rs[j].x < rs[i].x+rs[i].w && rs[i].y < rs[j].y+rs[j].h && rs[j].y < rs[i].y+rs[i].h) n++;
+        return n;
+    }
     function onScreen(p) { return p.x > 40 && p.x < map.width-40 && p.y > 40 && p.y < map.height-40; }
     function press(p) { check(ev.mousePress(map, p.x, p.y, Qt.LeftButton, Qt.NoModifier, -1), "window not shown"); }
     function move(p, buttons) { check(ev.mouseMove(map, p.x, p.y, -1, buttons, Qt.NoModifier), "window not shown"); }
@@ -92,8 +118,14 @@ ShellRoot {
                     var p = at(lone);
                     check(map.radarAt(p.x, p.y) === lone.id, "radarAt missed the mark itself");
                     check(map.radarAt(p.x+11, p.y) === lone.id, "radarAt missed inside the radius");
-                    check(map.radarAt(p.x+13, p.y) === "", "radarAt hit beyond the radius");
-                    check(map.radarAt(p.x, p.y-13) === "", "radarAt hit beyond the radius (y)");
+                    // Beyond the radius, off every label: nothing.
+                    var probes = clearAround(p, 13);
+                    check(probes.length >= 8, "Too few label-free probes around the lone mark: " + probes.length);
+                    for (var pr of probes) check(map.radarAt(pr.x, pr.y) === "", "radarAt hit beyond the radius at " + pr);
+                    // A radar's label is part of it.
+                    var lr = labelRect(lone.id);
+                    check(!!lr, "The lone radar's label is not shown");
+                    check(map.radarAt(lr.x + lr.w - 3, lr.y + 8) === lone.id, "radarAt missed the radar's label");
                     // Two close marks: the nearer wins.
                     // Zoomed out until they sit 16 px apart, both inside each other's radius.
                     var a = at(pair[0]), b = at(pair[1]), d = Math.hypot(a.x-b.x, a.y-b.y);
@@ -116,15 +148,20 @@ ShellRoot {
                     press(p); move(Qt.point(p.x+2, p.y+1), Qt.LeftButton); release(Qt.point(p.x+2, p.y+1));
                     check(picked.count === 2 && picked.signalArguments[1][0] === lone.id, "A 2 px jitter should still pick");
                     check(map.viewCenterX === cx && map.viewCenterY === cy, "A click moved the map");
-                    // A 10 px drag from a mark pans the whole 10 px and picks nothing.
+                    // A 10 px drag from a mark pans the whole 10 px and picks nothing;
+                    // the hover clears as the drag starts and comes back on release.
+                    move(p, Qt.NoButton);
+                    check(hovered.signalArguments[hovered.count-1][0] === lone.id, "Not hovering the mark before the drag");
                     press(p); move(Qt.point(p.x+5, p.y), Qt.LeftButton); move(Qt.point(p.x+10, p.y), Qt.LeftButton);
+                    check(hovered.signalArguments[hovered.count-1][0] === "", "The hover did not clear at drag start");
                     release(Qt.point(p.x+10, p.y));
+                    check(hovered.signalArguments[hovered.count-1][0] === lone.id, "The hover did not come back on release");
                     check(picked.count === 2, "A 10 px drag picked a radar");
                     check(Math.abs((cx-map.viewCenterX)*map.worldPixels-10) < 1e-6 && Math.abs(map.viewCenterY-cy) < 1e-12,
                           "A 10 px drag in pick mode must pan 10 px: " + (cx-map.viewCenterX)*map.worldPixels);
                     // A click on empty map does nothing.
-                    var empty = Qt.point(p.x+40, p.y+40);
-                    check(map.radarAt(empty.x, empty.y) === "", "Test point not empty");
+                    var empty = clearAround(at(lone), 40)[0];
+                    check(!!empty && map.radarAt(empty.x, empty.y) === "", "Test point not empty");
                     cx = map.viewCenterX;
                     press(empty); release(empty);
                     check(picked.count === 2 && map.viewCenterX === cx && resets === 0, "A click on empty map did something");
@@ -134,6 +171,11 @@ ShellRoot {
                     var q = at(lone);
                     check(ev.mouseDoubleClickSequence(map, q.x, q.y, Qt.LeftButton, Qt.NoModifier, -1), "window not shown");
                     check(resets === 1 && picked.count === 3, "A double-click on a mark must be one pick, not a reset: " + picked.count + "/" + resets);
+                    // A click on the radar's label picks it.
+                    lr = labelRect(lone.id);
+                    var onLabel = Qt.point(lr.x + lr.w - 3, lr.y + 8);
+                    press(onLabel); release(onLabel);
+                    check(picked.count === 4 && picked.signalArguments[3][0] === lone.id, "A click on a label did not pick its radar");
                     // The wheel still zooms about the pointer.
                     var span = map.span;
                     check(ev.mouseWheel(map, q.x, q.y, Qt.NoButton, Qt.NoModifier, 0, 120, -1), "window not shown");
@@ -163,6 +205,18 @@ ShellRoot {
                 } else if (stage === 8) {
                     capture.grabToImage(result => {
                         check(result.saveToFile(Quickshell.env("OMASTORM_REVIEW")+"/map-pick-light.png"), "Capture failed");
+                        // The densest corner: Denmark and Skåne at a 1500 km span.
+                        map.theme = dark;
+                        map.lookAt(56.5, 11.5);
+                        map.zoom(1500 * Math.cos(map.siteLat*Math.PI/180) / Math.cos(56.5*Math.PI/180));
+                        map.hotId = "dksin";
+                    });
+                } else if (stage === 11) {
+                    var overlaps = labelOverlaps();
+                    console.log("MAP_PICK_DENSE_OVERLAPS", overlaps);
+                    check(overlaps === 0, "Pick labels overlap in the Danish cluster: " + overlaps);
+                    capture.grabToImage(result => {
+                        check(result.saveToFile(Quickshell.env("OMASTORM_REVIEW")+"/map-pick-dense.png"), "Capture failed");
                         console.log("MAP_PICK_PASSED"); Qt.quit();
                     });
                 }

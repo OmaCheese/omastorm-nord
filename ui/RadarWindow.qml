@@ -258,6 +258,14 @@ Item {
         }).filter(c => c !== null)
     readonly property string mosaicLabel: !mosaicShown ? "" : !mosaicSet || !mosaicSet.sites.length ? "CHOOSE RADARS"
         : Mosaic.setName(engine.mosaic ? engine.mosaic.rules : [], mosaicSet).toUpperCase() + " / " + mosaicSet.sites.length + (mosaicSet.sites.length === 1 ? " RADAR" : " RADARS")
+    // S40: the panel's cursor radar on the map beside it; off screen (or
+    // within 30 px of the edge), the map centres on it.
+    function keepInView(id) {
+        var s = engine.sites.find(x => x.id === id);
+        if (!s || !mosaicPicker.open) return;
+        var x = map.sx(map.mercatorX(s.lon)), y = map.sy(map.mercatorY(s.lat)), m = 30;
+        if (x < m || x > map.width - m || y < m || y > map.height - m) map.lookAt(s.lat, s.lon);
+    }
     // SHOW in the checklist: My mosaic, centred on the chosen radars.
     function showMosaic(set) {
         if (!engine.mosaic) return;
@@ -483,8 +491,16 @@ Item {
         // S30: the height rule's height (metres) and what it is above.
         function height(m: int): void { mosaicPicker.setHeight(m); }
         function above(id: string): void { mosaicPicker.setAbove(id); }
+        // S40: the cursor and the filter, as the keys would move them.
+        function move(delta: int): void { mosaicPicker.move(delta); }
+        function filter(text: string): void { mosaicPicker.filter = text; }
         function status(): string {
-            return JSON.stringify({open: mosaicPicker.open, draft: mosaicPicker.draft, all: mosaicPicker.allText, rows: mosaicPicker.radars.length,
+            // S40: where the cursor is, what holds the keyboard, the
+            // filter and how many rows it leaves, and the map beside it.
+            return JSON.stringify({open: mosaicPicker.open, draft: mosaicPicker.draft, rows: mosaicPicker.radars.length,
+                                   cursor: mosaicPicker.cursor, hot: mosaicPicker.hotId, focused: mosaicPicker.listFocused,
+                                   filterFocused: mosaicPicker.filterFocused, filter: mosaicPicker.filter, shownRows: mosaicPicker.rows.length,
+                                   docked: mosaicPicker.open && mosaicPicker.docked, mapWidth: Math.round(map.width), span: Math.round(map.span * 10) / 10,
                                    circles: app.mosaicCircles.length, label: app.mosaicLabel, shown: app.mosaicShown,
                                    command: engine.sites.length ? Mosaic.command(mosaicPicker.draft, engine.sites, engine.mosaic ? engine.mosaic.rules : null) : null});
         }
@@ -780,6 +796,39 @@ Item {
                         onClicked: app.toggleLock()
                     }
                 }
+                // The radars chip (S37, the human 2026-09-20: "i cant see
+                // the list until i click on the product"; S40 moved it out
+                // of the hidden bar, where nobody could reach it): while My
+                // mosaic is shown it opens and closes My mosaic's panel. It
+                // never takes the keyboard, which is the panel's.
+                Button {
+                    id: radarsChip
+                    visible: app.mosaicShown || mosaicPicker.open
+                    implicitHeight: 30
+                    implicitWidth: contentItem.implicitWidth + 18
+                    padding: 0
+                    focusPolicy: Qt.NoFocus
+                    Layout.alignment: Qt.AlignTop
+                    Layout.leftMargin: 4
+                    opacity: mosaicPicker.open || hovered ? 1 : .8
+                    onClicked: mosaicPicker.open ? mosaicPicker.close() : mosaicPicker.show()
+                    contentItem: RowLayout {
+                        spacing: 6
+                        Item { Layout.fillWidth: true }
+                        Glyph { glyph: "radar"; implicitWidth: 14; ink: mosaicPicker.open ? app.theme.accent : app.theme.foreground }
+                        LabelText {
+                            text: (win.compact ? "" : "RADARS · ") + (mosaicPicker.open ? mosaicPicker.draft.sites.length : (app.mosaicSet && app.mosaicSet.sites.length) || 0)
+                            color: mosaicPicker.open ? app.theme.accent : app.theme.foreground
+                        }
+                        Glyph { glyph: "chevron"; implicitWidth: 12; fade: .6; visible: !win.compact }
+                        Item { Layout.fillWidth: true }
+                    }
+                    background: Rectangle {
+                        color: mosaicPicker.open || radarsChip.hovered ? Qt.alpha(app.theme.accent, .18) : "transparent"
+                        border.width: 1
+                        border.color: mosaicPicker.open ? app.theme.accent : Qt.alpha(app.theme.foreground, .22)
+                    }
+                }
                 Item { Layout.fillWidth: true }
                 // product stack: compact product line; age right-aligned under it.
                 ColumnLayout {
@@ -848,6 +897,9 @@ Item {
                 Layout.fillHeight: true
                 Layout.minimumHeight: 100
                 Layout.topMargin: -4
+                // S40: My mosaic's panel docks at the stage's right and the
+                // map shrinks beside it (a compact window gets an overlay).
+                Layout.rightMargin: mosaicPicker.open && mosaicPicker.docked ? mosaicPicker.panelWidth + 10 : 0
                 color: app.theme.background
                 border.color: Qt.alpha(app.theme.foreground, .17)
                 clip: true
@@ -894,6 +946,19 @@ Item {
                     onTilesNeeded: (z, x0, y0, x1, y1) => engine.send({type: "tiles_needed", z: z, x0: x0, y0: y0, x1: x1, y1: y1})
                 }
                 Connections { target: engine; function onTileReady(tile) { map.tileReady(tile); } }
+                // S40 × S39: while My mosaic's panel is open the map is in pick
+                // mode: every radar a mark, the draft's ticked, the panel's
+                // cursor ringed; a click on a mark ticks or unticks it, and
+                // the mark under the pointer puts the cursor on its row.
+                Binding { target: map; property: "pickMode"; value: mosaicPicker.open }
+                Binding { target: map; property: "pickedIds"; value: mosaicPicker.pickedIds }
+                Binding { target: map; property: "hotId"; value: mosaicPicker.hotId }
+                Connections {
+                    target: map
+                    ignoreUnknownSignals: true
+                    function onRadarPicked(id) { if (mosaicPicker.open) { mosaicPicker.toggle(id); mosaicPicker.point(id); } }
+                    function onRadarHovered(id) { if (mosaicPicker.open && id !== "") mosaicPicker.point(id); }
+                }
                 // Place-follow (crosshair) stays out of the release until GPS
                 // is wired; keep the mock chip for captures via OMASTORM_MOCK_GPS.
                 // N ↑ is map orientation only — not a control.
@@ -1232,33 +1297,6 @@ Item {
                 }
                 Item { width: 6 }
                 Item { Layout.fillWidth: true }
-                // The radars chip (S37, the human 2026-09-20: "i cant see
-                // the list until i click on the product"): while My mosaic
-                // is shown, its checklist has a control of its own instead
-                // of hiding behind the product label, which since S37 opens
-                // the product menu like every other station's.
-                Button {
-                    id: radarsChip
-                    visible: app.mosaicShown
-                    implicitHeight: 30
-                    implicitWidth: contentItem.implicitWidth + 18
-                    padding: 0
-                    opacity: mosaicPicker.open || hovered || activeFocus ? 1 : .7
-                    onClicked: mosaicPicker.open ? mosaicPicker.close() : mosaicPicker.show()
-                    contentItem: RowLayout {
-                        spacing: 6
-                        Item { Layout.fillWidth: true }
-                        LabelText { text: "RADARS · " + ((app.mosaicSet && app.mosaicSet.sites.length) || 0) }
-                        Glyph { glyph: "chevron"; implicitWidth: 12 }
-                        Item { Layout.fillWidth: true }
-                    }
-                    background: Rectangle {
-                        color: mosaicPicker.open || radarsChip.hovered || radarsChip.activeFocus ? Qt.alpha(app.theme.accent, .18) : "transparent"
-                        border.width: 1
-                        border.color: mosaicPicker.open || radarsChip.activeFocus ? app.theme.accent : Qt.alpha(app.theme.foreground, .22)
-                    }
-                }
-                Item { width: 6; visible: radarsChip.visible }
                 // The product chip (S20): the engine's product for a live
                 // radar; click opens the station's products and angles.
                 Button {
@@ -1343,19 +1381,26 @@ Item {
                 noticeTimer.restart();
             }
           }
-          // My mosaic's checklist (S25) beside the map, which keeps showing
-          // the ticked radars' circles.
+          // My mosaic's panel (S25, docked since S40): the right side of the
+          // map stage at its full height, the map shrunk to its left and in
+          // pick mode (S39); over the map in a compact window.
           MosaicPicker {
             id: mosaicPicker
-            anchors.fill: parent
+            x: layout.x + mapFrame.x + (docked ? mapFrame.width + 10 : 0)
+            y: layout.y + mapFrame.y
+            width: docked ? panelWidth : mapFrame.width
+            height: mapFrame.height
             engine: engine
             theme: app.theme
             store: app.store.mosaicStore
             centerLat: map.centerLat
             centerLon: map.centerLon
             compact: win.compact
-            cardTop: layout.anchors.margins + mapFrame.y
             onShown: set => app.showMosaic(set)
+            onCentre: site => map.lookAt(site.lat, site.lon)
+            // The cursor's radar stays on the map: off screen, the map
+            // centres on it.
+            onHotIdChanged: if (open && docked) Qt.callLater(app.keepInView, hotId)
           }
           // The treatment menu over the surface (not a Popup, which the
           // window overlay would draw outside the captured surface): a card

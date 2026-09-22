@@ -501,6 +501,7 @@ Item {
                                    cursor: mosaicPicker.cursor, hot: mosaicPicker.hotId, focused: mosaicPicker.listFocused,
                                    filterFocused: mosaicPicker.filterFocused, filter: mosaicPicker.filter, shownRows: mosaicPicker.rows.length,
                                    docked: mosaicPicker.open && mosaicPicker.docked, mapWidth: Math.round(map.width), span: Math.round(map.span * 10) / 10,
+                                   pickMode: map.pickMode, mapHot: map.hotId, mapPicked: map.pickedIds,
                                    circles: app.mosaicCircles.length, label: app.mosaicLabel, shown: app.mosaicShown,
                                    command: engine.sites.length ? Mosaic.command(mosaicPicker.draft, engine.sites, engine.mosaic ? engine.mosaic.rules : null) : null});
         }
@@ -911,6 +912,16 @@ Item {
                     azimuthLut: engine.azimuthLut
                     codes: engine.codes
                     mosaicCircles: app.mosaicCircles
+                    // S40 × S39: while My mosaic's panel is open the map is in
+                    // pick mode: every radar a mark, the draft's ticked, the
+                    // panel's cursor ringed; a click on a mark ticks or
+                    // unticks it, and the mark under the pointer puts the
+                    // cursor on its row.
+                    pickMode: mosaicPicker.open
+                    pickedIds: mosaicPicker.pickedIds
+                    hotId: mosaicPicker.hotId
+                    onRadarPicked: id => { if (mosaicPicker.open) { mosaicPicker.toggle(id); mosaicPicker.point(id); } }
+                    onRadarHovered: id => { if (mosaicPicker.open && id !== "") mosaicPicker.point(id); }
                     siteId: app.siteId
                     sites: engine.sites
                     referenceSites: engine.referenceSites
@@ -950,19 +961,6 @@ Item {
                     onTilesNeeded: (z, x0, y0, x1, y1) => engine.send({type: "tiles_needed", z: z, x0: x0, y0: y0, x1: x1, y1: y1})
                 }
                 Connections { target: engine; function onTileReady(tile) { map.tileReady(tile); } }
-                // S40 × S39: while My mosaic's panel is open the map is in pick
-                // mode: every radar a mark, the draft's ticked, the panel's
-                // cursor ringed; a click on a mark ticks or unticks it, and
-                // the mark under the pointer puts the cursor on its row.
-                Binding { target: map; property: "pickMode"; value: mosaicPicker.open }
-                Binding { target: map; property: "pickedIds"; value: mosaicPicker.pickedIds }
-                Binding { target: map; property: "hotId"; value: mosaicPicker.hotId }
-                Connections {
-                    target: map
-                    ignoreUnknownSignals: true
-                    function onRadarPicked(id) { if (mosaicPicker.open) { mosaicPicker.toggle(id); mosaicPicker.point(id); } }
-                    function onRadarHovered(id) { if (mosaicPicker.open && id !== "") mosaicPicker.point(id); }
-                }
                 // Place-follow (crosshair) stays out of the release until GPS
                 // is wired; keep the mock chip for captures via OMASTORM_MOCK_GPS.
                 // N ↑ is map orientation only — not a control.

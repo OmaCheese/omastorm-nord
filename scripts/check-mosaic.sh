@@ -52,6 +52,43 @@ expect '10 more with the pointer over the scrolling list' 15 "$(field .cursor)"
 for _ in 1 2 3; do call input key Up; call input key K; done
 expect 'Up and k move back' 9 "$(field .cursor)"
 
+# The map beside it is in pick mode (S39) and follows the cursor: the hot
+# ring is the cursor's radar, on screen; a click on its mark ticks it and
+# leaves the panel open; the pointer over another mark moves the cursor there.
+expect 'The map is in pick mode' true "$(field .pickMode)"
+expect "The map's hot radar is the cursor's" "$(field .hot)" "$(field .mapHot)"
+# The wheel over the map still zooms it: out, so several radars show.
+span0=$(field .span)
+for _ in {1..8}; do call input wheel $(( $(rect map x) + $(rect map w) / 2 )) $(( $(rect map y) + $(rect map h) / 2 )) -120; done
+[[ $(field .span) != "$span0" ]] || fail "The wheel over the map beside the panel did not zoom it"
+call input key Down; call input key Up
+hot=$(field .hot | jq -r .)
+mx=$(call input mark "$hot" | jq .x); my=$(call input mark "$hot" | jq .y)
+(( mx >= $(rect map x) && mx <= $(rect map x) + $(rect map w) && my >= $(rect map y) && my <= $(rect map y) + $(rect map h) )) \
+  || fail "The cursor's radar $hot is off the map at $mx,$my"
+call input click "$mx" "$my"
+expect 'A click on the mark ticks it' "[\"$hot\"]" "$(field '[.draft.sites[].id]')"
+expect 'and the panel stays open' true "$(field .open)"
+expect "The map's ticks are the draft" "[\"$hot\"]" "$(field .mapPicked)"
+call input click "$mx" "$my"
+expect 'A second click unticks it' '[]' "$(field '[.draft.sites[].id]')"
+other=
+for id in $(jq -r '.sites[] | select(.kind != "grid") | .id' engine/data/sites.json); do
+  [[ $id == "$hot" ]] && continue
+  p=$(call input mark "$id"); x=$(jq .x <<< "$p"); y=$(jq .y <<< "$p")
+  if (( x > $(rect map x) + 40 && x < $(rect map x) + $(rect map w) - 40 && y > $(rect map y) + 40 && y < $(rect map y) + $(rect map h) - 40 )); then
+    other=$id; ox=$x; oy=$y; break
+  fi
+done
+[[ -n $other ]] || fail "No other radar on the map to hover"
+call input move "$ox" "$oy"
+call input move "$((ox + 1))" "$oy"
+expect 'The pointer over a mark puts the cursor on its row' "\"$other\"" "$(field .hot)"
+call input move "$px" "$py"
+for _ in {1..9}; do call input key Home; done
+expect 'Home goes to the first row' 0 "$(field .cursor)"
+for _ in 1 2 3 4 5 6 7 8 9; do call input key Down; done
+
 # The wheel over the panel scrolls the panel and never the map.
 span=$(field .span)
 for y in 20 120 $(( $(rect mosaic h) / 2 )) $(( $(rect mosaic h) - 30 )); do
@@ -90,6 +127,7 @@ call input key J
 expect 'j moves' 6 "$(field .cursor)"
 call input key Escape
 expect 'Escape closes' false "$(field .open)"
+expect 'The map leaves pick mode' false "$(field .pickMode)"
 expect 'The map has its width back' "$(( frame_w ))" "$(( $(field .mapWidth) ))"
 if rg -q 'TypeError|ReferenceError|Unable to assign|Failed to create.*context' "$check_dir/log"; then fail "QML errors in the log"; fi
 echo "MOSAIC_PANEL_PASSED"

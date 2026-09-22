@@ -33,8 +33,38 @@ QtObject {
     /// `state.loading` (S31): how far the load this client waits for has
     /// come, or null (nothing loads, or an engine older than S31, whose
     /// `connection.status` still says `loading`).
-    readonly property var loading: state && state.source === "live" && state.loading
+    readonly property var wireLoading: state && state.source === "live" && state.loading
         && typeof state.loading.label === "string" && isFinite(state.loading.percent) ? state.loading : null
+    /// What the surfaces show: `wireLoading`, or (S41 review SF1) the last
+    /// one held for `holdMs` after it went null while a stage of it was
+    /// still waiting. A radar's load goes null after its first stage's
+    /// linger and its history starts BACKFILL_DELAY (3 s) later; without
+    /// the hold the bar and the percentage blinked out in between. A new
+    /// loading, another station or the timer ends the hold.
+    readonly property var loading: wireLoading
+        || (heldLoading && state && heldLoading.site === state.site.id ? heldLoading.loading : null)
+    property var heldLoading: null
+    property var lastLoading: null
+    readonly property int holdMs: 4000
+    property Timer holdTimer: Timer { interval: engine.holdMs; onTriggered: engine.heldLoading = null }
+    onWireLoadingChanged: {
+        var l = wireLoading;
+        if (l) {
+            holdTimer.stop();
+            heldLoading = null;
+            lastLoading = {site: state.site.id, loading: l};
+            return;
+        }
+        var last = lastLoading;
+        lastLoading = null;
+        var waiting = !!last && Array.isArray(last.loading.stages) && last.loading.stages.some(s => s && s.state === "waiting");
+        if (waiting && state && state.site.id === last.site) {
+            heldLoading = last;
+            holdTimer.restart();
+        } else {
+            heldLoading = null;
+        }
+    }
     /// S31: while a composite's product has no frame (the placeholder), the
     /// composite's own newest frame the engine names to draw in its place.
     readonly property var under: {

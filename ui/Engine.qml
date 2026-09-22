@@ -30,6 +30,7 @@ QtObject {
     // engine just logs the command), and the engine's `obs` for them.
     property var layers: ({temp: false, wind: false})
     property bool layersSent: false
+    property string layersLine: ""
     property var obs: null
     onLayersChanged: sendLayers()
     function sendLayers() {
@@ -37,8 +38,12 @@ QtObject {
         if (!on) obs = null;
         if (!on && !layersSent) return;
         if (!socket || !socket.connected) return;
+        // Review N7: the same layers again (a store reload) are not re-sent.
+        var line = JSON.stringify({type: "set_layers", temp: !!layers.temp, wind: !!layers.wind});
+        if (layersSent && line === layersLine) return;
         layersSent = true;
-        socket.write(JSON.stringify({type: "set_layers", temp: !!layers.temp, wind: !!layers.wind}) + "\n");
+        layersLine = line;
+        socket.write(line + "\n");
     }
     /// Places answering this client's `search_places`; a reply, not state.
     signal placesReady(var message)

@@ -62,14 +62,75 @@ Item {
 
     function hasWind(s) { return s.windMs !== null && s.windMs !== undefined && s.windDirDeg !== null && s.windDirDeg !== undefined; }
     function hasTemp(s) { return s.tempC !== null && s.tempC !== undefined; }
-    function arrowLength(ms) { return 12 + Math.min(ms, 25) * 1.1; }
-    function arrowWeight(ms) { return ms < 5 ? 1.6 : ms < 10 ? 2.1 : ms < 15 ? 2.6 : 3.2; }
+    // Arrows by speed band, as on the web (app.js OBS_ARROWS): [upper m/s,
+    // length px, stroke px]. Each band is drawn once per theme into an
+    // image (review S2); a station's arrow is that image, rotated.
+    readonly property var bands: [[2, 14, 1.6], [4, 18, 1.8], [7, 23, 2.1], [11, 29, 2.5], [16, 35, 2.9], [1e9, 42, 3.3]]
+    function band(ms) { for (var i = 0; i < bands.length; i++) if (ms < bands[i][0]) return i; return bands.length - 1; }
+    function arrowLength(ms) { return bands[band(ms)][1]; }
+    property var arrowUrls: []
+    Repeater {
+        model: stationLayer.bands.length
+        Canvas {
+            id: painter
+            required property int index
+            readonly property real len: stationLayer.bands[index][1]
+            readonly property real weight: stationLayer.bands[index][2]
+            // Off the layer's edge: painted, never seen.
+            x: -200; y: -200
+            width: 16; height: len + 2
+            onPaint: {
+                var ctx = getContext("2d");
+                ctx.reset();
+                var cx = width / 2, top = 1, bottom = height - 1, head = 4 + weight * 1.6;
+                for (var pass = 0; pass < 2; pass++) {
+                    ctx.strokeStyle = pass === 0 ? stationLayer.arrowHalo : stationLayer.arrowInk;
+                    ctx.fillStyle = pass === 0 ? stationLayer.arrowHalo : stationLayer.arrowInk;
+                    ctx.lineWidth = pass === 0 ? weight + 2.4 : weight;
+                    ctx.lineCap = "round";
+                    ctx.beginPath();
+                    ctx.moveTo(cx, bottom);
+                    ctx.lineTo(cx, top + head * .8);
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(cx, top);
+                    ctx.lineTo(cx - head * .62, top + head);
+                    ctx.lineTo(cx + head * .62, top + head);
+                    ctx.closePath();
+                    if (pass === 0) { ctx.lineWidth = 2.4; ctx.stroke(); }
+                    ctx.fill();
+                }
+            }
+            // toDataURL paints again, so the grab runs once per ink, later.
+            property string grabbed: ""
+            function grab() {
+                var key = String(stationLayer.arrowInk);
+                if (grabbed === key) return;
+                grabbed = key;
+                var urls = stationLayer.arrowUrls.slice();
+                urls[index] = toDataURL("image/png");
+                stationLayer.arrowUrls = urls;
+            }
+            onPainted: if (grabbed !== String(stationLayer.arrowInk)) Qt.callLater(grab)
+            Connections {
+                target: stationLayer
+                function onArrowInkChanged() { painter.requestPaint(); }
+            }
+        }
+    }
 
-    // Thinning: the stations shown, [{s, mx, my}], at least `spacing` world
-    // pixels apart. A station with both values goes first, then by a stable
+    // Thinning: the stations shown, [{s, mx, my}], at least a cell apart in
+    // world pixels. A station with both values goes first, then by a stable
     // hash of its id, so the same stations win at the same zoom every time.
+    // The cell grows with the wind (review S1): the 95th percentile arrow
+    // among the candidates, plus the pill beside it.
     property var shown: []
-    readonly property real spacing: temp && wind ? 54 : temp ? 40 : 34
+    function cellFor(list) {
+        if (!wind) return 40;
+        var lengths = list.filter(p => hasWind(p.s)).map(p => arrowLength(p.s.windMs)).sort((a, b) => a - b);
+        var p95 = lengths.length ? lengths[Math.min(lengths.length - 1, Math.floor(lengths.length * .95))] : 14;
+        return temp ? p95 + 34 : p95 + 10;
+    }
     function hash(text) {
         var h = 2166136261;
         for (var i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
@@ -78,11 +139,14 @@ Item {
     function useful(s) { return (temp && hasTemp(s)) || (wind && hasWind(s)); }
     function rethin() {
         if (!map || !on) { if (shown.length) shown = []; return; }
-        var world = map.worldPixels, cell = spacing, grid = {}, out = [];
+        var world = map.worldPixels, grid = {}, out = [];
+        thinnedAt = world;
+        thinCount++;
         var list = stations.filter(useful).map(s => ({
             s: s, mx: map.mercatorX(s.lon), my: map.mercatorY(s.lat),
             rank: (hasTemp(s) && hasWind(s) ? 0 : 1) * 4294967296 + hash(s.id)
         }));
+        var cell = cellFor(list);
         list.sort((a, b) => a.rank - b.rank);
         for (var p of list) {
             var x = p.mx * world, y = p.my * world;
@@ -98,8 +162,15 @@ Item {
         }
         shown = out;
     }
-    Timer { id: thin; interval: 60; onTriggered: stationLayer.rethin() }
-    function scheduleThin() { if (!thin.running) thin.start(); }
+    // Review S2: a zoom thins again once it settles (a trailing debounce),
+    // and only when the scale moved by more than a tenth since the last.
+    property real thinnedAt: 0
+    property int thinCount: 0          // for checks: how often it thinned
+    Timer { id: thin; interval: 150; onTriggered: stationLayer.rethin() }
+    function scheduleThin() {
+        if (map && thinnedAt > 0 && Math.abs(map.worldPixels / thinnedAt - 1) < .1) return;
+        thin.restart();
+    }
     onStationsChanged: rethin()
     onTempChanged: rethin()
     onWindChanged: rethin()
@@ -124,42 +195,15 @@ Item {
             y: stationLayer.map ? stationLayer.map.sy(modelData.my) : 0
             visible: x > -60 && y > -60 && x < stationLayer.width + 60 && y < stationLayer.height + 60
             // The arrow: its tail at the station, pointing downwind.
-            Canvas {
-                id: arrow
+            Image {
+                readonly property int bandIndex: stationLayer.band(mark.s.windMs || 0)
                 visible: mark.drawWind && !mark.calm
-                readonly property real len: stationLayer.arrowLength(mark.s.windMs || 0)
-                readonly property real weight: stationLayer.arrowWeight(mark.s.windMs || 0)
-                width: 16; height: len + 2
-                x: -width / 2; y: -len
+                source: visible ? stationLayer.arrowUrls[bandIndex] || "" : ""
+                width: 16; height: stationLayer.bands[bandIndex][1] + 2
+                x: -width / 2; y: -height + 1
                 transformOrigin: Item.Bottom
                 rotation: mark.drawWind ? (mark.s.windDirDeg + 180) % 360 : 0
-                antialiasing: true
-                onPaint: {
-                    var ctx = getContext("2d");
-                    ctx.reset();
-                    var cx = width / 2, top = 1, bottom = height - 1, head = 4 + weight * 1.6;
-                    for (var pass = 0; pass < 2; pass++) {
-                        ctx.strokeStyle = pass === 0 ? stationLayer.arrowHalo : stationLayer.arrowInk;
-                        ctx.fillStyle = pass === 0 ? stationLayer.arrowHalo : stationLayer.arrowInk;
-                        ctx.lineWidth = pass === 0 ? weight + 2.4 : weight;
-                        ctx.lineCap = "round";
-                        ctx.beginPath();
-                        ctx.moveTo(cx, bottom);
-                        ctx.lineTo(cx, top + head * .8);
-                        ctx.stroke();
-                        ctx.beginPath();
-                        ctx.moveTo(cx, top);
-                        ctx.lineTo(cx - head * .62, top + head);
-                        ctx.lineTo(cx + head * .62, top + head);
-                        ctx.closePath();
-                        if (pass === 0) { ctx.lineWidth = 2.4; ctx.stroke(); }
-                        ctx.fill();
-                    }
-                }
-                Connections {
-                    target: stationLayer
-                    function onArrowInkChanged() { arrow.requestPaint(); }
-                }
+                smooth: true
             }
             // Calm: a small ring at the station.
             Rectangle {
@@ -181,7 +225,8 @@ Item {
                 radius: height / 2
                 x: Math.round(mark.fromX * away - width / 2)
                 y: Math.round(mark.fromY * away - height / 2)
-                color: fill
+                // Review N8: the radar shows through the pill.
+                color: Qt.alpha(fill, .85)
                 border.width: 1
                 border.color: Qt.alpha(stationLayer.light ? "#1b1d24" : "#000000", .45)
                 Text {
@@ -218,9 +263,10 @@ Item {
         var names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
         return names[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
     }
+    // Review S3: local time, as the rest of the window shows it.
     function hhmm(iso) {
-        var m = /T(\d\d):(\d\d)/.exec(iso || "");
-        return m ? m[1] + ":" + m[2] + "Z" : "";
+        var d = new Date(iso || "");
+        return isNaN(d.getTime()) ? "" : Qt.formatTime(d, Qt.locale().timeFormat(Locale.ShortFormat));
     }
     function one(v) { return (Math.round(v * 10) / 10).toFixed(1).replace("-", "−"); }
     readonly property var providerNames: ({smhi: "SMHI", fmi: "FMI", dmi: "DMI", frost: "MET Norway"})
@@ -276,7 +322,9 @@ Item {
         anchors.bottomMargin: stationLayer.creditHeight
         width: legendColumn.implicitWidth + 16
         height: legendColumn.implicitHeight + 10
-        color: Qt.alpha(stationLayer.theme ? stationLayer.theme.background : "#1a1b26", .9)
+        // Review N4: under the stations, so it never hides one.
+        z: -1
+        color: Qt.alpha(stationLayer.theme ? stationLayer.theme.background : "#1a1b26", .8)
         Column {
             id: legendColumn
             x: 8; y: 5

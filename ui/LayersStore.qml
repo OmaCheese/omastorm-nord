@@ -24,7 +24,10 @@ QtObject {
     property bool wind: false
     readonly property bool any: temp || wind
     property string error: ""
+    // Review N7: the file this store just wrote reads back unchanged.
+    property string written: ""
     function parse(text) {
+        if (text.trim() === written) return;
         try {
             var v = JSON.parse(text);
             if (!v || typeof v !== "object") return;
@@ -43,6 +46,7 @@ QtObject {
     function save() {
         if (!path) return;
         var text = JSON.stringify({ radar: radar, temp: temp, wind: wind });
+        written = text;
         var slash = path.lastIndexOf("/");
         var dir = slash >= 0 ? path.slice(0, slash) : ".";
         writer.command = ["sh", "-c",

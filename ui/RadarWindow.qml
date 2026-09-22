@@ -443,7 +443,7 @@ Item {
         function status(): string {
             var l = app.store.layers, o = engine.obs;
             return JSON.stringify({radar: l.radar, temp: l.temp, wind: l.wind, panel: layersPanel.opened,
-                                   stations: o ? o.stations.length : -1, shown: obsLayer.shown.length,
+                                   stations: o ? o.stations.length : -1, shown: obsLayer.shown.length, thins: obsLayer.thinCount,
                                    attribution: o ? o.attribution : "", status: layersPanel.status});
         }
         function hover(x: real, y: real): string { var s = obsLayer.stationAt(x, y); return s ? JSON.stringify(s) : ""; }

@@ -186,8 +186,15 @@ impl Id {
             Id::Frost => frost::parts(dir),
         }
     }
-    /// Whether a part cached `age` ago at `fetched` needs fetching at `now`.
-    fn due(self, part: &Part, fetched: Option<i64>, now: i64) -> bool {
+    /// Whether a part whose good copy was cached at `fetched` (`None`:
+    /// none, or one that does not read) needs fetching at `now`, when its
+    /// last failed attempt was at `failed`. A failure is retried after
+    /// `MIN_AGE`, whatever the part's own age (review M1: a daily list that
+    /// failed once must not lock its provider out for a day).
+    fn due(self, part: &Part, fetched: Option<i64>, failed: Option<i64>, now: i64) -> bool {
+        if failed.is_some_and(|t| now - t < MIN_AGE.as_millis() as i64) {
+            return false;
+        }
         let Some(fetched) = fetched else { return true };
         if now - fetched < part.max_age.as_millis() as i64 {
             return false;
@@ -196,6 +203,24 @@ impl Id {
             Id::Smhi => smhi::due(fetched, now),
             _ => true,
         }
+    }
+    /// Whether a body is worth caching for its part's whole age: a daily
+    /// list is checked (a 200 with a bad body is a failure); the others are
+    /// checked when the provider parses them.
+    fn usable(self, part: &Part, body: &[u8]) -> bool {
+        if part.max_age <= MIN_AGE {
+            return !body.is_empty();
+        }
+        match self {
+            Id::Dmi => dmi::station_list_ok(body),
+            Id::Frost => frost::station_list_ok(body),
+            _ => !body.is_empty(),
+        }
+    }
+    /// Whether the provider can be read without this part (DMI's names:
+    /// stations are then called "DMI <id>").
+    fn optional(self, index: usize) -> bool {
+        self == Id::Dmi && index == 1
     }
     fn parse(self, bodies: &[Vec<u8>], now: i64) -> Result<Vec<Station>, String> {
         match self {
@@ -387,6 +412,28 @@ struct Fetcher {
     client: reqwest::Client,
     dir: PathBuf,
     lists: Vec<(ProviderInfo, Vec<Station>)>,
+    /// When each part (by cache name) last failed, in memory only.
+    failed: HashMap<&'static str, i64>,
+}
+
+/// Every provider at `status` with `note`, no stations.
+fn blank_lists(status: &'static str, note: &str) -> Vec<(ProviderInfo, Vec<Station>)> {
+    PROVIDERS
+        .iter()
+        .map(|id| {
+            (
+                ProviderInfo {
+                    id: id.key(),
+                    name: id.name(),
+                    status,
+                    stations: 0,
+                    attribution: id.attribution(),
+                    note: note.to_owned(),
+                },
+                Vec::new(),
+            )
+        })
+        .collect()
 }
 
 impl Fetcher {
@@ -397,23 +444,12 @@ impl Fetcher {
             .build()
             .map_err(|e| format!("building the HTTP client: {e}"))?;
         let dir = cache_dir().map_err(|e| format!("the obs cache: {e}"))?;
-        let lists = PROVIDERS
-            .iter()
-            .map(|id| {
-                (
-                    ProviderInfo {
-                        id: id.key(),
-                        name: id.name(),
-                        status: "ok",
-                        stations: 0,
-                        attribution: id.attribution(),
-                        note: String::new(),
-                    },
-                    Vec::new(),
-                )
-            })
-            .collect();
-        Ok(Fetcher { client, dir, lists })
+        Ok(Fetcher {
+            client,
+            dir,
+            lists: blank_lists("ok", ""),
+            failed: HashMap::new(),
+        })
     }
 
     async fn get(&self, url: &str, auth: bool) -> Result<Vec<u8>, String> {
@@ -475,30 +511,30 @@ impl Fetcher {
             parts = now_parts;
             for part in &parts {
                 let path = self.dir.join(part.name);
-                if !id.due(part, modified_ms(&path), now) {
+                // A cached copy that does not read counts as none.
+                let cached = modified_ms(&path)
+                    .filter(|_| id.usable(part, &fs::read(&path).unwrap_or_default()));
+                if !id.due(part, cached, self.failed.get(part.name).copied(), now) {
                     continue;
                 }
-                match self.get(&part.url, part.auth).await {
+                fetched += 1;
+                let got = match self.get(&part.url, part.auth).await {
+                    Ok(body) if id.usable(part, &body) => Ok(body),
+                    Ok(_) => Err("an answer that does not read".to_owned()),
+                    Err(e) => Err(e),
+                };
+                match got {
                     Ok(body) => {
-                        fetched += 1;
                         bytes += body.len();
+                        self.failed.remove(part.name);
                         if let Err(e) = write_atomic(&path, &body) {
                             eprintln!("{} Obs {}: caching {}: {e}", stamp(), id.key(), part.name);
                         }
                     }
                     Err(e) => {
-                        fetched += 1;
+                        // Keep any cached copy; retry after `MIN_AGE`.
                         failure = Some(format!("{}: {e}", part.name));
-                        // Keep the cached copy; retry after `MIN_AGE`, not
-                        // every tick: touch it so its age restarts.
-                        if path.exists() {
-                            let _ = fs::File::options()
-                                .append(true)
-                                .open(&path)
-                                .and_then(|f| f.set_modified(SystemTime::now()));
-                        } else {
-                            let _ = write_atomic(&path, b"");
-                        }
+                        self.failed.insert(part.name, now);
                     }
                 }
             }
@@ -510,7 +546,11 @@ impl Fetcher {
             .iter()
             .map(|p| fs::read(self.dir.join(p.name)).unwrap_or_default())
             .collect();
-        let parsed = if bodies.iter().all(|b| !b.is_empty()) {
+        let parsed = if bodies
+            .iter()
+            .enumerate()
+            .all(|(i, b)| !b.is_empty() || id.optional(i))
+        {
             id.parse(&bodies, now)
         } else {
             Err("nothing cached".into())
@@ -541,8 +581,9 @@ impl Fetcher {
                 );
                 info.status = "failed";
                 info.note = note;
+                // Review N3: what did read joins what is still fresh.
                 if let Ok(stations) = parsed {
-                    *list = stations;
+                    *list = merge(std::mem::take(list), stations, now);
                 }
             }
         }
@@ -556,7 +597,17 @@ pub async fn run() {
     let hub = &*HUB;
     let mut fetcher = match Fetcher::new() {
         Ok(fetcher) => fetcher,
-        Err(e) => return eprintln!("{} Obs: disabled: {e}", stamp()),
+        Err(e) => {
+            // Review N2: say so to the clients rather than "loading" forever.
+            eprintln!("{} Obs: disabled: {e}", stamp());
+            let lists = blank_lists("failed", &e);
+            loop {
+                if hub.wanted() {
+                    hub.publish(line(&lists, now_ms()));
+                }
+                hub.wake.notified().await;
+            }
+        }
     };
     let mut first = true;
     loop {
@@ -602,6 +653,25 @@ pub(crate) mod tests {
             gust_ms: None,
             ms,
         }
+    }
+
+    #[test]
+    fn a_failed_daily_list_is_retried_after_ten_minutes() {
+        let now = parse_iso("2026-09-22T12:00:00Z").unwrap();
+        let min = 60 * 1000;
+        let daily = &dmi::parts()[1];
+        assert!(daily.max_age > MIN_AGE);
+        // Nothing good cached, failed 5 min ago: wait; 11 min ago: retry.
+        assert!(!Id::Dmi.due(daily, None, Some(now - 5 * min), now));
+        assert!(Id::Dmi.due(daily, None, Some(now - 11 * min), now));
+        // A good copy from an hour ago is kept for the day.
+        assert!(!Id::Dmi.due(daily, Some(now - 60 * min), None, now));
+        // A 200 with a bad body is not a station list; an empty one neither.
+        assert!(!Id::Dmi.usable(daily, b"{\"features\":[]}"));
+        assert!(!Id::Dmi.usable(daily, b"<html>busy</html>"));
+        assert!(!Id::Frost.usable(daily, b""));
+        assert!(Id::Dmi.usable(daily, &fixture("dmi_stations_20260922.json.gz")));
+        assert!(Id::Dmi.optional(1) && !Id::Dmi.optional(0) && !Id::Frost.optional(0));
     }
 
     #[test]

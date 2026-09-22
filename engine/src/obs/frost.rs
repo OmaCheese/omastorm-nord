@@ -139,6 +139,11 @@ struct Observation {
     value: Option<f64>,
 }
 
+/// Whether a sources body reads and lists at least one placed station.
+pub fn station_list_ok(body: &[u8]) -> bool {
+    sources(body).is_ok_and(|s| !s.is_empty())
+}
+
 /// Station id → (name, lat, lon), ordered by id.
 fn sources(body: &[u8]) -> Result<BTreeMap<String, (String, f64, f64)>, String> {
     let list: Response<Source> =

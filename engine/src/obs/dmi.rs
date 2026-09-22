@@ -86,8 +86,15 @@ fn names(body: &[u8]) -> Result<HashMap<String, String>, String> {
     Ok(names)
 }
 
+/// Whether a station-list body reads and names at least one station.
+pub fn station_list_ok(body: &[u8]) -> bool {
+    names(body).is_ok_and(|n| !n.is_empty())
+}
+
+/// The observations as stations, named from the station list; without a
+/// usable list (review M1) each is called "DMI <id>".
 pub fn parse(observations: &[u8], stations: &[u8]) -> Result<Vec<Station>, String> {
-    let names = names(stations)?;
+    let names = names(stations).unwrap_or_default();
     let rows: Collection<Observation> =
         serde_json::from_slice(observations).map_err(|e| format!("observations: {e}"))?;
     let mut out: BTreeMap<String, Station> = BTreeMap::new();
@@ -180,6 +187,18 @@ mod tests {
         for s in &stations {
             assert!((54.4..=58.0).contains(&s.lat) && (7.5..=15.5).contains(&s.lon));
         }
+    }
+
+    #[test]
+    fn without_a_station_list_stations_are_named_by_id() {
+        let stations = parse(&fixture("dmi_obs_202609221830.json.gz"), b"").unwrap();
+        assert_eq!(stations.iter().filter(|s| s.temp_c.is_some()).count(), 58);
+        assert!(
+            stations
+                .iter()
+                .all(|s| s.name == format!("DMI {}", &s.id[4..]))
+        );
+        assert!(!station_list_ok(b"") && !station_list_ok(b"garbage"));
     }
 
     #[test]

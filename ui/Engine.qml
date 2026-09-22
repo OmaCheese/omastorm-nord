@@ -44,6 +44,114 @@ QtObject {
         return u.kind === "polar" && validTexturePath(u.azimuthLut) ? u : null;
     }
 
+    // ---- S41: the load as named steps and one overall percentage ----
+    // The engine's stages are named by the work, not by their ids, and two
+    // steps only the client knows go round them: starting the engine (the
+    // bar's `ensure` and the socket, before any state) and drawing (the
+    // frame received, its texture not loaded yet). The one number a surface
+    // shows is the whole load's: Σ share × percent over the stages (an
+    // engine older than S35: its top-level percent), and it never goes
+    // back within a load.
+    /// A step's name, by the work it does.
+    function stepName(id) {
+        return id === "engine" ? "Starting engine" : id === "first" ? "Fetching radar data"
+            : id === "build" ? "Engine: building the frame" : id === "draw" ? "Drawing"
+            : id === "history" ? "Fetching history" : id || "";
+    }
+    /// What the engine's label says past the load's name ("Vara
+    /// Reflectivity 0.5°: 24 of 58 frames" → "24 of 58 frames"), minus the
+    /// words the step's name already says.
+    function stepDetail(l) {
+        if (!l || typeof l.label !== "string") return "";
+        var at = l.label.indexOf(": ");
+        var d = at >= 0 ? l.label.slice(at + 2) : l.label;
+        if (l.stage === "history") d = d.replace(/^history /, "");
+        if (l.stage === "first" && d === "first frame") d = "the newest scan";
+        return d;
+    }
+    /// The load's name: the label before its colon ("My mosaic, Lowest
+    /// beam"), else the station's.
+    readonly property string loadName: {
+        var l = loading;
+        if (l && l.label.indexOf(": ") > 0) return l.label.slice(0, l.label.indexOf(": "));
+        return site ? site.name : "";
+    }
+    /// The whole load's fill, 0 to 100, from `loading` alone.
+    function overallOf(l) {
+        if (!l) return 0;
+        var clamp = p => Math.max(0, Math.min(100, Number(p) || 0));
+        var st = Array.isArray(l.stages) ? l.stages.filter(s => !!s) : [];
+        if (!st.length) return Math.floor(clamp(l.percent));
+        var sum = 0, shares = 0;
+        for (var s of st) {
+            var share = Math.max(1, Number(s.share) || 0);
+            shares += share;
+            sum += share * (s.state === "done" ? 100 : s.state === "waiting" ? 0 : clamp(s.percent));
+        }
+        return Math.floor(sum / shares);
+    }
+    /// The overall percentage a surface shows: `overallOf(loading)`, held
+    /// at its highest within one load. Another station, or a load back on
+    /// its first stage (or lower in it), starts again from its own value.
+    property int percent: 0
+    property string loadKey: ""
+    property real firstSeen: -1
+    onLoadingChanged: {
+        var l = loading;
+        if (!l) { percent = 0; loadKey = ""; firstSeen = -1; return; }
+        var first = l.stage === "first" ? Number(l.percent) || 0 : 101;
+        var again = state.site.id !== loadKey || firstSeen > first;
+        var value = overallOf(l);
+        percent = again ? value : Math.max(percent, value);
+        loadKey = state.site.id;
+        firstSeen = first;
+    }
+    /// Whether the texture of the frame on screen is loaded: a hidden Image
+    /// on the same URL, which Qt's cache shares with the map's sampler.
+    property Image drawProbe: Image {
+        source: engine.texture
+        asynchronous: true
+        cache: true
+        smooth: false
+        mipmap: false
+        visible: false
+    }
+    readonly property bool drawn: !!frame && !!frame.scanTime && texture !== "" && drawProbe.status === Image.Ready
+    /// Something is loading that a surface should say: no engine yet, a
+    /// load in `loading`, or (an engine older than S31) `loading` status.
+    readonly property bool busy: !incompatible && (!state || !!loading
+        || (state.source === "live" && state.connection.status === "loading"))
+    /// The steps in order, each {id, name, state (done|active|waiting),
+    /// detail}. The engine's stages are the segments of the bar; the two
+    /// client steps have none.
+    readonly property var steps: {
+        var step = (id, st, detail) => ({id: id, name: stepName(id), state: st, detail: detail || ""});
+        var out = [step("engine", state ? "done" : "active", state ? "" : error ? "waiting for its socket" : "connecting")];
+        if (!state) return out.concat([step("first", "waiting"), step("draw", "waiting")]);
+        var l = loading;
+        var stages = l && Array.isArray(l.stages) && l.stages.length ? l.stages.filter(s => !!s)
+            : l ? [{stage: l.stage, state: "active"}]
+            : [{stage: "first", state: drawn ? "done" : "active"}];
+        // The frame is drawn after the stage that makes it.
+        var after = stages.some(s => s.stage === "build") ? "build" : "first";
+        var scanned = !!frame && !!frame.scanTime;
+        var draw = null;
+        for (var s of stages) {
+            var st = s.state === "done" || s.state === "active" ? s.state : "waiting";
+            out.push(step(s.stage, st, l && st === "active" && s.stage === l.stage ? stepDetail(l) : ""));
+            if (s.stage === after) {
+                draw = step("draw", drawn ? "done" : st === "done" && scanned ? "active" : "waiting");
+                out.push(draw);
+            }
+        }
+        // A load with no first stage (the station opened on a frame it had).
+        if (!draw) out.splice(1, 0, step("draw", drawn ? "done" : scanned ? "active" : "waiting"));
+        return out;
+    }
+    /// The step to name: drawing while it runs, else the one the engine is on.
+    readonly property var activeStep: steps.find(s => s.id === "draw" && s.state === "active")
+        || steps.find(s => s.state === "active") || null
+
     // The frame on screen (docs/protocol.md, timeline textures). While this
     // client plays its own loop, or has just stepped or scrubbed and waits
     // for the engine to confirm, it is a timeline entry drawn from its own

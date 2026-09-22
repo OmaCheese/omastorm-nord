@@ -19,8 +19,8 @@ Item {
     /// Name the stages under the segments. The window has the room for it;
     /// the popover's strip does not.
     property bool names: false
-    /// The bar's own thickness, the thin rule S31 drew.
-    property int thickness: 2
+    /// The bar's own thickness: S31 drew a 2 px rule nobody saw (S41).
+    property int thickness: 4
     /// Between two segments, so the divisions read at 2 px.
     property int gap: 2
 
@@ -62,13 +62,17 @@ Item {
         return x;
     }
 
-    /// The stage in words, under its segment.
+    /// The stage in words, under its segment: named by the work (S41),
+    /// as Engine.stepName names it.
     function stageName(stage) {
-        return stage === "first" ? "first frame" : stage === "build" ? "building" : stage === "history" ? "history" : stage || "";
+        return stage === "first" ? "Fetching radar data" : stage === "build" ? "Engine: building the frame"
+            : stage === "history" ? "Fetching history" : stage || "";
     }
+    /// The names' size; S41 made them readable at a glance.
+    property int nameSize: 10
 
     visible: !!bar.loading
-    implicitHeight: bar.thickness + (bar.names ? nameRow.implicitHeight + 3 : 0)
+    implicitHeight: bar.thickness + (bar.names ? nameRow.implicitHeight + 2 : 0)
     // Review NIT4: an Item anchored left/right/bottom keeps its default
     // height of 0 unless it is given one, and its children then hang below
     // the anchor line. The rule is drawn at the top of this item, so a
@@ -90,7 +94,7 @@ Item {
             radius: Math.floor(bar.thickness / 2)
             // The track: dimmer for a stage that has not started, so the
             // bar says at a glance how much of the load is still to come.
-            color: Qt.alpha(bar.theme.accent, waiting ? 0.14 : 0.22)
+            color: Qt.alpha(bar.theme.accent, waiting ? 0.16 : 0.28)
 
             Rectangle {
                 height: parent.height
@@ -114,8 +118,8 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.topMargin: bar.thickness + 3
-        implicitHeight: 11
+        anchors.topMargin: bar.thickness + 2
+        implicitHeight: bar.nameSize + 2
         height: visible ? implicitHeight : 0
 
         Repeater {
@@ -128,14 +132,16 @@ Item {
                 width: bar.widths[index] || 0
                 height: nameRow.implicitHeight
                 text: bar.stageName(modelData.stage)
-                font.pixelSize: 9
+                font.pixelSize: bar.nameSize
+                font.family: bar.theme.font || "monospace"
                 elide: Text.ElideRight
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
-                color: bar.theme.accent
+                color: modelData.state === "active" ? bar.theme.accent : bar.theme.foreground
+                font.bold: modelData.state === "active"
                 // The stage running is the one to read; the others are
                 // there for the shape of the load, not for attention.
-                opacity: modelData.state === "active" ? 0.85 : modelData.state === "done" ? 0.45 : 0.30
+                opacity: modelData.state === "active" ? 1 : modelData.state === "done" ? 0.6 : 0.45
             }
         }
     }

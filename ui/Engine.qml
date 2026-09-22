@@ -120,7 +120,7 @@ QtObject {
     /// Something is loading that a surface should say: no engine yet, a
     /// load in `loading`, or (an engine older than S31) `loading` status.
     readonly property bool busy: !incompatible && (!state || !!loading
-        || (state.source === "live" && state.connection.status === "loading"))
+        || (state.source === "live" && !!state.connection && state.connection.status === "loading"))
     /// The steps in order, each {id, name, state (done|active|waiting),
     /// detail}. The engine's stages are the segments of the bar; the two
     /// client steps have none.

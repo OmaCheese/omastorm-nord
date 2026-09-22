@@ -259,11 +259,11 @@ Item {
     readonly property string mosaicLabel: !mosaicShown ? "" : !mosaicSet || !mosaicSet.sites.length ? "CHOOSE RADARS"
         : Mosaic.setName(engine.mosaic ? engine.mosaic.rules : [], mosaicSet).toUpperCase() + " / " + mosaicSet.sites.length + (mosaicSet.sites.length === 1 ? " RADAR" : " RADARS")
     // S40: the panel's cursor radar on the map beside it; off screen (or
-    // within 30 px of the edge), the map centres on it.
+    // within 60 px of the edge, where its label would be cut), the map centres on it.
     function keepInView(id) {
         var s = engine.sites.find(x => x.id === id);
         if (!s || !mosaicPicker.open) return;
-        var x = map.sx(map.mercatorX(s.lon)), y = map.sy(map.mercatorY(s.lat)), m = 30;
+        var x = map.sx(map.mercatorX(s.lon)), y = map.sy(map.mercatorY(s.lat)), m = 60;
         if (x < m || x > map.width - m || y < m || y > map.height - m) map.lookAt(s.lat, s.lon);
     }
     // SHOW in the checklist: My mosaic, centred on the chosen radars.

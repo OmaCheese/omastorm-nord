@@ -426,7 +426,7 @@ Item {
             return JSON.stringify({busy: engine.busy, drawn: engine.drawn, card: loadingCard.visible, bar: loadingBar.visible,
                                    percent: engine.percent, raw: engine.overallOf(engine.loading), segments: loadingBar.segments.length,
                                    stage: engine.loading ? engine.loading.stage : "", step: engine.activeStep ? engine.activeStep.name : "",
-                                   detail: engine.activeStep ? engine.activeStep.detail : "", name: engine.loadName,
+                                   detail: engine.activeStep ? engine.activeStep.detail : "", name: engine.loadName, error: engine.error,
                                    steps: engine.steps.map(s => s.id + ":" + s.state)});
         }
     }

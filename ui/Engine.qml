@@ -149,8 +149,15 @@ QtObject {
     readonly property bool drawn: !!frame && !!frame.scanTime && texture !== "" && drawProbe.status === Image.Ready
     /// Something is loading that a surface should say: no engine yet, a
     /// load in `loading`, or (an engine older than S31) `loading` status.
-    readonly property bool busy: !incompatible && (!state || !!loading
-        || (state.source === "live" && !!state.connection && state.connection.status === "loading"))
+    readonly property bool busy: starting || (!!state && (!!loading
+        || (state.source === "live" && !!state.connection && state.connection.status === "loading")))
+    /// No state yet and nothing wrong but the socket (review SF3): the
+    /// engine is starting. Any other error (an unreadable message, an
+    /// unknown protocol version) is shown as itself, not as a start.
+    readonly property string disconnectedText: "Radar engine disconnected. Reconnecting…"
+    readonly property string unavailableText: "Radar engine unavailable. Reconnecting…"
+    readonly property bool starting: !state && !incompatible
+        && (error === "" || error === disconnectedText || error === unavailableText)
     /// The steps in order, each {id, name, state (done|active|waiting),
     /// detail}. The engine's stages are the segments of the bar; the two
     /// client steps have none. `steps` is reassigned only when this changes
@@ -604,11 +611,11 @@ QtObject {
             onConnectedChanged: {
                 if (!connected && !engine.incompatible) {
                     engine.state = null;
-                    engine.error = "Radar engine disconnected. Reconnecting…";
+                    engine.error = engine.disconnectedText;
                 }
             }
             onError: {
-                if (!engine.incompatible) engine.error = "Radar engine unavailable. Reconnecting…";
+                if (!engine.incompatible) engine.error = engine.unavailableText;
             }
         }
     }

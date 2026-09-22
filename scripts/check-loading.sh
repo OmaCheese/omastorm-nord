@@ -24,8 +24,11 @@ mkdir -p "$check_dir"
 : > "$check_dir/log"
 qml=$(bash scripts/capture-harness.sh --input)
 pid=
+fake=
 cleanup() {
   [[ -z $pid ]] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+  [[ -z $fake ]] || kill "$fake" 2>/dev/null || true
+fake=
   rm -rf "$(dirname "$qml")" "$check_dir/no-engine"
   if [[ -n $own_runtime ]]; then
     target/debug/omastorm-engine stop > /dev/null 2>&1 || true
@@ -45,7 +48,7 @@ open() {
     OMASTORM_WIDTH=960 OMASTORM_HEIGHT=680 OMASTORM_STATE_OVERRIDE="$1" \
     bash run.sh >> "$check_dir/log" 2>&1 &
   pid=$!
-  for _ in {1..150}; do [[ $(call loading status 2>/dev/null | jq -r .busy 2>/dev/null) == true ]] && break; sleep .1; done
+  for _ in {1..150}; do [[ $(call loading status 2>/dev/null | jq -r ".busy or (.error | length > 0)" 2>/dev/null) == true ]] && break; sleep .1; done
   sleep .5
 }
 close() { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; pid=; }
@@ -104,6 +107,23 @@ sleep .5
 expect 'No engine: the card' true "$(status .card)"
 expect 'No engine: starting it' '"Starting engine"' "$(status .step)"
 close
+
+# 6. An engine that answers with something unreadable (review SF3): the
+#    error itself, not the card saying "Starting engine" forever.
+mkdir -p "$check_dir/no-engine/omastorm-se"
+socat UNIX-LISTEN:"$check_dir/no-engine/omastorm-se/engine.sock",fork SYSTEM:'echo not-json; sleep 30' &
+fake=$!
+XDG_RUNTIME_DIR="$check_dir/no-engine" OMASTORM_ROOT=/nonexistent OMASTORM_QML="$qml" OMASTORM_CONFIG="$check_dir/none.toml" \
+  OMASTORM_STATE="$check_dir/state.json" OMASTORM_WIDTH=960 OMASTORM_HEIGHT=680 \
+  quickshell -p "$qml" >> "$check_dir/log" 2>&1 &
+pid=$!
+for _ in {1..100}; do [[ $(status .error 2>/dev/null) == *Invalid* ]] && break; sleep .1; done
+expect 'A bad message: no card' false "$(status .card)"
+expect 'A bad message: not busy' false "$(status .busy)"
+[[ $(status .error) == '"Invalid engine message: '* ]] || fail "A bad message is shown as itself" "Actual: $(status .error)"
+close
+kill "$fake" 2>/dev/null || true
+fake=
 
 if rg 'Binding loop|ReferenceError|TypeError|Unable to assign' "$check_dir/log"; then exit 1; fi
 echo "Loading: card, bar, overall %, named steps, no-stages and no-loading fallbacks, no engine."

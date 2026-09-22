@@ -104,10 +104,30 @@ done
 call input move "$ox" "$oy"
 call input move "$((ox + 1))" "$oy"
 expect 'The pointer over a mark puts the cursor on its row' "\"$other\"" "$(field .hot)"
+# Hover and clicks near an edge never move the camera (S40 review 2): the
+# radar placed 35 px inside the map's left edge, inside the keys' 60 px band.
+call input place "$other" 35 $(( $(rect map h) / 2 ))
+call input move "$px" "$py"
+view=$(field '[.span, .lat, .lon]')
+ex=$(call input mark "$other" | jq .x); ey=$(call input mark "$other" | jq .y)
+call input move "$ex" "$ey"; call input move "$((ex + 1))" "$ey"
+expect 'Hover by the edge puts the cursor on it' "\"$other\"" "$(field .hot)"
+expect 'and leaves the camera' "$view" "$(field '[.span, .lat, .lon]')"
+call input click "$((ex + 1))" "$ey"
+expect 'A click by the edge ticks it' "[\"$other\"]" "$(field '[.draft.sites[].id]')"
+expect 'and leaves the camera' "$view" "$(field '[.span, .lat, .lon]')"
+call input click "$((ex + 1))" "$ey"
 call input move "$px" "$py"
 call input key Home
 expect 'Home goes to the first row' 0 "$(field .cursor)"
 for _ in 1 2 3 4 5 6 7 8 9; do call input key Down; done
+# `?` opens the keys sheet over the panel; closing it gives the panel its keys.
+call input key Question
+expect '? opens the keys sheet from the panel' true "$(call keys status | jq .sheet)"
+call input key Escape
+expect 'Escape closes the sheet' false "$(call keys status | jq .sheet)"
+expect 'and the panel has its keys back' true "$(field .focused)"
+expect 'with the panel still open' true "$(field .open)"
 
 # The wheel over the panel scrolls the panel and never the map.
 span=$(field .span)
@@ -117,16 +137,21 @@ for y in 20 120 $(( $(rect mosaic h) / 2 )) $(( $(rect mosaic h) - 30 )); do
 done
 expect 'The wheel over the panel leaves the map span' "$span" "$(field .span)"
 
-# `/` filters, Escape goes back to the list with the filter kept, Space ticks.
+# `/` filters, Escape goes back to the list with the filter kept, Space
+# ticks. A filter that keeps the cursor's radar keeps the cursor on it.
+hot=$(field .hot | jq -r .)
+view=$(field '[.span, .lat, .lon]')
 call input key Slash
 expect '/ goes to the filter' true "$(field .filterFocused)"
-call input text "fi"
-expect 'The filter holds what was typed' '"fi"' "$(field .filter)"
+call input text "${hot:0:3}"
+expect 'The filter holds what was typed' "\"${hot:0:3}\"" "$(field .filter)"
 shown=$(field .shownRows)
 (( shown > 0 && shown < $(field .rows) )) || fail "The filter did not narrow the list: $shown rows"
+expect 'The cursor stays on its radar through the filter' "\"$hot\"" "$(field .hot)"
+expect 'Typing never moves the camera' "$view" "$(field '[.span, .lat, .lon]')"
 call input key Escape
 expect 'Escape in the filter goes back to the list' true "$(field .focused)"
-expect 'and keeps the filter' '"fi"' "$(field .filter)"
+expect 'and keeps the filter' "\"${hot:0:3}\"" "$(field .filter)"
 expect 'The window stays open' true "$(field .open)"
 hot=$(field .hot)
 call input key Space
@@ -140,13 +165,24 @@ call input click $(( $(rect chip x) + $(rect chip w) / 2 )) $(( $(rect chip y) +
 expect 'The chip opens the panel' true "$(field .open)"
 expect 'The panel holds the keyboard (chip)' true "$(field .focused)"
 expect 'The cancelled tick is gone' '[]' "$(field '[.draft.sites[].id]')"
+view=$(field '[.span, .lat, .lon]')
 call input move "$px" "$py"
 for _ in 1 2 3 4 5; do call input key Down; done
 expect '5 x Down moves 5 rows (chip)' 5 "$(field .cursor)"
 call input key J
 expect 'j moves' 6 "$(field .cursor)"
+call input key End
+# A full draft refuses a 13th tick out loud.
+max=12
+for id in $(jq -r '.sites[] | select(.kind != "grid") | .id' engine/data/sites.json | head -n "$max"); do call mosaic toggle "$id"; done
+expect 'Twelve ticked' "$max" "$(field '.draft.sites | length')"
+call input key Space
+expect 'A 13th tick is refused' "$max" "$(field '.draft.sites | length')"
+expect 'and says so' "\"$max OF $max · UNTICK ONE FIRST\"" "$(field .warning)"
 call input key Escape
 expect 'Escape closes' false "$(field .open)"
+# The keys moved the camera from radar to radar; a cancel puts it back.
+expect 'Cancel restores the camera the panel moved' "$view" "$(field '[.span, .lat, .lon]')"
 expect 'The map leaves pick mode' false "$(field .pickMode)"
 expect 'The map has its width back' "$(( frame_w ))" "$(( $(field .mapWidth) ))"
 if rg -q 'TypeError|ReferenceError|Unable to assign|Failed to create.*context' "$check_dir/log"; then fail "QML errors in the log"; fi

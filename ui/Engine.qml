@@ -153,8 +153,18 @@ QtObject {
         || (state.source === "live" && !!state.connection && state.connection.status === "loading"))
     /// The steps in order, each {id, name, state (done|active|waiting),
     /// detail}. The engine's stages are the segments of the bar; the two
-    /// client steps have none.
-    readonly property var steps: {
+    /// client steps have none. `steps` is reassigned only when this changes
+    /// (review SF2): every state rebuilt the array, and a Repeater over it
+    /// recreated its delegates once a second, restarting the ● pulse.
+    property var steps: []
+    property string stepsKey: ""
+    onStepsNowChanged: {
+        var key = JSON.stringify(stepsNow);
+        if (key === stepsKey) return;
+        stepsKey = key;
+        steps = stepsNow;
+    }
+    readonly property var stepsNow: {
         var step = (id, st, detail) => ({id: id, name: stepName(id), state: st, detail: detail || ""});
         var out = [step("engine", state ? "done" : "active", state ? "" : error ? "waiting for its socket" : "connecting")];
         if (!state) return out.concat([step("first", "waiting"), step("draw", "waiting")]);
@@ -268,7 +278,11 @@ QtObject {
         if (active) { everActive = true; readMemory(); }
         else Qt.callLater(gc);
     }
-    Component.onCompleted: if (active) { everActive = true; readMemory(); }
+    Component.onCompleted: {
+        if (active) { everActive = true; readMemory(); }
+        stepsKey = JSON.stringify(stepsNow);
+        steps = stepsNow;
+    }
     readonly property int bufferLimit: 24     // two hours of 5-minute scans, as on the web
     readonly property int minStart: 6         // the loop starts with this many ready, or all there are
     readonly property int stepMs: 250         // a frame's time on screen

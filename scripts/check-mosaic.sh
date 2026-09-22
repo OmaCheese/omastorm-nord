@@ -8,15 +8,35 @@
 # panel never reaches the map, which shrinks beside the panel; `/` filters
 # and Escape comes back; Space ticks; Escape cancels. The state override
 # puts My mosaic on screen so the chip shows; the engine never gets a set
-# (no SHOW), so nothing is fetched.
+# (no SHOW), so nothing is fetched. The cancel steps send view_center: that
+# is safe because the daemon is always a scratch one, the lane's under
+# target/check, or (run alone) this check's own, stopped on exit, never the
+# bar's in the session's runtime dir.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+own_runtime=
+if [[ ${XDG_RUNTIME_DIR:-} != "$PWD"/target/* ]]; then
+  own_runtime=$PWD/target/r-mosaic
+  mkdir -p "$own_runtime" && chmod 700 "$own_runtime"
+  mkdir -p "$own_runtime/cache" "$own_runtime/tmp"
+  export XDG_RUNTIME_DIR=$own_runtime XDG_CACHE_HOME=$own_runtime/cache TMPDIR=$own_runtime/tmp
+  export OMASTORM_ARCHIVE=${OMASTORM_ARCHIVE:-$PWD/data/raw/KTLX20130520_201643_V06.gz}
+fi
 check_dir="$PWD/target/check-mosaic"
 mkdir -p "$check_dir"
 : > "$check_dir/none.toml"
 jq -c '.sites[] | select(.id=="vara") | {lat, lon, span: 210}' engine/data/sites.json > "$check_dir/state.json"
 qml=$(bash scripts/capture-harness.sh --input)
-trap 'kill "${pid:-}" 2>/dev/null || true; wait "${pid:-}" 2>/dev/null || true; rm -rf "$(dirname "$qml")"' EXIT
+cleanup() {
+  kill "${pid:-}" 2>/dev/null || true
+  wait "${pid:-}" 2>/dev/null || true
+  rm -rf "$(dirname "$qml")"
+  if [[ -n $own_runtime ]]; then
+    target/debug/omastorm-engine stop > /dev/null 2>&1 || true
+    rm -rf "$own_runtime"
+  fi
+}
+trap cleanup EXIT
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
 OMASTORM_QML="$qml" OMASTORM_CONFIG="$check_dir/none.toml" OMASTORM_STATE="$check_dir/state.json" \
   OMASTORM_WIDTH=960 OMASTORM_HEIGHT=680 OMASTORM_STATE_OVERRIDE='{"site":{"id":"mymosaic"}}' \
@@ -85,7 +105,7 @@ call input move "$ox" "$oy"
 call input move "$((ox + 1))" "$oy"
 expect 'The pointer over a mark puts the cursor on its row' "\"$other\"" "$(field .hot)"
 call input move "$px" "$py"
-for _ in {1..9}; do call input key Home; done
+call input key Home
 expect 'Home goes to the first row' 0 "$(field .cursor)"
 for _ in 1 2 3 4 5 6 7 8 9; do call input key Down; done
 

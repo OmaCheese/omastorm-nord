@@ -139,7 +139,9 @@ QtObject {
     /// Whether the texture of the frame on screen is loaded: a hidden Image
     /// on the same URL, which Qt's cache shares with the map's sampler.
     property Image drawProbe: Image {
-        source: engine.texture
+        // Only while something loads (review NIT4): idle, it would hold
+        // one more image for nothing.
+        source: engine.busy ? engine.texture : ""
         asynchronous: true
         cache: true
         smooth: false

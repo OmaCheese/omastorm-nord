@@ -433,8 +433,8 @@ Item {
     onSiteIdChanged: scheduleLayout()
     onWidthChanged: { scheduleLayout(); settle.restart(); }
     onHeightChanged: { scheduleLayout(); settle.restart(); }
-    onWorldPixelsChanged: { scheduleLayout(); Qt.callLater(refreshOverlay); }
-    onLabelSizeChanged: scheduleLayout()
+    onWorldPixelsChanged: { scheduleLayout(); Qt.callLater(refreshOverlay); if (pickMode) Qt.callLater(layoutPickLabels); }
+    onLabelSizeChanged: { scheduleLayout(); if (pickMode) Qt.callLater(layoutPickLabels); }
     onPlacesChanged: scheduleLayout()
     onThemeChanged: scheduleLayout()
     Component.onCompleted: scheduleLayout()
@@ -603,6 +603,62 @@ Item {
     // S25: My mosaic's chosen radars at their reach, [{id, lat, lon, km}]:
     // the checklist's while it is open, the set's while My mosaic shows.
     property var mosaicCircles: []
+
+    // S39: My mosaic's pick mode, the map half of the docked panel (S40).
+    // While on, every radar with an antenna is a mark with its label,
+    // whatever the zoom's label thinning does; ticked ones (`pickedIds`)
+    // are filled in accent, the panel's cursor (`hotId`) wears a ring. A
+    // click (under 4 px of travel) within 12 px of a mark emits
+    // radarPicked; the map never ticks anything itself. A drag still pans
+    // (from 4 px of travel), the wheel still zooms, a double-click on empty
+    // map still resets, and a click on empty map does nothing.
+    property bool pickMode: false
+    property var pickedIds: []
+    property string hotId: ""
+    signal radarPicked(string id)
+    // The mark under the pointer, "" when none (pick mode only).
+    signal radarHovered(string id)
+    readonly property real pickRadius: 12
+    readonly property real clickTravel: 4
+    readonly property var pickSites: sites.filter(s => s.kind !== "grid")
+    // The nearest mark within pickRadius of the viewport point, or "".
+    function radarAt(x, y) {
+        var best = "", bestD = pickRadius;
+        for (var s of pickSites) {
+            var d = Math.hypot(sx(mercatorX(s.lon)) - x, sy(mercatorY(s.lat)) - y);
+            if (d <= bestD) { bestD = d; best = s.id; }
+        }
+        return best;
+    }
+    // Label offsets from each mark, [{id, x, y, width}], laid out on zoom:
+    // every radar keeps its label; a collision only moves it to the first
+    // free side (right, left, above right, above left), else right.
+    property var pickLabels: []
+    onPickModeChanged: { if (!pickMode) pointer.hover(""); Qt.callLater(layoutPickLabels); }
+    onPickSitesChanged: Qt.callLater(layoutPickLabels)
+    function layoutPickLabels() {
+        if (!pickMode) { pickLabels = []; return; }
+        var marks = pickSites.map(s => ({s: s, x: mercatorX(s.lon) * worldPixels, y: mercatorY(s.lat) * worldPixels}));
+        var occupied = marks.map(m => ({x: m.x - 7, y: m.y - 7, w: 14, h: 14})), out = [];
+        for (var m of marks) {
+            labelMetrics.text = stationLabel(m.s);
+            var tw = labelMetrics.advanceWidth + 6, chosen = null;
+            var sides = [{x: 10, y: -8}, {x: -tw - 10, y: -8}, {x: 8, y: -24}, {x: -tw - 8, y: -24}];
+            for (var q of sides) {
+                var bx = m.x + q.x, by = m.y + q.y;
+                if (occupied.some(o => bx < o.x + o.w && bx + tw > o.x && by < o.y + o.h && by + 16 > o.y)) continue;
+                chosen = q; break;
+            }
+            if (!chosen) chosen = sides[0];
+            occupied.push({x: m.x + chosen.x, y: m.y + chosen.y, w: tw, h: 16});
+            out.push({id: m.s.id, name: stationLabel(m.s), x: chosen.x, y: chosen.y, width: tw});
+        }
+        pickLabels = out;
+    }
+    function pickLabelFor(id) {
+        for (var l of pickLabels) if (l.id === id) return l;
+        return null;
+    }
     // S30: where a My mosaic height frame's holes are hatched: its chosen
     // radars' reach circles ([{lat, lon, km}], the window's blue circles by
     // default), as the shader wants them: latitude and longitude less the
@@ -897,6 +953,7 @@ Item {
                 x: (map.mercatorX(modelData.lon)-map.siteMx)*map.worldPixels-3
                 y: (map.mercatorY(modelData.lat)-map.siteMy)*map.worldPixels-3
                 width: 6; height: 6
+                visible: !map.pickMode  // S39: the pick layer draws every radar
                 color: Qt.alpha(map.antennaInk, .55)
                 border.width: 1; border.color: map.antennaInk
             }
@@ -907,7 +964,7 @@ Item {
                 required property var modelData
                 x: modelData.x; y: modelData.y
                 width: modelData.width; height: 16
-                visible: overlayCamera.x+x >= 8 && overlayCamera.x+x+width <= map.width-8
+                visible: !map.pickMode && overlayCamera.x+x >= 8 && overlayCamera.x+x+width <= map.width-8
                     && overlayCamera.y+y >= 26 && overlayCamera.y+y+height <= map.height-30
                 color: Qt.alpha(map.theme.background, .88)
                 Text {
@@ -962,20 +1019,107 @@ Item {
             }
         }
     }
+    // S39: pick mode's marks, above the overlay, in viewport pixels: plain
+    // radars in the antenna ink, ticked ones filled in accent, the panel's
+    // cursor ringed so it is found at any zoom.
+    Item {
+        id: pickLayer
+        anchors.fill: parent
+        visible: map.pickMode
+        Repeater {
+            model: map.pickMode ? map.pickSites : []
+            Item {
+                id: pickMark
+                required property var modelData
+                readonly property bool picked: map.pickedIds.indexOf(modelData.id) >= 0
+                readonly property bool hot: map.hotId === modelData.id
+                readonly property var label: map.pickLabelFor(modelData.id)
+                x: map.sx(map.mercatorX(modelData.lon))
+                y: map.sy(map.mercatorY(modelData.lat))
+                z: hot ? 2 : picked ? 1 : 0
+                // The hot ring: a soft accent halo and a foreground ring.
+                Rectangle {
+                    visible: pickMark.hot
+                    x: -20; y: -20; width: 40; height: 40; radius: 20
+                    color: Qt.alpha(map.theme.accent, map.lightTheme ? .22 : .28)
+                    border.width: 2; border.color: Qt.alpha(map.theme.accent, .9)
+                    antialiasing: true
+                }
+                Rectangle {
+                    visible: pickMark.hot
+                    x: -11; y: -11; width: 22; height: 22; radius: 11
+                    color: "transparent"
+                    border.width: 2; border.color: map.theme.foreground
+                    antialiasing: true
+                }
+                Rectangle {
+                    readonly property real side: pickMark.picked ? 12 : 9
+                    x: -side / 2; y: -side / 2; width: side; height: side
+                    color: pickMark.picked ? map.theme.accent : Qt.alpha(map.antennaInk, .35)
+                    border.width: pickMark.picked ? 2 : 1.5
+                    border.color: pickMark.picked ? map.theme.background : map.antennaInk
+                }
+                Rectangle {
+                    visible: !!pickMark.label
+                    x: pickMark.label ? pickMark.label.x : 0
+                    y: pickMark.label ? pickMark.label.y : 0
+                    width: pickMark.label ? pickMark.label.width : 0; height: 16
+                    color: pickMark.picked ? map.theme.accent : Qt.alpha(map.theme.background, .88)
+                    border.width: pickMark.hot ? 1 : 0; border.color: map.theme.foreground
+                    Text {
+                        x: 3; anchors.verticalCenter: parent.verticalCenter
+                        text: pickMark.label ? pickMark.label.name : ""
+                        color: pickMark.picked ? map.theme.background : map.antennaInk
+                        font.family: map.theme.font; font.pixelSize: map.labelSize
+                        font.bold: pickMark.picked || pickMark.hot
+                    }
+                }
+            }
+        }
+    }
     MouseArea {
+        id: pointer
         anchors.fill: parent
         enabled: map.interactive
-        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+        // S39: hover only in pick mode, for the hand over a mark.
+        hoverEnabled: map.pickMode
+        cursorShape: pressed && (!map.pickMode || dragging) ? Qt.ClosedHandCursor
+            : map.pickMode && hovered !== "" ? Qt.PointingHandCursor : Qt.OpenHandCursor
         property real lastX
         property real lastY
-        onPressed: mouse => { lastX=mouse.x; lastY=mouse.y; }
+        // Pick mode: where the press was, and whether it has become a drag.
+        property real pressX
+        property real pressY
+        property bool dragging: false
+        // The second release of a double-click: its first click already picked.
+        property bool doubled: false
+        property string hovered: ""
+        function hover(id) { if (hovered !== id) { hovered = id; map.radarHovered(id); } }
+        onPressed: mouse => { lastX=mouse.x; lastY=mouse.y; pressX=mouse.x; pressY=mouse.y; dragging=false; }
         onPositionChanged: mouse => {
+            if (map.pickMode) {
+                if (!pressed) { hover(map.radarAt(mouse.x, mouse.y)); return; }
+                // Under clickTravel a press is still a click: the map holds still.
+                if (!dragging && Math.hypot(mouse.x-pressX, mouse.y-pressY) < map.clickTravel) return;
+                if (!dragging) { dragging = true; hover(""); }
+            }
             if(pressed && (mouse.x !== lastX || mouse.y !== lastY)) {
                 map.look(map.viewCenterX - (mouse.x-lastX)*map.unitsPerPixel, map.viewCenterY - (mouse.y-lastY)*map.unitsPerPixel);
                 lastX=mouse.x; lastY=mouse.y;
                 map.navigated(map.centerLat, map.centerLon, map.span);
             }
         }
+        onReleased: mouse => {
+            if (!map.pickMode) return;
+            var wasDrag = dragging, second = doubled;
+            dragging = false; doubled = false;
+            if (!wasDrag && !second) {
+                var id = map.radarAt(mouse.x, mouse.y);
+                if (id !== "") map.radarPicked(id);
+            }
+            hover(map.radarAt(mouse.x, mouse.y));
+        }
+        onExited: hover("")
         onWheel: wheel => {
             // Zoom about the pointer: the ground under it stays put.
             var mx=map.viewCenterX+(wheel.x-width/2)*map.unitsPerPixel;
@@ -983,7 +1127,12 @@ Item {
             map.zoom(Math.min(map.span,map.maxSpan)*(wheel.angleDelta.y>0?.85:1/.85), false);
             map.look(mx-(wheel.x-width/2)*map.unitsPerPixel, my-(wheel.y-height/2)*map.unitsPerPixel);
             map.navigated(map.centerLat, map.centerLon, map.span);
+            if (map.pickMode) hover(map.radarAt(wheel.x, wheel.y));
         }
-        onDoubleClicked: map.resetRequested()
+        // In pick mode a double-click on a mark is its click, not a reset.
+        onDoubleClicked: mouse => {
+            if (map.pickMode) doubled = true;
+            if (!map.pickMode || map.radarAt(mouse.x, mouse.y) === "") map.resetRequested();
+        }
     }
 }

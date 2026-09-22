@@ -63,7 +63,7 @@ expect 'The wheel over the panel leaves the map span' "$span" "$(field .span)"
 # `/` filters, Escape goes back to the list with the filter kept, Space ticks.
 call input key Slash
 expect '/ goes to the filter' true "$(field .filterFocused)"
-call input text fi
+call input text "fi"
 expect 'The filter holds what was typed' '"fi"' "$(field .filter)"
 shown=$(field .shownRows)
 (( shown > 0 && shown < $(field .rows) )) || fail "The filter did not narrow the list: $shown rows"

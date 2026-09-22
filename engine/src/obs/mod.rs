@@ -116,6 +116,21 @@ pub fn fresh(stations: Vec<Station>, now: i64) -> Vec<Station> {
         .collect()
 }
 
+/// A provider's new list, with the stations of the previous one it no
+/// longer names kept while they are fresh: SMHI's latest-hour file drops a
+/// station until its report for the new hour is in, which would otherwise
+/// empty a third of Sweden for the first half of every hour.
+pub fn merge(previous: Vec<Station>, next: Vec<Station>, now: i64) -> Vec<Station> {
+    let named: std::collections::HashSet<String> = next.iter().map(|s| s.id.clone()).collect();
+    let mut out = next;
+    out.extend(
+        fresh(previous, now)
+            .into_iter()
+            .filter(|s| !named.contains(&s.id)),
+    );
+    out
+}
+
 /// One file a provider is read from, and how old its cached copy may get.
 pub struct Part {
     /// The cache file's name under `obs/`.
@@ -513,7 +528,7 @@ impl Fetcher {
                         stations.len()
                     );
                 }
-                *list = stations;
+                *list = merge(std::mem::take(list), stations, now);
             }
             (parsed, failure) => {
                 let note = failure
@@ -612,6 +627,24 @@ pub(crate) mod tests {
         );
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].ms, now - 89 * min);
+    }
+
+    #[test]
+    fn a_station_missing_from_the_new_list_stays_while_fresh() {
+        let now = parse_iso("2026-09-22T19:20:00Z").unwrap();
+        let min = 60 * 1000;
+        let mut a = station(now - 80 * min, Some(1.0));
+        a.id = "smhi:a".into();
+        let mut b = station(now - 80 * min, Some(2.0));
+        b.id = "smhi:b".into();
+        let mut b2 = station(now - 20 * min, Some(3.0));
+        b2.id = "smhi:b".into();
+        let mut old = station(now - 100 * min, Some(4.0));
+        old.id = "smhi:old".into();
+        let merged = merge(vec![a, b, old], vec![b2], now);
+        let ids: Vec<&str> = merged.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["smhi:b", "smhi:a"]);
+        assert_eq!(merged[0].temp_c, Some(3.0));
     }
 
     #[test]

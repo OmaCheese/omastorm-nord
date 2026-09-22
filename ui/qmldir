@@ -7,8 +7,11 @@ LocationPicker 1.0 LocationPicker.qml
 LocationPrompt 1.0 LocationPrompt.qml
 MosaicPicker 1.0 MosaicPicker.qml
 MosaicStore 1.0 MosaicStore.qml
+ObsLayer 1.0 ObsLayer.qml
 Remembered 1.0 Remembered.qml
 KeysSheet 1.0 KeysSheet.qml
+LayersPanel 1.0 LayersPanel.qml
+LayersStore 1.0 LayersStore.qml
 Panel 1.0 Panel.qml
 Popover 1.0 Popover.qml
 RadarBar 1.0 RadarBar.qml

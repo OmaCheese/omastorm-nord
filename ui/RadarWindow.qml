@@ -174,6 +174,9 @@ Item {
         loopShared: true
         loopSite: app.store.loopSite
         onLoopRequested: site => app.store.loopSite = site
+        // S42: the station layers this window shows, only while it is open
+        // (the engine fetches nothing while no client shows one).
+        layers: ({temp: app.opened && app.store.layers.temp, wind: app.opened && app.store.layers.wind})
     }
     // Deliberate preferences and remembered view (DESIGN.md, location).
     // PluginSession owns config.toml, state.json, and the camera; this
@@ -392,6 +395,7 @@ Item {
         case "weak": weakFloor = weakFloor === null ? configuredFloor : null; break;
         case "relief": relief = !relief; break;
         case "help": treatmentMenu.close(); if (sheet.open) sheet.close(); else sheet.show(); break;
+        case "layers": treatmentMenu.close(); productMenu.close(); if (layersPanel.opened) layersPanel.close(); else layersPanel.show(); break;
         case "close": dismiss(); break;
         }
     }
@@ -429,6 +433,25 @@ Item {
                                    detail: engine.activeStep ? engine.activeStep.detail : "", name: engine.loadName, error: engine.error,
                                    steps: engine.steps.map(s => s.id + ":" + s.state)});
         }
+    }
+    // S42: the layers for checks and captures:
+    // quickshell ipc --pid <pid> call layers set temp true
+    IpcHandler {
+        target: "layers"
+        function set(name: string, on: bool): void { app.store.layers.set(name, on); }
+        function panel(open: bool): void { if (open) layersPanel.show(); else layersPanel.close(); }
+        function status(): string {
+            var l = app.store.layers, o = engine.obs;
+            return JSON.stringify({radar: l.radar, temp: l.temp, wind: l.wind, panel: layersPanel.opened,
+                                   stations: o ? o.stations.length : -1, shown: obsLayer.shown.length,
+                                   attribution: o ? o.attribution : "", status: layersPanel.status});
+        }
+        function hover(x: real, y: real): string { var s = obsLayer.stationAt(x, y); return s ? JSON.stringify(s) : ""; }
+        function mark(id: string): string {
+            var p = obsLayer.shown.find(q => q.s.id === id);
+            return p ? JSON.stringify({x: Math.round(map.sx(p.mx)), y: Math.round(map.sy(p.my))}) : "";
+        }
+        function shownIds(): string { return JSON.stringify(obsLayer.shown.map(p => p.s.id)); }
     }
     // Site navigation (DESIGN.md, location): the lock pins the radar against
     // hand-offs; `n` releases it and selects the nearest radar without moving
@@ -709,7 +732,7 @@ Item {
             model: KeyMap.ACTIONS.map(a => a.id)
             delegate: Shortcut {
                 sequences: app.bindings[modelData] || []
-                enabled: app.opened && !app.overlayOpen && (!treatmentMenu.opened || modelData === "pixels" || modelData === "glyphs" || modelData === "stipple")
+                enabled: app.opened && !app.overlayOpen && !layersPanel.opened && (!treatmentMenu.opened || modelData === "pixels" || modelData === "glyphs" || modelData === "stipple")
                 onActivated: app.run(modelData)
             }
           }
@@ -850,6 +873,40 @@ Item {
                         border.color: mosaicPicker.open ? app.theme.accent : Qt.alpha(app.theme.foreground, .22)
                     }
                 }
+                // S42: the LAYERS chip beside the product line opens the
+                // layers panel (radar, temperature, wind) and names what is
+                // on besides the radar. Like RADARS it never takes the keys.
+                Button {
+                    id: layersChip
+                    implicitHeight: 30
+                    implicitWidth: contentItem.implicitWidth + 18
+                    padding: 0
+                    focusPolicy: Qt.NoFocus
+                    Layout.alignment: Qt.AlignTop
+                    Layout.leftMargin: 4
+                    readonly property var store: app.store.layers
+                    readonly property string extra: [store.temp ? "°C" : "", store.wind ? "WIND" : ""].filter(x => x).join(" + ")
+                    readonly property bool lit: layersPanel.opened || store.temp || store.wind || !store.radar
+                    opacity: lit || hovered ? 1 : .8
+                    onClicked: app.run("layers")
+                    contentItem: RowLayout {
+                        spacing: 6
+                        Item { Layout.fillWidth: true }
+                        LabelText {
+                            text: (win.compact && layersChip.extra ? "" : "LAYERS")
+                                + (layersChip.extra ? (win.compact ? "" : " · ") + layersChip.extra : "")
+                                + (layersChip.store.radar ? "" : " · NO RADAR")
+                            color: layersChip.lit ? app.theme.accent : app.theme.foreground
+                        }
+                        Glyph { glyph: "chevron"; implicitWidth: 12; fade: .6; visible: !win.compact }
+                        Item { Layout.fillWidth: true }
+                    }
+                    background: Rectangle {
+                        color: layersPanel.opened || layersChip.hovered ? Qt.alpha(app.theme.accent, .18) : "transparent"
+                        border.width: 1
+                        border.color: layersChip.lit ? app.theme.accent : Qt.alpha(app.theme.foreground, .22)
+                    }
+                }
                 Item { Layout.fillWidth: true }
                 // product stack: compact product line; age right-aligned under it.
                 ColumnLayout {
@@ -958,7 +1015,7 @@ Item {
                     theme: app.theme
                     treatment: app.treatment
                     weakFloor: app.weakFloor
-                    radarOpacity: app.condition === "unavailable" ? .6 : 1
+                    radarOpacity: !app.store.layers.radar ? 0 : app.condition === "unavailable" ? .6 : 1
                     labelSize: win.compact ? 10 : 12
                     locked: app.locked
                     product: app.state ? app.state.product : null
@@ -992,6 +1049,18 @@ Item {
                     onTilesNeeded: (z, x0, y0, x1, y1) => engine.send({type: "tiles_needed", z: z, x0: x0, y0: y0, x1: x1, y1: y1})
                 }
                 Connections { target: engine; function onTileReady(tile) { map.tileReady(tile); } }
+                // S42: the weather stations over the radar.
+                ObsLayer {
+                    id: obsLayer
+                    anchors.fill: parent
+                    map: map
+                    obs: engine.obs
+                    temp: app.store.layers.temp
+                    wind: app.store.layers.wind
+                    theme: app.theme
+                    compact: win.compact
+                    creditHeight: 30
+                }
                 // Place-follow (crosshair) stays out of the release until GPS
                 // is wired; keep the mock chip for captures via OMASTORM_MOCK_GPS.
                 // N ↑ is map orientation only — not a control.
@@ -1156,7 +1225,7 @@ Item {
                 id: legend
                 Layout.fillWidth: true
                 spacing: 4
-                visible: !!app.scan
+                visible: !!app.scan && app.store.layers.radar
                 Item {
                     Layout.fillWidth: true
                     implicitHeight: legendRow.implicitHeight
@@ -1502,6 +1571,16 @@ Item {
           // current and the hovered row in accent, each row's key at the
           // right. A click outside, Escape, a treatment key, or a choice
           // closes it; Up, Down, and Return choose from the keyboard.
+          // S42: the layers panel, a card below the LAYERS chip.
+          LayersPanel {
+            id: layersPanel
+            anchors.fill: parent
+            theme: app.theme
+            store: app.store.layers
+            chip: layersChip
+            obs: engine.obs
+            keyText: (app.bindings.layers || []).map(KeyMap.pretty).join(" ")
+          }
           Item {
             id: treatmentMenu
             anchors.fill: parent

@@ -25,6 +25,7 @@ pub fn parts() -> Vec<Part> {
             name,
             url: format!("{BASE}/{p}/station-set/all/period/latest-hour/data.json"),
             max_age: super::MIN_AGE,
+            auth: false,
         })
         .collect()
 }

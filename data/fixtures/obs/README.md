@@ -10,4 +10,8 @@ parser tests in `engine/src/obs/` read them offline.
 | `dmi_obs_202609221830.json.gz` | `opendataapi.dmi.dk/v2/metObs/collections/observation/items?period=latest-10-minutes&bbox=7.5,54.4,15.5,58.0&limit=10000`; DMI, CC BY 4.0 |
 | `dmi_stations_20260922.json.gz` | `opendataapi.dmi.dk/v2/metObs/collections/station/items?bbox=7.5,54.4,15.5,58.0&limit=10000` |
 
-No Frost (MET Norway) fixture: its API needs a client ID.
+| `frost_sources_20260922.json.gz` | `frost.met.no/sources/v0.jsonld?types=SensorSystem&country=NO&validtime=now&elements=air_temperature&wmoid=*&fields=id,name,geometry,masl,wmoid` (19:21 UTC); MET Norway, CC BY 4.0 |
+| `frost_obs_202609221920.json.gz` | `frost.met.no/observations/v0.jsonld?sources=<the list's first 124 ids>&referencetime=latest&maxage=PT1H&levels=default&timeoffsets=default&elements=air_temperature,wind_speed,wind_from_direction,max(wind_speed_of_gust PT10M)` |
+
+Frost needs a client ID (basic auth); these are response bodies only, and
+were checked to hold neither the ID nor the secret.

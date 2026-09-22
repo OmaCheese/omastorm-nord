@@ -122,6 +122,8 @@ pub struct Part {
     pub name: &'static str,
     pub url: String,
     pub max_age: Duration,
+    /// Sent with the Frost client ID as basic auth (never in the URL).
+    pub auth: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -159,13 +161,14 @@ impl Id {
             Id::Frost => "MET Norway, CC BY 4.0",
         }
     }
-    /// The files to read at `now`, or why the provider is skipped.
-    fn parts(self, now: i64) -> Result<Vec<Part>, String> {
+    /// The files to read at `now` (Frost's depend on its cached station
+    /// list in `dir`), or why the provider is skipped.
+    fn parts(self, now: i64, dir: &Path) -> Result<Vec<Part>, String> {
         match self {
             Id::Smhi => Ok(smhi::parts()),
             Id::Fmi => Ok(fmi::parts(now)),
             Id::Dmi => Ok(dmi::parts()),
-            Id::Frost => frost::parts(),
+            Id::Frost => frost::parts(dir),
         }
     }
     /// Whether a part cached `age` ago at `fetched` needs fetching at `now`.
@@ -184,7 +187,7 @@ impl Id {
             Id::Smhi => smhi::parse(bodies),
             Id::Fmi => fmi::parse(&bodies[0]),
             Id::Dmi => dmi::parse(&bodies[0], &bodies[1]),
-            Id::Frost => Ok(Vec::new()),
+            Id::Frost => frost::parse(bodies),
         }
         .map(|stations| fresh(stations, now))
     }
@@ -398,17 +401,18 @@ impl Fetcher {
         Ok(Fetcher { client, dir, lists })
     }
 
-    async fn get(&self, url: &str) -> Result<Vec<u8>, String> {
+    async fn get(&self, url: &str, auth: bool) -> Result<Vec<u8>, String> {
         let url = match std::env::var(BASE_ENV) {
             Ok(base) if !base.is_empty() => rebase(url, &base),
             _ => url.to_owned(),
         };
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("{e}"))?;
+        let mut request = self.client.get(&url);
+        if auth {
+            let id = frost::client_id().ok_or("no Frost client ID")?;
+            request = request.basic_auth(id, Some(""));
+        }
+        // The error names the URL, which never holds the ID.
+        let response = request.send().await.map_err(|e| format!("{e}"))?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!("HTTP {status}"));
@@ -430,47 +434,56 @@ impl Fetcher {
     /// failure keeps the cached copy), parse whatever changed.
     async fn update(&mut self, index: usize, now: i64, first: bool) {
         let id = PROVIDERS[index];
-        let parts = match id.parts(now) {
-            Ok(parts) => parts,
-            Err(note) => {
-                let (info, list) = &mut self.lists[index];
-                if info.status != "skipped" {
-                    eprintln!("{} Obs {}: skipped: {note}", stamp(), id.key());
-                }
-                info.status = "skipped";
-                info.note = note;
-                list.clear();
-                return;
-            }
-        };
         let mut fetched = 0;
         let mut bytes = 0;
         let mut failure = None;
-        for part in &parts {
-            let path = self.dir.join(part.name);
-            if !id.due(part, modified_ms(&path), now) {
-                continue;
-            }
-            match self.get(&part.url).await {
-                Ok(body) => {
-                    fetched += 1;
-                    bytes += body.len();
-                    if let Err(e) = write_atomic(&path, &body) {
-                        eprintln!("{} Obs {}: caching {}: {e}", stamp(), id.key(), part.name);
+        // Frost's observation parts exist once its station list is cached,
+        // so a first fetch of the list is followed by a second round.
+        let mut parts = Vec::new();
+        for _round in 0..2 {
+            let now_parts = match id.parts(now, &self.dir) {
+                Ok(parts) => parts,
+                Err(note) => {
+                    let (info, list) = &mut self.lists[index];
+                    if info.status != "skipped" {
+                        eprintln!("{} Obs {}: skipped: {note}", stamp(), id.key());
                     }
+                    info.status = "skipped";
+                    info.note = note;
+                    list.clear();
+                    return;
                 }
-                Err(e) => {
-                    fetched += 1;
-                    failure = Some(format!("{}: {e}", part.name));
-                    // Keep the cached copy; retry after `MIN_AGE`, not
-                    // every tick: touch it so its age restarts.
-                    if path.exists() {
-                        let _ = fs::File::options()
-                            .append(true)
-                            .open(&path)
-                            .and_then(|f| f.set_modified(SystemTime::now()));
-                    } else {
-                        let _ = write_atomic(&path, b"");
+            };
+            if now_parts.len() == parts.len() {
+                break;
+            }
+            parts = now_parts;
+            for part in &parts {
+                let path = self.dir.join(part.name);
+                if !id.due(part, modified_ms(&path), now) {
+                    continue;
+                }
+                match self.get(&part.url, part.auth).await {
+                    Ok(body) => {
+                        fetched += 1;
+                        bytes += body.len();
+                        if let Err(e) = write_atomic(&path, &body) {
+                            eprintln!("{} Obs {}: caching {}: {e}", stamp(), id.key(), part.name);
+                        }
+                    }
+                    Err(e) => {
+                        fetched += 1;
+                        failure = Some(format!("{}: {e}", part.name));
+                        // Keep the cached copy; retry after `MIN_AGE`, not
+                        // every tick: touch it so its age restarts.
+                        if path.exists() {
+                            let _ = fs::File::options()
+                                .append(true)
+                                .open(&path)
+                                .and_then(|f| f.set_modified(SystemTime::now()));
+                        } else {
+                            let _ = write_atomic(&path, b"");
+                        }
                     }
                 }
             }

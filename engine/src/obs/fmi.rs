@@ -32,6 +32,7 @@ pub fn parts(now: i64) -> Vec<Part> {
         name: "fmi.xml",
         url,
         max_age: super::MIN_AGE,
+        auth: false,
     }]
 }
 

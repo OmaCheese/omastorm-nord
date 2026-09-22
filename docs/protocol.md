@@ -1623,9 +1623,8 @@ others, and a client that never sends `set_layers` never receives `obs`
    {"id":"smhi","name":"SMHI","status":"ok","stations":213,"attribution":"SMHI, CC BY 4.0"},
    {"id":"fmi","name":"FMI","status":"ok","stations":181,"attribution":"FMI, CC BY 4.0"},
    {"id":"dmi","name":"DMI","status":"ok","stations":58,"attribution":"DMI, CC BY 4.0"},
-   {"id":"frost","name":"MET Norway","status":"skipped","stations":0,"attribution":"MET Norway, CC BY 4.0",
-    "note":"no Frost client ID (OMASTORM_FROST_CLIENT_ID)"}],
- "attribution":"SMHI, FMI, DMI (CC BY 4.0)"}
+   {"id":"frost","name":"MET Norway","status":"ok","stations":242,"attribution":"MET Norway, CC BY 4.0"}],
+ "attribution":"SMHI, FMI, DMI, MET Norway (CC BY 4.0)"}
 ```
 
 - `stations[]` is one normalised list across providers. `id` is
@@ -1643,8 +1642,11 @@ others, and a client that never sends `set_layers` never receives `obs`
   served from the cache), `failed` (the last fetch failed; its previous
   stations stay while they are under 90 minutes old), or `skipped` (not
   configured: Norway's Frost API needs a client ID, which the engine reads
-  from `OMASTORM_FROST_CLIENT_ID`; without one Norway has no stations and
-  nothing is invented). `note` explains a `failed` or `skipped` one.
+  from `FROST_CLIENT_ID` or from `FROST_CLIENT_ID=` in
+  `$XDG_CONFIG_HOME/omastorm-se/frost.env`, default
+  `~/.config/omastorm-se/frost.env`; without one Norway has no stations and
+  nothing is invented). `note` explains a `failed` or `skipped` one, e.g.
+  `"note":"no Frost client ID (FROST_CLIENT_ID or ~/.config/omastorm-se/frost.env)"`.
 - `attribution` is one line naming the providers whose stations are in the
   list; a client shows it whenever a layer is drawn.
 - `obs` is sent to every client with a layer on whenever the list changes,
@@ -1655,7 +1657,9 @@ is fetched at most once every 10 minutes, in one bulk request (SMHI's API
 has one file per parameter, so SMHI is four: temperature, wind speed, wind
 direction, gust; and it is skipped until the next hour once the current
 hour's reports are in and fetched after half past). DMI's station names
-come from its station list, fetched at most once a day. Bodies are cached
+come from its station list, fetched at most once a day; so does Frost's
+list of Norwegian stations, whose latest observations take two requests
+(Frost refuses URLs over 2048 characters). Bodies are cached
 under `$XDG_CACHE_HOME/omastorm-se/obs/`, so a restart within 10 minutes
 fetches nothing. Every fetch writes one `Obs` line to `engine.log`.
 
@@ -1664,7 +1668,7 @@ fetches nothing. Every fetch writes one `Obs` line to `engine.log`.
 | SMHI (SE) | `opendata-download-metobs.smhi.se` parameters 1, 4, 3, 21, `station-set/all/period/latest-hour` | hourly | 213 temp, 180 wind |
 | FMI (FI, Åland) | `opendata.fmi.fi/wfs` `fmi::observations::weather::multipointcoverage` | 10 min | ~189 |
 | DMI (DK) | `opendataapi.dmi.dk/v2/metObs` `period=latest-10-minutes`, no key | 10 min | 58 temp, 54 wind |
-| MET Norway (NO) | `frost.met.no` (needs a client ID) | — | skipped without one |
+| MET Norway (NO) | `frost.met.no` `sources` (WMO stations with air temperature, daily) and `observations` `referencetime=latest` in 2 chunks; client ID as basic auth | 10 min (some hourly) | ~248 listed, ~240 reporting |
 
 ## Configuration
 

@@ -21,11 +21,13 @@ pub fn parts() -> Vec<Part> {
                 "{BASE}/observation/items?period=latest-10-minutes&bbox={BBOX}&limit=10000"
             ),
             max_age: super::MIN_AGE,
+            auth: false,
         },
         Part {
             name: "dmi-stations.json",
             url: format!("{BASE}/station/items?bbox={BBOX}&limit=10000"),
             max_age: Duration::from_secs(24 * 3600),
+            auth: false,
         },
     ]
 }

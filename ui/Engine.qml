@@ -128,14 +128,19 @@ QtObject {
     property real firstSeen: -1
     onLoadingChanged: {
         var l = loading;
-        if (!l) { percent = 0; loadKey = ""; firstSeen = -1; return; }
+        if (!l) { percent = 0; loadKey = ""; loadStage = ""; firstSeen = -1; return; }
         var first = l.stage === "first" ? Number(l.percent) || 0 : 101;
-        var again = state.site.id !== loadKey || firstSeen > first;
+        // Review NIT7: without `stages` (an engine older than S35) the
+        // percentage is the stage's own, so a new stage starts again.
+        var staged = Array.isArray(l.stages) && l.stages.length > 0;
+        var again = state.site.id !== loadKey || firstSeen > first || (!staged && l.stage !== loadStage);
         var value = overallOf(l);
         percent = again ? value : Math.max(percent, value);
         loadKey = state.site.id;
+        loadStage = l.stage;
         firstSeen = first;
     }
+    property string loadStage: ""
     /// Whether the texture of the frame on screen is loaded: a hidden Image
     /// on the same URL, which Qt's cache shares with the map's sampler.
     property Image drawProbe: Image {

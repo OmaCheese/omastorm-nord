@@ -419,6 +419,17 @@ Item {
                                    site: app.siteId, locked: app.locked, lockSource: app.store.lockSource, outsideCoverage: app.outsideCoverage});
         }
     }
+    // S41: the load as the surfaces show it, for checks and captures.
+    IpcHandler {
+        target: "loading"
+        function status(): string {
+            return JSON.stringify({busy: engine.busy, drawn: engine.drawn, card: loadingCard.visible, bar: loadingBar.visible,
+                                   percent: engine.percent, raw: engine.overallOf(engine.loading), segments: loadingBar.segments.length,
+                                   stage: engine.loading ? engine.loading.stage : "", step: engine.activeStep ? engine.activeStep.name : "",
+                                   detail: engine.activeStep ? engine.activeStep.detail : "", name: engine.loadName, error: engine.error,
+                                   steps: engine.steps.map(s => s.id + ":" + s.state)});
+        }
+    }
     // Site navigation (DESIGN.md, location): the lock pins the radar against
     // hand-offs; `n` releases it and selects the nearest radar without moving
     // the camera. The site picker locks and centres on that station.
@@ -1127,7 +1138,18 @@ Item {
                     visible: !!app.scan
                     font.pixelSize: 10; opacity: .55
                 }
-                LabelText { anchors.centerIn: parent; width: parent.width-24; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter; text: map.error || engine.error; visible: text.length > 0 }
+                LabelText { anchors.centerIn: parent; width: parent.width-24; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter; text: map.error || engine.error; visible: text.length > 0 && !(loadingCard.visible && !map.error) }
+                // S41: while nothing is drawn yet, the load in steps over the
+                // map; once a frame is on screen the timeline's bar says it.
+                LoadingCard {
+                    id: loadingCard
+                    anchors.centerIn: parent
+                    width: Math.min(implicitWidth, parent.width - 24)
+                    engine: engine
+                    theme: app.theme
+                    compact: win.compact
+                    visible: engine.busy && !engine.drawn
+                }
             }
             // legend — colors for the map above
             ColumnLayout {
@@ -1213,11 +1235,20 @@ Item {
                             elide: Text.ElideRight
                         }
                         // S31: what is loading and how far (state.loading).
+                        // S41: the whole load's percentage, big enough to
+                        // read, then the step by name and its count.
+                        LabelText {
+                            visible: !!engine.loading
+                            text: engine.percent + " %"
+                            font.pixelSize: 13
+                            font.bold: true
+                            color: app.theme.accent
+                        }
                         LabelText {
                             Layout.fillWidth: true
                             visible: !!engine.loading
-                            text: engine.loading ? engine.loading.percent + " % · " + engine.loading.label : ""
-                            font.pixelSize: 10
+                            text: engine.activeStep ? engine.activeStep.name + (engine.activeStep.detail ? " · " + engine.activeStep.detail : "") : ""
+                            font.pixelSize: 11
                             color: app.theme.accent
                             horizontalAlignment: Text.AlignLeft
                             elide: Text.ElideRight
@@ -1243,10 +1274,13 @@ Item {
                             loading: engine.loading
                             theme: app.theme
                             names: !win.compact
+                            // S41: 4 px, not S31's 2 px rule.
+                            thickness: 4
                             anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                            // The rule lands where S31 drew it (2 px below
-                            // the strip), whatever the names add below it.
-                            anchors.bottomMargin: -2 - implicitHeight
+                            // The bar starts 1 px below the strip, whatever
+                            // the names add below it, so bar and names fit
+                            // the window's 20 px margin.
+                            anchors.bottomMargin: -1 - implicitHeight
                         }
                         Repeater {
                             model: app.slots

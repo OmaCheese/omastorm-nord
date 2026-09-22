@@ -1567,6 +1567,21 @@ did. A client older than S35 finds no `stages`, reads the top-level fields
 and draws the single bar; a client that draws segments and finds no
 `stages` (an engine older than S35) falls back to that single bar too.
 
+**How the clients show it (S41, no wire change).** Both clients show one
+overall percentage, the whole load's: Σ `share` × `percent` / Σ `share`
+over `stages` (a `done` entry counts 100, a `waiting` one 0; without
+`stages`, the top-level `percent`), held at its highest until `loading`
+goes `null`, the station changes, or a load starts again on its `first`
+stage. They name the stages by the work, not by their ids: `first` is
+**Fetching radar data**, `build` **Engine: building the frame**, `history`
+**Fetching history**, with the `label` past its first `": "` as the
+step's detail ("1 of 3 radars in for 18:50Z, waiting for Karlskrona").
+Two more steps are the client's own and carry no segment: **Starting
+engine** (no `state` yet: the bar's `ensure` and the socket) and
+**Drawing** (a frame with a `scanTime` received, its texture not yet on
+screen). There is no `phase` (`fetching` | `decoding`) on `first`: a volume
+decodes in about 20 ms, so a decoding phase would never be seen.
+
 ## Configuration
 
 `~/.config/omastorm-se/config.toml` and

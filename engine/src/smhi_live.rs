@@ -1359,6 +1359,12 @@ pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached:
                     }
                 }
                 if !free {
+                    // S41: one download a round, but the round that took
+                    // the last overdue volume is caught up. Asking again
+                    // costs no request; without it the backfill waited a
+                    // whole POLL after a lagging listing, and a cold
+                    // station showed no loading for that minute.
+                    caught_up = live.next_due((cfg.now_ms)(), &cfg.base, &site).is_none();
                     break;
                 }
             }
@@ -2373,6 +2379,37 @@ mod tests {
             .expect("an end");
         assert_eq!(end - plan - 1, 2 * (PRODUCT_BACKFILL - 3), "{seen:?}");
         assert_eq!(seen[end - 1], "backfill 2026-09-13 15:55Z");
+    }
+
+    /// S41: the recorded listing lags (it names 16:40, the day reaches
+    /// 16:50). The poller probes 16:45 in its first round and 16:50 in its
+    /// second, and the round that took 16:50 is caught up, so the backfill
+    /// is planned before a third listing is read. Before S41 it waited a
+    /// whole POLL for that third round, and a cold station's bar was gone
+    /// for a minute between its first frame and its history.
+    #[test]
+    fn the_backfill_starts_in_the_round_that_catches_up() {
+        let listings = runtime().block_on(async {
+            let (base, served) = serve(smhi("vara", VARA, VARA_DAY)).await;
+            let (tx, mut rx) = mpsc::channel(16);
+            let poller = tokio::spawn(poll_with(config(base), "vara".into(), tx, Vec::new()));
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            let mut listings = None;
+            while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+                if matches!(event, Event::HistoryPlan { .. }) {
+                    let served = served.lock().unwrap();
+                    listings = Some(served.iter().filter(|s| s.contains("/qcvol.json")).count());
+                    break;
+                }
+            }
+            poller.abort();
+            listings
+        });
+        assert_eq!(
+            listings,
+            Some(2),
+            "listings read before the backfill's plan"
+        );
     }
 
     #[test]

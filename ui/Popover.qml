@@ -29,14 +29,17 @@ FocusScope {
     }
     readonly property int currentSlot: scan ? slots.findIndex(s => s.id === scan.id) : -1
     readonly property string condition: state ? state.source === "archived" ? "archived" : state.connection.status : "offline"
-    readonly property color statusColor: condition === "stale" ? theme.yellow
+    readonly property color statusColor: !state && connection.starting ? theme.accent
+        : condition === "stale" ? theme.yellow
         : condition === "offline" || condition === "unavailable" ? theme.red : theme.accent
     readonly property string statusText: {
-        if (!state) return "OFFLINE";
+        // Review NIT5: an engine on its way up is not a feed that is down.
+        if (!state) return connection.starting ? "STARTING" : "OFFLINE";
         if (condition === "archived") return "ARCHIVED";
         var label = condition === "ok" ? "LIVE" : condition.toUpperCase();
-        // S31: the engine's loading progress beside the condition.
-        if (connection.loading) return label + " · " + connection.loading.percent + " %";
+        // S31: the engine's loading progress beside the condition; S41:
+        // the whole load's, which never goes back within it.
+        if (connection.loading) return label + " · " + connection.percent + " %";
         var complete = frames.filter(f => f.status === "complete");
         if (!scan || !scan.scanTime || !complete.length) return label;
         var age = Math.max(0, state.connection.ageSeconds +
@@ -228,8 +231,18 @@ FocusScope {
             Label {
                 anchors.centerIn: parent; width: parent.width - 24; wrapMode: Text.Wrap
                 horizontalAlignment: Text.AlignHCenter
-                visible: !card.state
+                visible: !card.state && !(loadingCard.visible && !card.session.startupError)
                 text: card.session.startupError || connection.error
+            }
+            // S41: the load in steps while nothing is drawn yet.
+            LoadingCard {
+                id: loadingCard
+                anchors.centerIn: parent
+                width: Math.min(implicitWidth, parent.width - 24)
+                engine: connection
+                theme: card.theme
+                compact: true
+                visible: connection.busy && !connection.drawn && !card.session.needsLocation && !card.session.startupError
             }
             Rectangle {
                 anchors.fill: parent
@@ -276,6 +289,8 @@ FocusScope {
                     LoadingBar {
                         loading: connection.loading
                         theme: card.theme
+                        // S41: 3 px, readable, still under the ticks.
+                        thickness: 3
                         anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                         anchors.bottomMargin: -1 - implicitHeight
                     }
@@ -299,17 +314,22 @@ FocusScope {
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 12
-                    Label { font.pixelSize: 10; opacity: .55; text: card.frames.length ? Qt.formatTime(new Date(card.frames[0].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
+                    // S41: while loading, the step has the whole row.
+                    Label { font.pixelSize: 10; opacity: .55; visible: !connection.loading; text: card.frames.length ? Qt.formatTime(new Date(card.frames[0].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
                     // While it plays: frames held of the loop and their memory
                     // against this card's cap (Engine.qml, bufferNote).
                     // S31: what is loading, from the engine (state.loading),
                     // beside the buffer line while the loop plays (review NIT6).
+                    // S41: the step by name and the whole load's
+                    // percentage; the engine's label is too long for the
+                    // strip and elided its count away.
                     Label {
                         Layout.fillWidth: true
                         horizontalAlignment: Text.AlignHCenter
-                        font.pixelSize: 9; color: card.theme.accent
+                        font.pixelSize: 10; font.bold: true; color: card.theme.accent
+                        elide: Text.ElideRight
                         visible: !!connection.loading
-                        text: connection.loading ? connection.loading.label : ""
+                        text: connection.loading ? connection.percent + " % · " + (connection.activeStep ? connection.activeStep.name : "") : ""
                     }
                     Label {
                         Layout.fillWidth: true
@@ -320,7 +340,7 @@ FocusScope {
                             + (connection.bufferDropped > 0 ? " · −" + connection.bufferDropped : "")
                     }
                     Item { Layout.fillWidth: true; visible: !connection.loading && !(connection.looping && connection.bufferTarget > 0) }
-                    Label { font.pixelSize: 10; opacity: .55; text: card.condition === "ok" ? "now" : card.frames.length ? Qt.formatTime(new Date(card.frames[card.frames.length - 1].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
+                    Label { font.pixelSize: 10; opacity: .55; visible: !connection.loading; text: card.condition === "ok" ? "now" : card.frames.length ? Qt.formatTime(new Date(card.frames[card.frames.length - 1].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
                 }
             }
         }

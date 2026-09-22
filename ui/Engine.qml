@@ -33,8 +33,38 @@ QtObject {
     /// `state.loading` (S31): how far the load this client waits for has
     /// come, or null (nothing loads, or an engine older than S31, whose
     /// `connection.status` still says `loading`).
-    readonly property var loading: state && state.source === "live" && state.loading
+    readonly property var wireLoading: state && state.source === "live" && state.loading
         && typeof state.loading.label === "string" && isFinite(state.loading.percent) ? state.loading : null
+    /// What the surfaces show: `wireLoading`, or (S41 review SF1) the last
+    /// one held for `holdMs` after it went null while a stage of it was
+    /// still waiting. A radar's load goes null after its first stage's
+    /// linger and its history starts BACKFILL_DELAY (3 s) later; without
+    /// the hold the bar and the percentage blinked out in between. A new
+    /// loading, another station or the timer ends the hold.
+    readonly property var loading: wireLoading
+        || (heldLoading && state && heldLoading.site === state.site.id ? heldLoading.loading : null)
+    property var heldLoading: null
+    property var lastLoading: null
+    readonly property int holdMs: 4000
+    property Timer holdTimer: Timer { interval: engine.holdMs; onTriggered: engine.heldLoading = null }
+    onWireLoadingChanged: {
+        var l = wireLoading;
+        if (l) {
+            holdTimer.stop();
+            heldLoading = null;
+            lastLoading = {site: state.site.id, loading: l};
+            return;
+        }
+        var last = lastLoading;
+        lastLoading = null;
+        var waiting = !!last && Array.isArray(last.loading.stages) && last.loading.stages.some(s => s && s.state === "waiting");
+        if (waiting && state && state.site.id === last.site) {
+            heldLoading = last;
+            holdTimer.restart();
+        } else {
+            heldLoading = null;
+        }
+    }
     /// S31: while a composite's product has no frame (the placeholder), the
     /// composite's own newest frame the engine names to draw in its place.
     readonly property var under: {
@@ -42,6 +72,145 @@ QtObject {
         if (!u || !u.scanTime || !validTexturePath(u.texture)) return null;
         if (u.kind === "grid") return u.azimuthLut === "" && u.grid ? u : null;
         return u.kind === "polar" && validTexturePath(u.azimuthLut) ? u : null;
+    }
+
+    // ---- S41: the load as named steps and one overall percentage ----
+    // The engine's stages are named by the work, not by their ids, and two
+    // steps only the client knows go round them: starting the engine (the
+    // bar's `ensure` and the socket, before any state) and drawing (the
+    // frame received, its texture not loaded yet). The one number a surface
+    // shows is the whole load's: Σ share × percent over the stages (an
+    // engine older than S35: its top-level percent), and it never goes
+    // back within a load.
+    /// A step's name, by the work it does.
+    function stepName(id) {
+        return id === "engine" ? "Starting engine" : id === "first" ? "Fetching radar data"
+            : id === "build" ? "Engine: building the frame" : id === "draw" ? "Drawing"
+            : id === "history" ? "Fetching history" : id || "";
+    }
+    /// What the engine's label says past the load's name ("Vara
+    /// Reflectivity 0.5°: 24 of 58 frames" → "24 of 58 frames"), minus the
+    /// words the step's name already says.
+    function stepDetail(l) {
+        if (!l || typeof l.label !== "string") return "";
+        var at = l.label.indexOf(": ");
+        var d = at >= 0 ? l.label.slice(at + 2) : l.label;
+        if (l.stage === "history") d = d.replace(/^history /, "");
+        if (l.stage === "first" && d === "first frame") d = "the newest scan";
+        return d;
+    }
+    /// The load's name: the label before its colon ("My mosaic, Lowest
+    /// beam"), else the station's.
+    readonly property string loadName: {
+        var l = loading;
+        if (l && l.label.indexOf(": ") > 0) return l.label.slice(0, l.label.indexOf(": "));
+        return site ? site.name : "";
+    }
+    /// The whole load's fill, 0 to 100, from `loading` alone.
+    function overallOf(l) {
+        if (!l) return 0;
+        var clamp = p => Math.max(0, Math.min(100, Number(p) || 0));
+        var st = Array.isArray(l.stages) ? l.stages.filter(s => !!s) : [];
+        if (!st.length) return Math.floor(clamp(l.percent));
+        var sum = 0, shares = 0;
+        for (var s of st) {
+            var share = Math.max(1, Number(s.share) || 0);
+            shares += share;
+            sum += share * (s.state === "done" ? 100 : s.state === "waiting" ? 0 : clamp(s.percent));
+        }
+        return Math.floor(sum / shares);
+    }
+    /// The overall percentage a surface shows: `overallOf(loading)`, held
+    /// at its highest within one load. Another station, or a load back on
+    /// its first stage (or lower in it), starts again from its own value.
+    property int percent: 0
+    property string loadKey: ""
+    property real firstSeen: -1
+    onLoadingChanged: {
+        var l = loading;
+        if (!l) { percent = 0; loadKey = ""; loadStage = ""; firstSeen = -1; return; }
+        var first = l.stage === "first" ? Number(l.percent) || 0 : 101;
+        // Review NIT7: without `stages` (an engine older than S35) the
+        // percentage is the stage's own, so a new stage starts again.
+        var staged = Array.isArray(l.stages) && l.stages.length > 0;
+        var again = state.site.id !== loadKey || firstSeen > first || (!staged && l.stage !== loadStage);
+        var value = overallOf(l);
+        percent = again ? value : Math.max(percent, value);
+        loadKey = state.site.id;
+        loadStage = l.stage;
+        firstSeen = first;
+    }
+    property string loadStage: ""
+    /// Whether the texture of the frame on screen is loaded: a hidden Image
+    /// on the same URL, which Qt's cache shares with the map's sampler.
+    property Image drawProbe: Image {
+        // Only while something loads (review NIT4): idle, it would hold
+        // one more image for nothing.
+        source: engine.busy ? engine.texture : ""
+        asynchronous: true
+        cache: true
+        smooth: false
+        mipmap: false
+        visible: false
+    }
+    readonly property bool drawn: !!frame && !!frame.scanTime && texture !== "" && drawProbe.status === Image.Ready
+    /// Something is loading that a surface should say: no engine yet, a
+    /// load in `loading`, or (an engine older than S31) `loading` status.
+    readonly property bool busy: starting || (!!state && (!!loading
+        || (state.source === "live" && !!state.connection && state.connection.status === "loading")))
+    /// No state yet and nothing wrong but the socket (review SF3): the
+    /// engine is starting. Any other error (an unreadable message, an
+    /// unknown protocol version) is shown as itself, not as a start.
+    readonly property string disconnectedText: "Radar engine disconnected. Reconnecting…"
+    readonly property string unavailableText: "Radar engine unavailable. Reconnecting…"
+    readonly property bool starting: !state && !incompatible
+        && (error === "" || error === disconnectedText || error === unavailableText)
+    /// The steps in order, each {id, name, state (done|active|waiting),
+    /// detail}. The engine's stages are the segments of the bar; the two
+    /// client steps have none. `steps` is reassigned only when this changes
+    /// (review SF2): every state rebuilt the array, and a Repeater over it
+    /// recreated its delegates once a second, restarting the ● pulse.
+    property var steps: []
+    property string stepsKey: ""
+    onStepsNowChanged: {
+        var key = JSON.stringify(stepsNow);
+        if (key === stepsKey) return;
+        stepsKey = key;
+        steps = stepsNow;
+    }
+    readonly property var stepsNow: {
+        var step = (id, st, detail) => ({id: id, name: stepName(id), state: st, detail: detail || ""});
+        var out = [step("engine", state ? "done" : "active", state ? "" : error ? "waiting for its socket" : "connecting")];
+        if (!state) return out.concat([step("first", "waiting"), step("draw", "waiting")]);
+        var l = loading;
+        var stages = l && Array.isArray(l.stages) && l.stages.length ? l.stages.filter(s => !!s)
+            : l ? [{stage: l.stage, state: "active"}]
+            : [{stage: "first", state: drawn ? "done" : "active"}];
+        // The frame is drawn after the stage that makes it.
+        var after = stages.some(s => s.stage === "build") ? "build" : "first";
+        var scanned = !!frame && !!frame.scanTime;
+        var draw = null;
+        for (var s of stages) {
+            var st = s.state === "done" || s.state === "active" ? s.state : "waiting";
+            out.push(step(s.stage, st, l && st === "active" && s.stage === l.stage ? stepDetail(l) : ""));
+            if (s.stage === after) {
+                draw = step("draw", drawn ? "done" : st === "done" && scanned ? "active" : "waiting");
+                out.push(draw);
+            }
+        }
+        // A load with no first stage (the station opened on a frame it had).
+        if (!draw) out.splice(1, 0, step("draw", drawn ? "done" : scanned ? "active" : "waiting"));
+        return out;
+    }
+    /// The step to name: drawing while it runs, else the one the engine is
+    /// on. Between two (the linger at a stage's 100, before the next one
+    /// starts) the next one, "up next"; when every step is done, "Loaded".
+    readonly property var activeStep: {
+        var s = steps.find(s => s.id === "draw" && s.state === "active") || steps.find(s => s.state === "active");
+        if (s) return s;
+        var next = steps.find(s => s.state === "waiting" && s.id !== "draw");
+        if (next) return Object.assign({}, next, {detail: "up next"});
+        return loading ? {id: "loaded", name: "Loaded", state: "done", detail: ""} : null;
     }
 
     // The frame on screen (docs/protocol.md, timeline textures). While this
@@ -123,7 +292,11 @@ QtObject {
         if (active) { everActive = true; readMemory(); }
         else Qt.callLater(gc);
     }
-    Component.onCompleted: if (active) { everActive = true; readMemory(); }
+    Component.onCompleted: {
+        if (active) { everActive = true; readMemory(); }
+        stepsKey = JSON.stringify(stepsNow);
+        steps = stepsNow;
+    }
     readonly property int bufferLimit: 24     // two hours of 5-minute scans, as on the web
     readonly property int minStart: 6         // the loop starts with this many ready, or all there are
     readonly property int stepMs: 250         // a frame's time on screen
@@ -445,11 +618,11 @@ QtObject {
             onConnectedChanged: {
                 if (!connected && !engine.incompatible) {
                     engine.state = null;
-                    engine.error = "Radar engine disconnected. Reconnecting…";
+                    engine.error = engine.disconnectedText;
                 }
             }
             onError: {
-                if (!engine.incompatible) engine.error = "Radar engine unavailable. Reconnecting…";
+                if (!engine.incompatible) engine.error = engine.unavailableText;
             }
         }
     }

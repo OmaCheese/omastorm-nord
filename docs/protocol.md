@@ -340,8 +340,11 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 {"type":"set_section","from":{"lat":58.26,"lon":12.83},"to":{"lat":59.93,"lon":10.72}}
 {"type":"set_section"}
 {"type":"profile","lat":58.70,"lon":13.40}
+{"type":"set_layers","temp":true,"wind":false}
 ```
 
+- `set_layers` (S42) turns the weather layers on or off for its sender;
+  answered with `obs`. See [Weather layers](#weather-layers).
 - `set_mosaic` (S25) chooses My mosaic's radars and the combine rule (S37
   took the per-radar reach out). The rules are in [My mosaic](#my-mosaic).
 - `set_section` (S24c) sets, moves or (with neither point) clears the
@@ -1581,6 +1584,87 @@ engine** (no `state` yet: the bar's `ensure` and the socket) and
 **Drawing** (a frame with a `scanTime` received, its texture not yet on
 screen). There is no `phase` (`fetching` | `decoding`) on `first`: a volume
 decodes in about 20 ms, so a decoding phase would never be seen.
+
+## Weather layers
+
+S42 adds weather station observations beside the radar: air temperature
+and wind from the national networks' latest reports. They are per client,
+not shared state: one client turning a layer on changes nothing for the
+others, and a client that never sends `set_layers` never receives `obs`
+(so an older client sees nothing new).
+
+```json
+{"type":"set_layers","temp":true,"wind":true}
+{"type":"set_layers","temp":false,"wind":false}
+{"type":"set_layers","temp":true,"wind":false,"source":"stations"}
+```
+
+- `temp` and `wind` are optional booleans, `false` when absent. Both off
+  (the state of every connection until it says otherwise) means the
+  engine sends that client no `obs` and, when no client has a layer on,
+  fetches nothing.
+- `source` is optional: `stations` (the default, S42). S43 adds `grid`
+  (the MET Nordic model analysis) under the same command; until it is
+  built, `grid` is answered with an `error` and the layers stay as they
+  were. Any other value is an `error`.
+- The command is answered with `obs` to its sender at once when a layer is
+  on and the engine holds observations; otherwise `obs` follows the first
+  fetch. Turning both layers off is not answered; the client drops what it
+  drew.
+
+```json
+{"type":"obs","v":2,"time":"2026-09-22T18:30:00Z","source":"stations",
+ "stations":[
+   {"id":"smhi:188790","name":"Abisko Aut","provider":"smhi","lat":68.3538,"lon":18.8164,
+    "time":"2026-09-22T18:00:00Z","tempC":8.3,"windMs":2.1,"windDirDeg":250.0,"gustMs":null},
+   {"id":"fmi:100907","name":"Jomala Maarianhamina lentoasema","provider":"fmi","lat":60.12735,"lon":19.90038,
+    "time":"2026-09-22T18:30:00Z","tempC":8.5,"windMs":1.2,"windDirDeg":10.0,"gustMs":1.3}],
+ "providers":[
+   {"id":"smhi","name":"SMHI","status":"ok","stations":213,"attribution":"SMHI, CC BY 4.0"},
+   {"id":"fmi","name":"FMI","status":"ok","stations":181,"attribution":"FMI, CC BY 4.0"},
+   {"id":"dmi","name":"DMI","status":"ok","stations":58,"attribution":"DMI, CC BY 4.0"},
+   {"id":"frost","name":"MET Norway","status":"skipped","stations":0,"attribution":"MET Norway, CC BY 4.0",
+    "note":"no Frost client ID (OMASTORM_FROST_CLIENT_ID)"}],
+ "attribution":"SMHI, FMI, DMI (CC BY 4.0)"}
+```
+
+- `stations[]` is one normalised list across providers. `id` is
+  `<provider>:<station id>`. `time` is the observation's time (UTC, ISO
+  8601); each value is the newest the station reported within the last
+  hour. `tempC` is air temperature at 2 m in °C; `windMs` the 10-minute
+  mean wind in m/s; `windDirDeg` the direction the wind blows **from**, in
+  degrees clockwise from north (0–360, meteorological convention; a client
+  drawing where it blows **to** adds 180); `gustMs` the strongest gust in
+  m/s. A value the station did not report is `null`. A station whose
+  newest observation is older than 90 minutes is left out, and so is one
+  with no value at all.
+- `time` (top level) is the newest observation time in the list.
+- `providers[]` says how each source went: `status` `ok` (fetched or
+  served from the cache), `failed` (the last fetch failed; its previous
+  stations stay while they are under 90 minutes old), or `skipped` (not
+  configured: Norway's Frost API needs a client ID, which the engine reads
+  from `OMASTORM_FROST_CLIENT_ID`; without one Norway has no stations and
+  nothing is invented). `note` explains a `failed` or `skipped` one.
+- `attribution` is one line naming the providers whose stations are in the
+  list; a client shows it whenever a layer is drawn.
+- `obs` is sent to every client with a layer on whenever the list changes,
+  and never to one with both off.
+
+**Fetching.** Only while at least one client has a layer on. Each provider
+is fetched at most once every 10 minutes, in one bulk request (SMHI's API
+has one file per parameter, so SMHI is four: temperature, wind speed, wind
+direction, gust; and it is skipped until the next hour once the current
+hour's reports are in and fetched after half past). DMI's station names
+come from its station list, fetched at most once a day. Bodies are cached
+under `$XDG_CACHE_HOME/omastorm-se/obs/`, so a restart within 10 minutes
+fetches nothing. Every fetch writes one `Obs` line to `engine.log`.
+
+| Provider | Endpoint | Cadence | Stations (2026-09-22) |
+|---|---|---|---|
+| SMHI (SE) | `opendata-download-metobs.smhi.se` parameters 1, 4, 3, 21, `station-set/all/period/latest-hour` | hourly | 213 temp, 180 wind |
+| FMI (FI, Åland) | `opendata.fmi.fi/wfs` `fmi::observations::weather::multipointcoverage` | 10 min | ~189 |
+| DMI (DK) | `opendataapi.dmi.dk/v2/metObs` `period=latest-10-minutes`, no key | 10 min | 58 temp, 54 wind |
+| MET Norway (NO) | `frost.met.no` (needs a client ID) | — | skipped without one |
 
 ## Configuration
 

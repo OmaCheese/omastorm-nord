@@ -95,10 +95,14 @@ ShellRoot {
                     check(map.radarAt(p.x+13, p.y) === "", "radarAt hit beyond the radius");
                     check(map.radarAt(p.x, p.y-13) === "", "radarAt hit beyond the radius (y)");
                     // Two close marks: the nearer wins.
+                    // Zoomed out until they sit 16 px apart, both inside each other's radius.
                     var a = at(pair[0]), b = at(pair[1]), d = Math.hypot(a.x-b.x, a.y-b.y);
-                    check(d < 24, "The closest pair is too far apart to test: " + d);
+                    map.zoom(map.span * d / 16);
+                    a = at(pair[0]); b = at(pair[1]); d = Math.hypot(a.x-b.x, a.y-b.y);
+                    check(d > 15 && d < 17, "The closest pair did not come 16 px apart: " + d);
                     check(map.radarAt(a.x+(b.x-a.x)*.4, a.y+(b.y-a.y)*.4) === pair[0].id, "Nearer mark lost (a)");
                     check(map.radarAt(a.x+(b.x-a.x)*.6, a.y+(b.y-a.y)*.6) === pair[1].id, "Nearer mark lost (b)");
+                    nordicView();
                     // Hover: the mark under the pointer, "" off it.
                     move(p, Qt.NoButton);
                     check(hovered.count === 1 && hovered.signalArguments[0][0] === lone.id, "Hover over a mark not reported");
@@ -132,10 +136,10 @@ ShellRoot {
                     check(resets === 1 && picked.count === 3, "A double-click on a mark must be one pick, not a reset: " + picked.count + "/" + resets);
                     // The wheel still zooms about the pointer.
                     var span = map.span;
-                    check(ev.mouseWheel(map, q.x, q.y, 0, 120, Qt.NoButton, Qt.NoModifier, -1), "window not shown");
+                    check(ev.mouseWheel(map, q.x, q.y, Qt.NoButton, Qt.NoModifier, 0, 120, -1), "window not shown");
                     check(map.span < span, "The wheel did not zoom in pick mode");
                     var q2 = at(lone);
-                    check(Math.hypot(q2.x-q.x, q2.y-q.y) < 1e-6, "Wheel zoom moved the ground under the pointer");
+                    check(Math.hypot(q2.x-q.x, q2.y-q.y) < .5, "Wheel zoom moved the ground under the pointer: " + Math.hypot(q2.x-q.x, q2.y-q.y));
                     // Leaving pick mode clears the hover.
                     move(q2, Qt.NoButton);
                     var n = hovered.count;

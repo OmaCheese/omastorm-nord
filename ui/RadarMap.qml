@@ -509,6 +509,12 @@ Item {
             stations.push({name:stationLabel(s), x:chosen.x, y:chosen.y, width:tw+6});
         }
         siteLabels = stations;
+        // S39: in pick mode place names keep clear of every radar's label.
+        if (pickMode) for (var l of pickLabels) {
+            var ps = pickSites.find(s => s.id === l.id);
+            if (ps) occupied.push({x: (mercatorX(ps.lon) - siteMx) * worldPixels + l.x,
+                                   y: (mercatorY(ps.lat) - siteMy) * worldPixels + l.y, w: l.width, h: 16});
+        }
         for (var p of places) {
             labelMetrics.text = p.name;
             var tx = (mercatorX(p.lon) - siteMx) * worldPixels, ty = (mercatorY(p.lat) - siteMy) * worldPixels;
@@ -654,6 +660,7 @@ Item {
             out.push({id: m.s.id, name: stationLabel(m.s), x: chosen.x, y: chosen.y, width: tw});
         }
         pickLabels = out;
+        scheduleLayout();  // place names make way for them (rebuildLabels)
     }
     function pickLabelFor(id) {
         for (var l of pickLabels) if (l.id === id) return l;

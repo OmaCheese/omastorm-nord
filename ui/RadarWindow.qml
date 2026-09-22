@@ -264,7 +264,7 @@ Item {
         var s = engine.sites.find(x => x.id === id);
         if (!s || !mosaicPicker.open) return;
         var x = map.sx(map.mercatorX(s.lon)), y = map.sy(map.mercatorY(s.lat)), m = 60;
-        if (x < m || x > map.width - m || y < m || y > map.height - m) map.lookAt(s.lat, s.lon);
+        if (x < m || x > map.width - m - 40 || y < m || y > map.height - m) map.lookAt(s.lat, s.lon);
     }
     // SHOW in the checklist: My mosaic, centred on the chosen radars.
     function showMosaic(set) {
@@ -836,12 +836,21 @@ Item {
                     id: productStack
                     spacing: 2
                     Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                    // S40: it gives way (the product line elides) when the
+                    // RADARS chip joins a narrow site row, instead of pushing
+                    // the whole window's layout past its right edge.
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: implicitWidth
+                    Layout.minimumWidth: 60
                     RowLayout {
                         id: productLine
                         spacing: 8
                         visible: !!app.scan
                         LabelText {
                             id: productText
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 20
+                            horizontalAlignment: Text.AlignRight
                             // An angle only for one scan angle (REF, S20); a
                             // product built from several has none to show.
                             // My mosaic (S25) names its rule and radars, and

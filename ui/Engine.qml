@@ -148,9 +148,16 @@ QtObject {
         if (!draw) out.splice(1, 0, step("draw", drawn ? "done" : scanned ? "active" : "waiting"));
         return out;
     }
-    /// The step to name: drawing while it runs, else the one the engine is on.
-    readonly property var activeStep: steps.find(s => s.id === "draw" && s.state === "active")
-        || steps.find(s => s.state === "active") || null
+    /// The step to name: drawing while it runs, else the one the engine is
+    /// on. Between two (the linger at a stage's 100, before the next one
+    /// starts) the next one, "up next"; when every step is done, "Loaded".
+    readonly property var activeStep: {
+        var s = steps.find(s => s.id === "draw" && s.state === "active") || steps.find(s => s.state === "active");
+        if (s) return s;
+        var next = steps.find(s => s.state === "waiting" && s.id !== "draw");
+        if (next) return Object.assign({}, next, {detail: "up next"});
+        return loading ? {id: "loaded", name: "Loaded", state: "done", detail: ""} : null;
+    }
 
     // The frame on screen (docs/protocol.md, timeline textures). While this
     // client plays its own loop, or has just stepped or scrubbed and waits

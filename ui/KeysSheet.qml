@@ -15,6 +15,16 @@ Item {
     property real cardTop: 20         // the map's top edge; the card sits below it
     property bool open: false
     readonly property var columns: KeyMap.sheet(bindings)
+    // What MosaicPicker.qml's keys do; not rebindable.
+    readonly property var mosaicKeys: [
+        { caps: ["↑", "↓", "j", "k"], label: "move" },
+        { caps: ["space", "x"], label: "tick" },
+        { caps: ["/"], label: "filter (esc back)" },
+        { caps: ["r"], label: "rule" },
+        { caps: ["[", "]"], label: "height" },
+        { caps: ["↵"], label: "show" },
+        { caps: ["esc"], label: "cancel" }
+    ]
     readonly property string closeKeys: (bindings.close || []).map(KeyMap.pretty).join(" or ")
     component Word: Text {
         color: sheet.theme.foreground
@@ -99,6 +109,35 @@ Item {
                                 Word { text: row.modelData.label; opacity: .85; Layout.fillWidth: true }
                             }
                         }
+                    }
+                }
+            }
+            // S40: My mosaic's panel has its own keys, fixed, in force while
+            // it is open (the window's stand down then).
+            Rectangle { Layout.fillWidth: true; height: 1; color: Qt.alpha(sheet.theme.foreground, .17) }
+            Word { text: "MY MOSAIC PANEL"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1; opacity: .6 }
+            Flow {
+                Layout.fillWidth: true
+                spacing: 14
+                Repeater {
+                    model: sheet.mosaicKeys
+                    Row {
+                        id: mosaicKey
+                        required property var modelData
+                        spacing: 4
+                        Repeater {
+                            model: mosaicKey.modelData.caps
+                            Rectangle {
+                                required property string modelData
+                                width: Math.max(18, mosaicCap.implicitWidth + 10)
+                                height: 18
+                                color: "transparent"
+                                border.width: 1
+                                border.color: Qt.alpha(sheet.theme.foreground, .4)
+                                Word { id: mosaicCap; anchors.centerIn: parent; text: parent.modelData; font.pixelSize: 11 }
+                            }
+                        }
+                        Word { text: mosaicKey.modelData.label; height: 18; opacity: .85; leftPadding: 2 }
                     }
                 }
             }

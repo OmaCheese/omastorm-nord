@@ -29,10 +29,12 @@ FocusScope {
     }
     readonly property int currentSlot: scan ? slots.findIndex(s => s.id === scan.id) : -1
     readonly property string condition: state ? state.source === "archived" ? "archived" : state.connection.status : "offline"
-    readonly property color statusColor: condition === "stale" ? theme.yellow
+    readonly property color statusColor: !state && connection.starting ? theme.accent
+        : condition === "stale" ? theme.yellow
         : condition === "offline" || condition === "unavailable" ? theme.red : theme.accent
     readonly property string statusText: {
-        if (!state) return "OFFLINE";
+        // Review NIT5: an engine on its way up is not a feed that is down.
+        if (!state) return connection.starting ? "STARTING" : "OFFLINE";
         if (condition === "archived") return "ARCHIVED";
         var label = condition === "ok" ? "LIVE" : condition.toUpperCase();
         // S31: the engine's loading progress beside the condition; S41:

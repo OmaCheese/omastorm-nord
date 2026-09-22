@@ -258,14 +258,22 @@ Item {
         }).filter(c => c !== null)
     readonly property string mosaicLabel: !mosaicShown ? "" : !mosaicSet || !mosaicSet.sites.length ? "CHOOSE RADARS"
         : Mosaic.setName(engine.mosaic ? engine.mosaic.rules : [], mosaicSet).toUpperCase() + " / " + mosaicSet.sites.length + (mosaicSet.sites.length === 1 ? " RADAR" : " RADARS")
-    // S40: the panel's cursor radar on the map beside it; off screen (or
-    // within 60 px of the edge, where its label would be cut), the map centres on it.
-    function keepInView(id) {
+    // S40: the panel's cursor radar on the map beside it. After a key or a
+    // list click (cursorMoved) the map centres on it when it is off screen
+    // or within 60 px of an edge (100 px on the right, where its label
+    // goes); at open and when the dock resizes the map, only when it is
+    // off screen. Hover and map clicks never move the camera.
+    function keepInView(id, band) {
         var s = engine.sites.find(x => x.id === id);
-        if (!s || !mosaicPicker.open) return;
-        var x = map.sx(map.mercatorX(s.lon)), y = map.sy(map.mercatorY(s.lat)), m = 60;
-        if (x < m || x > map.width - m - 40 || y < m || y > map.height - m) map.lookAt(s.lat, s.lon);
+        if (!s || !mosaicPicker.open || !mosaicPicker.docked) return;
+        var x = map.sx(map.mercatorX(s.lon)), y = map.sy(map.mercatorY(s.lat)), m = band === undefined ? 60 : band;
+        if (x < m || x > map.width - m - (m ? 40 : 0) || y < m || y > map.height - m) map.lookAt(s.lat, s.lon);
     }
+    // S40 review 3: the camera when the panel opened, and whether the user
+    // moved it since; a cancel puts back a camera only the panel moved, so
+    // arrowing through the list and Escape never hands the station off.
+    property var mosaicView: null
+    property bool mosaicNavigated: false
     // SHOW in the checklist: My mosaic, centred on the chosen radars.
     function showMosaic(set) {
         if (!engine.mosaic) return;
@@ -500,7 +508,7 @@ Item {
             return JSON.stringify({open: mosaicPicker.open, draft: mosaicPicker.draft, rows: mosaicPicker.radars.length,
                                    cursor: mosaicPicker.cursor, hot: mosaicPicker.hotId, focused: mosaicPicker.listFocused,
                                    filterFocused: mosaicPicker.filterFocused, filter: mosaicPicker.filter, shownRows: mosaicPicker.rows.length,
-                                   docked: mosaicPicker.open && mosaicPicker.docked, mapWidth: Math.round(map.width), span: Math.round(map.span * 10) / 10,
+                                   docked: mosaicPicker.open && mosaicPicker.docked, warning: mosaicPicker.warning, lat: Math.round(map.centerLat * 1000) / 1000, lon: Math.round(map.centerLon * 1000) / 1000, mapWidth: Math.round(map.width), span: Math.round(map.span * 10) / 10,
                                    pickMode: map.pickMode, mapHot: map.hotId, mapPicked: map.pickedIds,
                                    circles: app.mosaicCircles.length, label: app.mosaicLabel, shown: app.mosaicShown,
                                    command: engine.sites.length ? Mosaic.command(mosaicPicker.draft, engine.sites, engine.mosaic ? engine.mosaic.rules : null) : null});
@@ -753,7 +761,8 @@ Item {
                     implicitHeight: 30
                     padding: 0
                     focusPolicy: Qt.NoFocus
-                    enabled: !!app.state
+                    // S40 review 4: nothing while My mosaic's panel is open.
+                    enabled: !!app.state && !mosaicPicker.open
                     onClicked: picker.show("")
                     Layout.alignment: Qt.AlignTop
                     contentItem: RowLayout {
@@ -863,7 +872,7 @@ Item {
                             MouseArea {
                                 id: productTextArea
                                 anchors.fill: parent
-                                enabled: app.productRows.length > 0
+                                enabled: app.productRows.length > 0 && !mosaicPicker.open
                                 hoverEnabled: true
                                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 // S37: My mosaic has products of its own now
@@ -944,7 +953,9 @@ Item {
                     product: app.state ? app.state.product : null
                     relief: app.relief
                     interactive: !app.store.needsLocation && !locationPicker.open
-                    onNavigated: (lat, lon, spanKm) => app.store.userNavigated(lat, lon, spanKm)
+                    onNavigated: (lat, lon, spanKm) => { if (mosaicPicker.open) app.mosaicNavigated = true; app.store.userNavigated(lat, lon, spanKm); }
+                    // S40: measured again once the dock has resized the map.
+                    onWidthChanged: if (mosaicPicker.open) Qt.callLater(app.keepInView, mosaicPicker.hotId, 0)
                     // A settled pan hands the centre to the engine, which switches
                     // station while following and unlocked; the camera stays.
                     onViewSettled: (lat, lon) => {
@@ -1395,6 +1406,28 @@ Item {
           // My mosaic's panel (S25, docked since S40): the right side of the
           // map stage at its full height, the map shrunk to its left and in
           // pick mode (S39); over the map in a compact window.
+          // S40 review 4: an overlay opened over My mosaic's panel (the keys
+          // sheet from `?`) hands the keyboard back to it when it closes.
+          Connections {
+            target: sheet
+            function onOpenChanged() { if (!sheet.open && mosaicPicker.open) mosaicPicker.takeKeys(); }
+          }
+          Connections {
+            target: picker
+            function onOpenChanged() { if (!picker.open && mosaicPicker.open) Qt.callLater(mosaicPicker.takeKeys); }
+          }
+          Connections {
+            target: locationPicker
+            function onOpenChanged() { if (!locationPicker.open && mosaicPicker.open) mosaicPicker.takeKeys(); }
+          }
+          Connections {
+            target: productMenu
+            function onOpenedChanged() { if (!productMenu.opened && mosaicPicker.open) mosaicPicker.takeKeys(); }
+          }
+          Connections {
+            target: treatmentMenu
+            function onOpenedChanged() { if (!treatmentMenu.opened && mosaicPicker.open) mosaicPicker.takeKeys(); }
+          }
           MosaicPicker {
             id: mosaicPicker
             x: layout.x + mapFrame.x + (docked ? mapFrame.width + 10 : 0)
@@ -1407,12 +1440,27 @@ Item {
             centerLat: map.centerLat
             centerLon: map.centerLon
             compact: win.compact
+            stageWidth: layout.width
             onShown: set => app.showMosaic(set)
-            onCentre: site => map.lookAt(site.lat, site.lon)
-            onCancelled: { map.reportedLat = NaN; Qt.callLater(map.reportCenter); }
+            onCentre: site => { app.mosaicNavigated = true; map.lookAt(site.lat, site.lon); }
+            onCancelled: {
+                if (app.mosaicView && !app.mosaicNavigated) {
+                    map.lookAt(app.mosaicView.lat, app.mosaicView.lon);
+                    map.span = app.mosaicView.span;
+                }
+                app.mosaicView = null;
+                map.reportedLat = NaN;
+                Qt.callLater(map.reportCenter);
+            }
+            onOpenChanged: if (open) {
+                app.mosaicView = {lat: map.centerLat, lon: map.centerLon, span: map.span};
+                app.mosaicNavigated = false;
+                Qt.callLater(app.keepInView, hotId, 0);
+            }
+            onCursorMoved: id => Qt.callLater(app.keepInView, id)
+            onHelpRequested: sheet.show()
             // The cursor's radar stays on the map: off screen, the map
             // centres on it.
-            onHotIdChanged: if (open && docked) Qt.callLater(app.keepInView, hotId)
           }
           // The treatment menu over the surface (not a Popup, which the
           // window overlay would draw outside the captured surface): a card

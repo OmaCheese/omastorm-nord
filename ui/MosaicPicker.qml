@@ -35,10 +35,12 @@ FocusScope {
     property real centerLat: 0
     property real centerLon: 0
     property bool compact: false
-    /// Docked beside the map, or (compact) over it.
-    readonly property bool docked: !compact
+    /// The map stage's whole width, the panel's included.
+    property real stageWidth: 0
     /// The width RadarWindow gives the docked panel.
     readonly property real panelWidth: 380
+    /// Docked beside the map while the map keeps 320 px, else over it.
+    readonly property bool docked: !compact && stageWidth >= panelWidth + 320
     property bool open: false
     /// The working copy, {sites: [{id, reachKm}], rule, heightM, above}
     /// (the height and what it is above count only for the height rule, S30).
@@ -68,6 +70,8 @@ FocusScope {
     }
     /// The cursor, an index into `rows`.
     property int cursor: 0
+    /// The cursor's radar, so a filter that keeps it keeps the cursor on it.
+    property string cursorId: ""
     /// The radar under the cursor: RadarMap's hotId.
     readonly property string hotId: open && rows.length ? rows[Math.min(cursor, rows.length - 1)].site.id : ""
     /// Whether the list keys or the filter hold the keyboard (IPC status).
@@ -78,6 +82,14 @@ FocusScope {
     signal cancelled()
     /// A CHOSEN row was clicked: centre the map on that radar.
     signal centre(var site)
+    /// The keys or a click in the list moved the cursor: the map pans to it
+    /// if it is off screen. Hover and map clicks move the cursor without it.
+    signal cursorMoved(string id)
+    /// `?` in the panel: the keys sheet.
+    signal helpRequested()
+    /// A tick the panel had no room for, for a moment (S40 review 6).
+    property string warning: ""
+    Timer { id: warningTimer; interval: 2500; onTriggered: picker.warning = "" }
     readonly property var info: engine ? engine.mosaic : null
     readonly property int maxSites: info ? info.maxSites : 12
     /// The ticked radars' ids, for RadarMap's pickedIds.
@@ -122,6 +134,9 @@ FocusScope {
     function siteOf(id) { return engine ? engine.sites.find(s => s.id === id) || null : null; }
     function picked(id) { return draft.sites.find(s => s.id === id) || null; }
     function show() {
+        // Open already (the site picker's My mosaic, the chip): keep the
+        // draft, take the keys.
+        if (open) { takeKeys(); return; }
         if (!info || !engine) return;
         var st = engine.state;
         var from = st && st.mosaic && st.mosaic.sites && st.mosaic.sites.length ? st.mosaic : store ? store.set : null;
@@ -144,6 +159,8 @@ FocusScope {
         filterField.text = "";
         radars = list;
         cursor = 0;
+        cursorId = list.length ? list[0].site.id : "";
+        warning = "";
         open = true;
         allList.positionViewAtBeginning();
         takeKeys();
@@ -166,7 +183,11 @@ FocusScope {
     /// The list keys take the keyboard.
     function takeKeys() { keys.forceActiveFocus(); }
     function toFilter() { filterField.forceActiveFocus(); filterField.selectAll(); }
-    function move(delta) { if (rows.length) cursor = Math.max(0, Math.min(rows.length - 1, cursor + delta)); }
+    function move(delta) {
+        if (!rows.length) return;
+        cursor = Math.max(0, Math.min(rows.length - 1, cursor + delta));
+        cursorMoved(hotId);
+    }
     /// The cursor onto a radar's row, if the filter shows it.
     function point(id) {
         var at = rows.findIndex(r => r.site.id === id);
@@ -180,6 +201,7 @@ FocusScope {
         // S37: no reach to carry — a ticked radar reaches as far as it
         // reaches, and the engine ignores any reachKm sent.
         else if (sites.length < maxSites) sites.push({ id: id });
+        else { warning = maxSites + " OF " + maxSites + " · UNTICK ONE FIRST"; warningTimer.restart(); return; }
         draft = withSites(sites);
     }
     /// The draft with other radars, the rule and height kept.
@@ -213,8 +235,17 @@ FocusScope {
         engine.send(Mosaic.command(set, engine.sites, info ? info.rules : null));
         shown(set);
     }
-    onCursorChanged: if (open) allList.positionViewAtIndex(cursor, ListView.Contain)
-    onRowsChanged: { cursor = 0; if (open) allList.positionViewAtBeginning(); }
+    onCursorChanged: {
+        if (rows[cursor]) cursorId = rows[cursor].site.id;
+        if (open) allList.positionViewAtIndex(cursor, ListView.Contain);
+    }
+    // A filter that keeps the cursor's radar keeps the cursor on it.
+    onRowsChanged: {
+        var at = rows.findIndex(r => r.site.id === cursorId);
+        cursor = Math.max(0, at);
+        cursorId = rows.length ? rows[cursor].site.id : "";
+        if (open) allList.positionViewAtIndex(cursor, ListView.Contain);
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -249,6 +280,7 @@ FocusScope {
             else if (event.key === Qt.Key_End) picker.move(picker.rows.length);
             else if ((event.key === Qt.Key_Space || event.key === Qt.Key_X) && row) picker.toggle(row.site.id);
             else if (event.key === Qt.Key_Slash) picker.toFilter();
+            else if (event.text === "?") picker.helpRequested();
             else if (event.key === Qt.Key_R) picker.nextRule();
             else if ((event.key === Qt.Key_BracketLeft || event.key === Qt.Key_BracketRight) && picker.draft.rule === "height") picker.stepHeight(event.key === Qt.Key_BracketLeft ? -1 : 1);
             else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) picker.accept();
@@ -264,7 +296,12 @@ FocusScope {
             Layout.fillWidth: true
             spacing: 10
             Word { text: "MY MOSAIC"; font.bold: true; font.letterSpacing: 1 }
-            Word { text: picker.draft.sites.length + " OF " + picker.maxSites; font.pixelSize: 10; opacity: .6; Layout.fillWidth: true }
+            Word {
+                text: picker.warning || picker.draft.sites.length + " OF " + picker.maxSites
+                color: picker.warning ? picker.theme.accent : picker.theme.foreground
+                font.pixelSize: 10; font.bold: picker.warning !== ""; opacity: picker.warning ? 1 : .6
+                Layout.fillWidth: true
+            }
             Rectangle {
                 implicitWidth: 22; implicitHeight: 22
                 color: closeArea.containsMouse ? Qt.alpha(picker.theme.accent, .18) : "transparent"
@@ -470,7 +507,7 @@ FocusScope {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: { picker.cursor = row.index; picker.toggle(row.modelData.site.id); }
+                    onClicked: { picker.cursor = row.index; picker.cursorMoved(picker.hotId); picker.toggle(row.modelData.site.id); }
                 }
                 RowLayout {
                     anchors.fill: parent

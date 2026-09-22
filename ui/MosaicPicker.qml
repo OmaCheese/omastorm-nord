@@ -74,6 +74,8 @@ FocusScope {
     readonly property bool listFocused: keys.activeFocus
     readonly property bool filterFocused: filterField.activeFocus
     signal shown(var set)
+    /// Closed without SHOW: the draft is gone.
+    signal cancelled()
     /// A CHOSEN row was clicked: centre the map on that radar.
     signal centre(var site)
     readonly property var info: engine ? engine.mosaic : null
@@ -149,8 +151,13 @@ FocusScope {
         // this from inside its own key handler and closes itself around it.
         Qt.callLater(() => { if (picker.open && !filterField.activeFocus) picker.takeKeys(); });
     }
-    /// Closes and discards the draft (CANCEL, ✕, Escape).
+    /// Closes and discards the draft (CANCEL, ✕, Escape, the chip).
     function close() {
+        if (!open) return;
+        shut();
+        cancelled();
+    }
+    function shut() {
         open = false;
         filterField.text = "";
         filterField.focus = false;
@@ -201,7 +208,7 @@ FocusScope {
             set.heightM = draft.heightM;
             set.above = groundOffered ? draft.above : "sea";
         }
-        close();
+        shut();
         if (store) store.keep(set);
         engine.send(Mosaic.command(set, engine.sites, info ? info.rules : null));
         shown(set);

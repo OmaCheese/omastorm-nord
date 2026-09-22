@@ -929,6 +929,10 @@ Item {
                     // station while following and unlocked; the camera stays.
                     onViewSettled: (lat, lon) => {
                         if (!app.opened || app.store.needsLocation) return;
+                        // S40: the panel's cursor moves the camera from radar
+                        // to radar; none of that may hand the station off.
+                        // A cancel reports where the camera ended up.
+                        if (mosaicPicker.open) return;
                         // A pick or restore already set the store; a settle
                         // still queued from the previous camera must not
                         // write that centre back (radar jumps, map stays).
@@ -1398,6 +1402,7 @@ Item {
             compact: win.compact
             onShown: set => app.showMosaic(set)
             onCentre: site => map.lookAt(site.lat, site.lon)
+            onCancelled: { map.reportedLat = NaN; Qt.callLater(map.reportCenter); }
             // The cursor's radar stays on the map: off screen, the map
             // centres on it.
             onHotIdChanged: if (open && docked) Qt.callLater(app.keepInView, hotId)

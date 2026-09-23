@@ -179,6 +179,19 @@ call mosaic open; sleep .6
 read -r x y < <(centre mosaic); wheel_over "My mosaic panel" "$x" "$y"
 call mosaic close; sleep .3
 
+# ---- FROM > GRID keeps its submenu beside its row (review S1) -------------------
+call chrome menu 380 120; sleep .3
+n=$(call chrome status | jq '[.rows[] | select(. != "header" and . != "sep")] | map(startswith("FROM")) | index(true)')
+for _ in $(seq 0 "$n"); do call input key Down; done
+call input key Right; sleep .3
+before=$(call chrome rect submenu | jq -c '{x, y}')
+call input key Down; call input key Return; sleep 1.5   # GRID: the rows rebuild, the menu stays
+after=$(call chrome rect submenu | jq -c '{x, y}')
+source_now=$(call layers status | field .source)
+if [[ $before == "$after" && $source_now == grid ]]; then echo "SUBMENU FROM > GRID: stays at $after, source $source_now: PASS"
+else echo "SUBMENU FROM > GRID: $before -> $after, source $source_now: FAIL"; fail=1; fi
+call layers source stations; call chrome closeMenu; sleep .3
+
 # ---- a right press over an open overlay (review M1) ------------------------------
 # rclick_over <overlay> <open call> <status field test>: a right click on the
 # overlay's card leaves it open with the keys (Escape then closes it) and

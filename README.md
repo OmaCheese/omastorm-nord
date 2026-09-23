@@ -245,8 +245,7 @@ no ID and covers Norway too.
 | `Rain mass` | the water in the column, kg/m² | over about 25 heavy rain; very high in summer usually means hail, which reflects far more than rain. A sudden collapse over a cell suggests a downburst |
 | `Lowest beam` (composites) | which radar sees a point lowest | a data-quality map: where the composite sees near the ground, and where all of it is aloft |
 | A composite (`Sweden`, `Nordic`) | the provider’s combined picture | country-wide rain at a glance; each point may come from a different radar at a different height |
-| `My mosaic` | only the radars you pick | leaves out a radar whose distant, high coverage misleads. Rain mass over your own set too |
-| A section, and a profile on long press | a vertical slice, and one column’s numbers | structure: a flat layer with a bright band at 1–3 km is steady rain melting; a narrow column to 8–12 km is convection; echo that stops short of the ground is rain evaporating on the way down |
+| `My mosaic` | only the radars you pick, combined by the lowest beam, the strongest echo, or at one height | leaves out a radar whose distant, high coverage misleads. Rain mass over your own set too |
 | `Relief` | `Storm height` drawn as a lit surface | the same data made readable: cells stand up, flat rain looks flat |
 
 What to distrust: the bright band at the melting level looks like heavy rain
@@ -309,6 +308,34 @@ A bad value is named in the status slot and that setting stays on its default.
 Every action name, the key syntax, and what each setting does are in
 [docs/configuration.md](docs/configuration.md).
 
+The weather layers' switches and My mosaic's set are remembered beside
+`state.json`, in `layers.json` and `mosaic.json`.
+
+### Norway's weather stations: a Frost client ID
+
+MET Norway serves its station observations through the
+[Frost API](https://frost.met.no), which needs a client ID. It is free:
+create one at <https://frost.met.no/auth/requestCredentials.html> with an
+e-mail address. Put the ID in `~/.config/omastorm-nord/frost.env` and make
+the file readable only by you:
+
+```sh
+mkdir -p ~/.config/omastorm-nord
+printf 'FROST_CLIENT_ID=%s\n' 'your-client-id' > ~/.config/omastorm-nord/frost.env
+chmod 600 ~/.config/omastorm-nord/frost.env
+```
+
+The engine reads the file (under `$XDG_CONFIG_HOME` when that is set) each
+time it updates the stations, every 30 seconds while a station layer is on,
+so a new ID takes effect without a restart. A `FROST_CLIENT_ID` in the engine's environment wins over the file.
+The client secret Frost also gives you is not used. The ID is sent only to
+frost.met.no, as HTTP basic auth, and never written to a URL, a log or the
+cache.
+
+Without an ID, Norway's stations are left out, LAYERS says “Frost: no client
+ID”, and the other countries' stations still show. The MET Nordic grid
+covers Norway without one.
+
 ## Troubleshooting
 
 If expand or the keybind does nothing after `omarchy plugin update`, the
@@ -335,13 +362,29 @@ and opening the popover again retries. To restart the engine by hand:
 The next popover or window starts it again. Please attach both logs to a
 [bug report](https://github.com/OmaCheese/omastorm-nord/issues).
 
+A load or a weather layer that seems stuck: press `Shift+R` (Reset) before
+restarting anything. It reloads with your current choices and keeps what is
+on disk.
+
+A weather layer that is on but draws nothing says why under its name in
+LAYERS: “Frost: no client ID” (see
+[the Frost client ID](#norways-weather-stations-a-frost-client-id)), a
+provider's HTTP error, or a timeout. The engine tries a failed provider
+again when its retry is due; `engine.log` has an `Obs <provider>` line per
+fetch (`Grid metnordic` for the grid, `Lightning fmi` for lightning). A quiet
+day has no lightning to draw; that is not an error.
+
+Text too small or too large: the window and popover follow Omarchy's text
+size, `[font] base-size` in `~/.config/omarchy/shell.toml`, which
+`omarchy-display-text-size <px>` sets. A change applies to an open window.
+
 ## Remove
 
 ```sh
 omarchy plugin remove omacheese.omastorm-nord
 ~/.local/share/omastorm-nord/bin/omastorm-engine stop
 rm -rf ~/.local/share/omastorm-nord ~/.cache/omastorm-nord ~/.local/state/omastorm-nord
-rm -rf ~/.config/omastorm-nord                            # your config.toml; keep it to reinstall later
+rm -rf ~/.config/omastorm-nord                            # your config.toml and frost.env; keep them to reinstall later
 rm -f ~/.local/share/applications/omastorm-nord.desktop   # if you added the launcher entry
 ```
 
@@ -358,19 +401,33 @@ both.
 
 ## Data and licenses
 
-Radar: [SMHI](https://www.smhi.se/) open data,
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Upstream Omastorm reads
-NOAA NEXRAD Level II via the NOAA Open Data program on AWS. Basemap: ©
-OpenStreetMap contributors, [ODbL](https://opendatacommons.org/licenses/odbl/1-0/),
-tiles by [OpenFreeMap](https://openfreemap.org); Natural Earth, public domain.
-Location search: [GeoNames](https://www.geonames.org/),
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-Terrain (heights above ground): Mapzen [Terrain Tiles](https://registry.opendata.aws/terrain-tiles/)
-on AWS, whose Nordic inputs include Kartverket (Norway,
+Every source is open data; each frame and layer names its credit in the
+window and the popover, as the engine sends it.
+
+| What | From | Licence | Credit shown |
+| --- | --- | --- | --- |
+| Swedish radars and SMHI's national composite | [SMHI](https://www.smhi.se/) open data | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | SMHI |
+| Norwegian, Finnish and Danish radars | MET Norway, FMI and DMI, through [EUMETNET Open Radar Data](https://www.eumetnet.eu/) | CC BY 4.0 | MET Norway, FMI, DMI |
+| The Nordic composite | [EUMETNET OPERA](https://www.eumetnet.eu/activities/observations-programme/current-activities/opera/), through Open Radar Data | CC BY 4.0 | EUMETNET OPERA |
+| Weather stations | SMHI (metobs), FMI (open WFS), DMI (metObs), MET Norway ([Frost](https://frost.met.no)) | CC BY 4.0 | each station's provider |
+| Temperature and wind grid | MET Norway's MET Nordic analysis ([thredds.met.no](https://thredds.met.no)) | CC BY 4.0 | MET Norway |
+| Lightning | FMI's open WFS, the NORDLIS network | CC BY 4.0 | FMI NORDLIS |
+| Basemap | © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, tiles by [OpenFreeMap](https://openfreemap.org) (© OpenMapTiles) | [ODbL](https://opendatacommons.org/licenses/odbl/1-0/) | OpenFreeMap © OpenMapTiles Data from OpenStreetMap |
+| Coastlines, borders, lakes | [Natural Earth](https://www.naturalearthdata.com/) | public domain | |
+| Place names and search | [GeoNames](https://www.geonames.org/) | CC BY 4.0 | |
+
+Terrain (heights above ground and the beam blockage behind `Clear view`):
+Mapzen [Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) on AWS,
+whose Nordic inputs include Kartverket (Norway,
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)), the National Land Survey
 of Finland ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)), SDFE (Denmark)
 and EU-DEM, produced using Copernicus data and information funded by the European
 Union; details in [data/README.md](data/README.md).
+
+**Use approximate location** asks [wttr.in](https://wttr.in) once, only when
+you click it. Upstream Omastorm reads NOAA NEXRAD Level II via the NOAA Open
+Data program on AWS; archive mode here still reads those files.
+
 Code: MIT, see [LICENSE](LICENSE).
 
 ## Contributing
@@ -378,13 +435,13 @@ Code: MIT, see [LICENSE](LICENSE).
 This is a beta. Contributions are welcome.
 [CONTRIBUTING.md](CONTRIBUTING.md) is setup, checks, and pull requests.
 Open work that is ready for a first patch is labeled
-[`good first issue`](https://github.com/wesleygrimes/omastorm/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
-and [`help wanted`](https://github.com/wesleygrimes/omastorm/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
+[`good first issue`](https://github.com/OmaCheese/omastorm-nord/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+and [`help wanted`](https://github.com/OmaCheese/omastorm-nord/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
 
 A headless Rust engine serves GPU textures over a Unix socket. The
 Quickshell UI is the client. `manifest.json` is the Omarchy plugin.
 
-- `engine/` Rust daemon: SMHI polling and ODIM decode (NEXRAD Level II in archive mode), cache, and the socket protocol
+- `engine/` Rust daemon: the radar providers (SMHI, Open Radar Data, OPERA) and ODIM decode (NEXRAD Level II in archive mode), the weather stations, the MET Nordic grid, lightning, the cache, and the socket protocol
 - `ui/` Quickshell QML for the bar popover and window
 - `scripts/` bootstrap, checks, captures, fetch, and release
 - `data/` fixture provenance, checksums, and vendored archives (`data/raw/` is extracted)

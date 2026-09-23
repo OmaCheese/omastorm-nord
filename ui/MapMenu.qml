@@ -6,7 +6,9 @@ import QtQuick.Layouts
 // host (RadarWindow), one object each:
 //   {kind: "header", label}                 a dim section name
 //   {kind: "sep"}                           a hairline
-//   {label, note, key, checked, radio, current, enabled, sub, run}
+//   {label, note, key, checked, radio, current, enabled, droppable, sub, run}
+// `droppable` rows (the recent radars) go first, last one first, when the
+// card would not fit the window's height (review S3).
 // `checked` (true/false) makes a check row, `radio` draws it as a dot;
 // both flip in place and leave the menu open. `sub` is a list of rows
 // shown in a second card beside this row (the product menu, FROM); `run`
@@ -35,7 +37,22 @@ Item {
     readonly property color fg: theme ? theme.foreground : "#a9b1d6"
     readonly property color bg: theme ? theme.background : "#1a1b26"
     readonly property color accent: theme ? theme.accent : "#7aa2f7"
-    readonly property var subRows: subRow >= 0 && subRow < rows.length && rows[subRow].sub ? rows[subRow].sub : []
+    /// The rows shown: the host's, less droppable ones until the card fits.
+    readonly property var shownRows: fit(rows, height)
+    readonly property var subRows: subRow >= 0 && subRow < shownRows.length && shownRows[subRow].sub ? shownRows[subRow].sub : []
+    /// The row whose submenu is open; it registers itself, so a row list
+    /// rebuilt while the submenu is open keeps the submenu beside it.
+    property Item subAnchor: null
+    function rowHeightOf(row) {
+        return row.kind === "sep" ? 9 : row.kind === "header" ? Math.round(sizes.small * 1.6) + 4 : rowHeight;
+    }
+    function heightOf(list) { var h = 12; for (var r of list) h += rowHeightOf(r); return h; }
+    function fit(list, room) {
+        var out = list.slice();
+        for (var i = out.length - 1; i >= 0 && room > 0 && heightOf(out) > room - 8; i--)
+            if (out[i].droppable) out.splice(i, 1);
+        return out;
+    }
     visible: opened
     focus: opened
     /// The card, for the host's checks and captures.
@@ -59,10 +76,12 @@ Item {
         opened = true;
         forceActiveFocus();
     }
-    function close() { opened = false; subRow = -1; inSub = false; }
+    function close() { opened = false; subRow = -1; inSub = false; subAnchor = null; }
     function openSub(index) {
-        if (index < 0 || !rows[index] || !rows[index].sub || !acts(rows[index])) { subRow = -1; return; }
+        var list = shownRows;
+        if (index < 0 || !list[index] || !list[index].sub || !acts(list[index])) { subRow = -1; subAnchor = null; return; }
         subRow = index;
+        subAnchor = mainRows.itemAt(index);
         subCursor = -1;
     }
     /// A choice: a check or radio row flips and stays; any other closes.
@@ -86,21 +105,22 @@ Item {
             return;
         }
         if (k === Qt.Key_Escape) close();
-        else if (k === Qt.Key_Up || k === Qt.Key_K) { cursor = step(rows, cursor, -1); subRow = -1; }
-        else if (k === Qt.Key_Down || k === Qt.Key_J) { cursor = step(rows, cursor, 1); subRow = -1; }
-        else if ((k === Qt.Key_Right || k === Qt.Key_L || k === Qt.Key_Return || k === Qt.Key_Enter) && cursor >= 0 && rows[cursor] && rows[cursor].sub) {
+        else if (k === Qt.Key_Up || k === Qt.Key_K) { cursor = step(shownRows, cursor, -1); subRow = -1; }
+        else if (k === Qt.Key_Down || k === Qt.Key_J) { cursor = step(shownRows, cursor, 1); subRow = -1; }
+        else if ((k === Qt.Key_Right || k === Qt.Key_L || k === Qt.Key_Return || k === Qt.Key_Enter) && cursor >= 0 && shownRows[cursor] && shownRows[cursor].sub) {
             openSub(cursor);
             inSub = true;
             subCursor = first(subRows);
         }
-        else if ((k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) && cursor >= 0) choose(rows[cursor]);
+        else if ((k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) && cursor >= 0) choose(shownRows[cursor]);
         else event.accepted = false;
     }
-    // Outside the cards: any button closes.
+    // Outside the cards: a right press opens the menu again there
+    // (review N1); any other button closes it.
     MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.AllButtons
-        onPressed: menu.close()
+        onPressed: mouse => { if (mouse.button === Qt.RightButton) menu.show(mouse.x, mouse.y); else menu.close(); }
     }
 
     component MenuRow: Rectangle {
@@ -184,13 +204,15 @@ Item {
             spacing: 0
             Repeater {
                 id: mainRows
-                model: menu.opened ? menu.rows : []
+                model: menu.opened ? menu.shownRows : []
                 MenuRow {
                     required property var modelData
                     required property int index
                     item: modelData
                     hot: menu.cursor === index && !menu.inSub
                     open: menu.subRow === index
+                    onOpenChanged: if (open) menu.subAnchor = this
+                    Component.onCompleted: if (open) menu.subAnchor = this
                     onHovered: { menu.cursor = index; menu.inSub = false; if (modelData.sub) menu.openSub(index); else menu.subRow = -1; }
                     onClicked: { if (modelData.sub) { menu.openSub(index); menu.inSub = true; menu.subCursor = menu.first(menu.subRows); } else menu.choose(modelData); }
                 }
@@ -201,8 +223,7 @@ Item {
     Rectangle {
         id: subCard
         visible: menu.subRows.length > 0
-        readonly property Item anchorRow: menu.subRow >= 0 ? mainRows.itemAt(menu.subRow) : null
-        readonly property real rowY: anchorRow ? anchorRow.mapToItem(menu, 0, 0).y : card.y
+        readonly property real rowY: menu.subAnchor ? menu.subAnchor.y + card.y + 6 : card.y
         width: Math.round(222 * menu.grow)
         height: subColumn.implicitHeight + 12
         x: card.x + card.width + width - 2 <= menu.width ? card.x + card.width - 2 : Math.max(4, card.x - width + 2)

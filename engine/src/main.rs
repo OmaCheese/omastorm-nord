@@ -911,6 +911,11 @@ impl Shared {
     /// clears `unavailable` / `offline`. `skip_known` is true on a respawn
     /// so a catalogued replay is not published again.
     fn restart_live(&mut self, why: &str, skip_known: bool) {
+        self.restart_live_as(why, skip_known, false);
+    }
+    /// `restart_live`; with `fresh` (a reset, review N1) the load's first
+    /// stage shows from 0 even with a frame on screen.
+    fn restart_live_as(&mut self, why: &str, skip_known: bool, fresh: bool) {
         let site = self.state.site.id.clone();
         if site.is_empty() || self.state.source != Source::Live {
             return;
@@ -935,7 +940,7 @@ impl Shared {
         if skip_known {
             self.loading.reset();
         } else {
-            let has_frame = !self.state.frame.scan_time.is_empty();
+            let has_frame = !fresh && !self.state.frame.scan_time.is_empty();
             let kind = loading::kind_of(&station, want);
             let under =
                 (kind == loading::Kind::Made && station.kind == SiteKind::Grid && !has_frame)
@@ -1670,14 +1675,8 @@ impl Shared {
             eprintln!("{} Reset {site}: {message}", iso(now_ms()));
         }
         self.state.connection.status = ConnectionStatus::Loading;
-        self.restart_live("reset: loading afresh", false);
         // The load starts from 0 whatever is on screen, so the bar shows it.
-        let kind = loading::kind_of(&station, want);
-        let under = (kind == loading::Kind::Made && station.kind == SiteKind::Grid)
-            .then(|| self.composite_under(&station))
-            .flatten();
-        let name = self.load_name(&station, want);
-        self.loading.begin(kind, &name, false, under);
+        self.restart_live_as("reset: loading afresh", false, true);
         self.keep_warm();
         true
     }

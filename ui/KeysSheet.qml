@@ -87,7 +87,7 @@ Item {
                                 id: row
                                 required property var modelData
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 26
+                                Layout.preferredHeight: Math.round(26 * Math.max(1, sheet.theme.size.k))
                                 spacing: 8
                                 Row {
                                     Layout.preferredWidth: Math.round(124 * Math.max(1, sheet.theme.size.k))

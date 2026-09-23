@@ -141,11 +141,14 @@ pub fn depth(set: &Set, want: Want, sites: &[Station], grid: bool) -> usize {
     if grid {
         return grid_backfill(want);
     }
-    let radars = set
-        .sites
-        .iter()
-        .filter_map(|r| sites.iter().find(|s| s.id == r.id));
+    let radars = set.sites.iter().filter_map(|r| set_radar(sites, &r.id));
     set_backfill(set, radars)
+}
+
+/// The radar a set names by `id`, as `Layout::place` places it (review
+/// N2: `depth` picks the same radars).
+fn set_radar<'a>(sites: &'a [Station], id: &str) -> Option<&'a Station> {
+    crate::providers::resolve(sites, id).filter(|s| s.kind == SiteKind::Polar)
 }
 
 /// SMHI's composite's box, the lon/lat extent of its stereographic grid
@@ -896,8 +899,7 @@ impl Layout {
     ) -> Result<Layout, String> {
         let mut placed: Vec<(Station, f64, MercBox)> = Vec::new();
         for site in &set.sites {
-            let station = crate::providers::resolve(sites, &site.id)
-                .filter(|s| s.kind == SiteKind::Polar)
+            let station = set_radar(sites, &site.id)
                 .ok_or_else(|| format!("{} is not a radar", site.id))?
                 .clone();
             let reach_m = site.reach_km * 1000.0;

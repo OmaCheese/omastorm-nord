@@ -48,7 +48,7 @@ call open a
 last=$(( $(call matches | jq length) - 1 ))
 call move 1; call move 99
 expect 'Down stops at the last row' "$last" "$(call status | grep -o '"selected":[0-9]*' | cut -d: -f2)"
-call move -9
+call move -99
 expect 'Up stops at the first row' '0' "$(call status | grep -o '"selected":[0-9]*' | cut -d: -f2)"
 call open balsta
 first=$(call matches | cut -d, -f1 | tr -d '[]"')

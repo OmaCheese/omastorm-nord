@@ -550,7 +550,8 @@ Item {
                     model: stationLayer.bands.length
                     Column {
                         required property int index
-                        width: Math.round(26 * Math.max(1, stationLayer.sizes.k))
+                        // S46: room for "11-16" (five monospace digits) at the scale's size.
+                        width: Math.round(Math.max(26, stationLayer.sizes.small * 3.4))
                         spacing: 1
                         Item {
                             width: parent.width

@@ -1686,7 +1686,7 @@ one more `obs` line, `source` `grid`, with only the layers it has on:
 ```json
 {"type":"obs","v":2,"source":"grid","time":"2026-09-23T04:00:00Z",
  "temperature":{"texture":"tex/grid-temp-20260923T04Z-5c1e0a9d.png",
-                "bounds":[-11.77,52.3,41.77,74.27],"width":1200,"height":1500,
+                "bounds":[-11.75,52.3,41.73,73.85],"width":1200,"height":1129,
                 "minC":-3.1,"maxC":18.8},
  "wind":{"spacingKm":24,"cols":75,"points":[[52.3,1.92,6.4,231],[52.42,2.27,6.1,229]]},
  "provider":{"id":"metnordic","name":"MET Norway","status":"ok"},

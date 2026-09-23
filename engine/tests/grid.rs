@@ -186,13 +186,18 @@ fn the_grid_is_fetched_once_and_drawn_under_tex() {
     let mut both = connect();
     let mut stations = connect();
 
-    send(
-        &mut both,
-        json!({"type":"set_layers","temp":true,"wind":true,"source":"both"}),
-    );
+    // Review S6: a stations-only client alone costs the grid nothing.
     send(
         &mut stations,
         json!({"type":"set_layers","temp":true,"wind":true}),
+    );
+    assert!(next_obs(&mut stations, "stations", REPLY).is_some());
+    thread::sleep(Duration::from_secs(2));
+    assert_eq!(probes.load(Ordering::SeqCst), 0);
+    assert_eq!(subsets.load(Ordering::SeqCst), 0);
+    send(
+        &mut both,
+        json!({"type":"set_layers","temp":true,"wind":true,"source":"both"}),
     );
     // Two lines, in either order: the stations' and the grid's.
     let (mut grid, mut listed) = (None, None);
@@ -239,7 +244,6 @@ fn the_grid_is_fetched_once_and_drawn_under_tex() {
     assert_eq!(grid["wind"]["spacingKm"], 24.0);
     assert_eq!(grid["wind"]["cols"], WX);
     // A stations-only client never hears of the grid.
-    assert!(next_obs(&mut stations, "stations", REPLY).is_some());
     assert!(next_obs(&mut stations, "grid", Duration::from_secs(2)).is_none());
 
     // Off, then wind from the grid alone: answered at once from memory.

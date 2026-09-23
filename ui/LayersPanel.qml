@@ -171,7 +171,8 @@ Item {
                     readonly property color accent: panel.theme ? panel.theme.accent : "#7aa2f7"
                     readonly property color ink: hot ? accent : panel.theme ? panel.theme.foreground : "#a9b1d6"
                     Layout.fillWidth: true
-                    implicitHeight: 36
+                    // Review S4: a status of two lines makes the row taller.
+                    implicitHeight: Math.max(36, rowText.implicitHeight + 8)
                     color: hot ? Qt.alpha(panel.theme ? panel.theme.foreground : "#a9b1d6", .08) : "transparent"
                     RowLayout {
                         anchors.fill: parent
@@ -179,6 +180,7 @@ Item {
                         anchors.rightMargin: 10
                         spacing: 8
                         ColumnLayout {
+                            id: rowText
                             spacing: 0
                             Layout.fillWidth: true
                             // S47: loading or failed, said under the name.
@@ -191,6 +193,8 @@ Item {
                                 color: parent.status && parent.status.state === "loading" ? row.accent
                                     : parent.status ? (panel.theme && panel.theme.red ? panel.theme.red : "#e0787b") : row.ink
                                 Layout.fillWidth: true
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 2
                             }
                         }
                         Word { text: String(row.index + 1); font.pixelSize: 10; opacity: .45 }

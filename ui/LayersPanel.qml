@@ -9,7 +9,8 @@ import QtQuick.Layouts
 // Space or Return flips the row, 1 2 3 flip a row directly. S43: a fourth
 // row chooses where temperature and wind come from, STATIONS, GRID (the MET
 // Nordic analysis) or BOTH; Left and Right (h, l) or Space move along it, 5
-// steps it (review S4).
+// steps it (review S4). S44: a fourth
+// switch, LIGHTNING (NORDLIS strikes), key 4; FROM is the fifth row.
 Item {
     id: panel
     property var theme
@@ -18,6 +19,9 @@ Item {
     property string keyText: ""     // the layers key as the sheet writes it
     property var obs: null          // the engine's obs, for the status line
     property var grid: null         // the engine's grid obs (S43)
+    property var lightning: null    // the engine's lightning message (S44)
+    property var lightningInfo: null // hello.lightning; null: the engine has none
+    property int strikesShown: -1   // strikes in the trail on the map now
     property bool opened: false
     property int cursor: 0
     visible: opened
@@ -27,7 +31,8 @@ Item {
     readonly property var rows: [
         { id: "radar", label: "RADAR", note: "precipitation" },
         { id: "temp", label: "TEMPERATURE", note: fromWord + ", °C" },
-        { id: "wind", label: "WIND", note: fromWord + ", arrows" }
+        { id: "wind", label: "WIND", note: fromWord + ", arrows" },
+        { id: "lightning", label: "LIGHTNING", note: "NORDLIS strikes, 30 min" }
     ]
     readonly property var sourceNames: [["stations", "STATIONS"], ["grid", "GRID"], ["both", "BOTH"]]
     readonly property int sourceRow: rows.length
@@ -43,12 +48,24 @@ Item {
         else if (cursor === sourceRow && (event.key === Qt.Key_Left || event.key === Qt.Key_H)) store.cycleSource(-1);
         else if (cursor === sourceRow && (event.key === Qt.Key_Right || event.key === Qt.Key_L)) store.cycleSource(1);
         else if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { if (cursor === sourceRow) store.cycleSource(1); else flip(cursor); }
-        else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_3) { cursor = event.key - Qt.Key_1; flip(cursor); }
+        else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_4) { cursor = event.key - Qt.Key_1; flip(cursor); }
         else if (event.key === Qt.Key_5) { cursor = sourceRow; store.cycleSource(1); }
         else event.accepted = false;
     }
     // Norway's Frost needs a client ID; the panel says why there is no
     // Norwegian station rather than leaving a hole unexplained.
+    // S44: the strikes, honestly: a quiet sky is "no strikes", not an error.
+    readonly property string lightningStatus: {
+        if (!store || !store.lightning) return "";
+        if (!lightningInfo) return "LIGHTNING: ENGINE TOO OLD";
+        if (!lightning) return "STRIKES LOADING…";
+        var mins = Math.round((lightning.trailS || 1800) / 60);
+        var n = strikesShown >= 0 ? strikesShown : 0;
+        var words = (n ? n + " STRIKES" : "NO STRIKES") + " IN " + mins + " MIN";
+        if (lightning.replay) words += " · REPLAY";
+        if (lightning.status === "failed") words += " · FMI FAILED";
+        return words;
+    }
     readonly property string stationStatus: {
         if (!obs) return "STATIONS LOADING…";
         var out = [];
@@ -68,10 +85,12 @@ Item {
         return "GRID " + Qt.formatTime(d, Qt.locale().timeFormat(Locale.ShortFormat)) + (failed ? " · UPDATE FAILED" : "");
     }
     readonly property string status: {
-        if (!store || !(store.temp || store.wind)) return "";
         var out = [];
-        if (source !== "grid") out.push(stationStatus);
-        if (source !== "stations") out.push(gridStatus);
+        if (store && (store.temp || store.wind)) {
+            if (source !== "grid") out.push(stationStatus);
+            if (source !== "stations") out.push(gridStatus);
+        }
+        if (lightningStatus) out.push(lightningStatus);
         return out.join(" · ");
     }
     component Word: Text {

@@ -176,7 +176,8 @@ Item {
         onLoopRequested: site => app.store.loopSite = site
         // S42: the station layers this window shows, only while it is open
         // (the engine fetches nothing while no client shows one).
-        layers: ({temp: app.opened && app.store.layers.temp, wind: app.opened && app.store.layers.wind, source: app.store.layers.source})
+        layers: ({temp: app.opened && app.store.layers.temp, wind: app.opened && app.store.layers.wind, source: app.store.layers.source,
+                  lightning: app.opened && app.store.layers.lightning})
     }
     // Deliberate preferences and remembered view (DESIGN.md, location).
     // PluginSession owns config.toml, state.json, and the camera; this
@@ -456,6 +457,15 @@ Item {
             return p ? JSON.stringify({x: Math.round(map.sx(p.mx)), y: Math.round(map.sy(p.my))}) : "";
         }
         function shownIds(): string { return JSON.stringify(obsLayer.shown.map(p => p.s.id)); }
+        // S44: what the lightning layer holds and draws.
+        function lightning(): string {
+            var m = engine.lightning;
+            return JSON.stringify({on: app.store.layers.lightning, status: m ? m.status : "", count: lightningLayer.count,
+                                   shown: lightningLayer.shownCounts, drawn: lightningLayer.drawn, paints: lightningLayer.paints,
+                                   live: lightningLayer.live, ref: new Date(lightningLayer.refMs).toISOString(),
+                                   replay: m ? m.replay : null, attribution: m ? m.attribution : "", hello: !!engine.lightningInfo,
+                                   frames: app.frames.filter(f => f.status === "complete").length, frame: app.scan ? app.scan.scanTime : ""});
+        }
     }
     // Site navigation (DESIGN.md, location): the lock pins the radar against
     // hand-offs; `n` releases it and selects the nearest radar without moving
@@ -890,9 +900,9 @@ Item {
                     Layout.leftMargin: 4
                     readonly property var store: app.store.layers
                     // S43: where they come from, when it is not the stations.
-                    readonly property string extra: [store.temp ? "°C" : "", store.wind ? "WIND" : ""].filter(x => x).join(" + ")
+                    readonly property string extra: [store.temp ? "°C" : "", store.wind ? "WIND" : "", store.lightning ? "⚡" : ""].filter(x => x).join(" + ")
                         + ((store.temp || store.wind) && store.source !== "stations" ? " · " + store.source.toUpperCase() : "")
-                    readonly property bool lit: layersPanel.opened || store.temp || store.wind || !store.radar
+                    readonly property bool lit: layersPanel.opened || store.temp || store.wind || store.lightning || !store.radar
                     opacity: lit || hovered ? 1 : .8
                     onClicked: app.run("layers")
                     contentItem: RowLayout {
@@ -958,7 +968,9 @@ Item {
                         }
                         // The source's credit, verbatim (SMHI, MET Norway, FMI, DMI, OPERA).
                         LabelText {
-                            text: app.attribution
+                            // S44: the strikes' credit beside the frame's.
+                            text: app.attribution + (app.store.layers.lightning && engine.lightning && engine.lightning.attribution
+                                ? (app.attribution ? " · " : "") + engine.lightning.attribution : "")
                             visible: text !== ""
                             font.letterSpacing: 1; opacity: .55
                         }
@@ -1057,6 +1069,23 @@ Item {
                     onTilesNeeded: (z, x0, y0, x1, y1) => engine.send({type: "tiles_needed", z: z, x0: x0, y0: y0, x1: x1, y1: y1})
                 }
                 Connections { target: engine; function onTileReady(tile) { map.tileReady(tile); } }
+                // S44: lightning strikes over the radar, under the stations.
+                LightningLayer {
+                    id: lightningLayer
+                    anchors.fill: parent
+                    map: map
+                    message: engine.lightning
+                    runtime: engine.runtime
+                    on: app.store.layers.lightning
+                    theme: app.theme
+                    compact: win.compact
+                    frame: app.scan
+                    // The newest frame, not looping: the trail runs to now.
+                    live: !app.playing && !!app.state && app.state.source === "live"
+                        && (!app.newestComplete || !app.scan || app.frameIndex >= app.frames.length - 1
+                            || app.scan.id === app.newestComplete.id)
+                    clockMs: Number(Quickshell.env("OMASTORM_LIGHTNING_CLOCK_MS") || 0)
+                }
                 // S42: the weather stations over the radar.
                 ObsLayer {
                     id: obsLayer
@@ -1591,6 +1620,9 @@ Item {
             chip: layersChip
             obs: engine.obs
             grid: engine.grid
+            lightning: engine.lightning
+            lightningInfo: engine.lightningInfo
+            strikesShown: lightningLayer.shownCounts[0] + lightningLayer.shownCounts[1]
             keyText: (app.bindings.layers || []).map(KeyMap.pretty).join(" ")
           }
           Item {

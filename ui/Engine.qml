@@ -33,6 +33,7 @@ QtObject {
     // analysis), held apart from the stations' `obs`.
     property var layers: ({temp: false, wind: false, source: "stations"})
     property bool layersSent: false
+    property bool lightningSent: false
     property string layersLine: ""
     property var obs: null
     property var grid: null
@@ -43,11 +44,18 @@ QtObject {
     readonly property string layerSource: layers && (layers.source === "grid" || layers.source === "both") ? layers.source : "stations"
     readonly property bool stationsWanted: !!(layers && (layers.temp || layers.wind)) && layerSource !== "grid"
     readonly property bool gridWanted: !!(layers && (layers.temp || layers.wind)) && layerSource !== "stations"
+    // S44: `layers.lightning` turns the strikes on for this connection;
+    // `lightning` is the engine's `lightning` message (strikes files under
+    // tex/), `lightningInfo` hello.lightning (null from an older engine).
+    property var lightning: null
+    property var lightningInfo: null
+    readonly property bool lightningWanted: !!(layers && layers.lightning)
     onLayersChanged: sendLayers()
     function sendLayers() {
-        var on = !!(layers && (layers.temp || layers.wind));
+        var on = !!(layers && (layers.temp || layers.wind || layers.lightning));
         if (!stationsWanted) obs = null;
         if (!gridWanted) grid = null;
+        if (!lightningWanted) lightning = null;
         if (!on && !layersSent) return;
         if (!socket || !socket.connected) return;
         // Review N7: the same layers again (a store reload) are not re-sent.
@@ -55,6 +63,9 @@ QtObject {
         // An S42 engine knows only stations; `source` goes out when it is not
         // and the engine has not refused it (review S5).
         if (layerSource !== "stations" && !gridRefused) command.source = layerSource;
+        // An engine older than S44 ignores it; sent only once it has been on.
+        if (lightningWanted || lightningSent) command.lightning = lightningWanted;
+        if (lightningWanted) lightningSent = true;
         var line = JSON.stringify(command);
         if (layersSent && line === layersLine) return;
         layersSent = true;
@@ -598,8 +609,10 @@ QtObject {
                 referenceSites = message.referenceSites || [];
                 products = message.products || [];
                 mosaic = message.mosaic && Array.isArray(message.mosaic.rules) ? message.mosaic : null;
+                lightningInfo = message.lightning && typeof message.lightning === "object" ? message.lightning : null;
                 layersSent = false;
                 gridRefused = false;
+                lightningSent = false;
                 sendLayers();
             }
             else if (message.type === "state") {
@@ -652,6 +665,10 @@ QtObject {
                 grid = gridWanted ? message : null;
             } else if (message.type === "obs") {
                 obs = stationsWanted && Array.isArray(message.stations) ? message : null;
+            } else if (message.type === "lightning") {
+                if (message.path !== "" && !validTexturePath(message.path))
+                    throw new Error("Invalid strikes path: " + JSON.stringify(message.path));
+                lightning = lightningWanted ? message : null;
             }
         } catch (e) { state = null; error = "Invalid engine message: " + e; }
     }
@@ -670,6 +687,7 @@ QtObject {
                     engine.state = null;
                     engine.obs = null;
                     engine.grid = null;
+                    engine.lightning = null;
                     engine.error = engine.disconnectedText;
                 }
             }

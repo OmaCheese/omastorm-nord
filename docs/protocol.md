@@ -1803,7 +1803,7 @@ can offer the switch only to an engine that has it:
 - `replay` is `true` when the engine replays a stored storm instead of
   fetching (below); `source` and `attribution` then name the stored file's
   provider, e.g. `"SMHI lightning archive (replay)"` and
-  `"SMHI, CC BY 4.0"`.
+  `"SMHI lightning, CC BY 4.0 (replay)"`.
 - `lightning` is sent to every client with it on whenever the file or
   `status` changes, and at least once a minute while fetching, with `to`
   moved on; a client redraws its fading trail on its own clock.

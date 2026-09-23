@@ -542,7 +542,7 @@ pub fn load_replay(path: &Path) -> Result<(Vec<Strike>, Replay), String> {
             strikes,
             Replay {
                 source: "FMI NORDLIS (replay)".into(),
-                attribution: ATTRIBUTION.into(),
+                attribution: "FMI NORDLIS, CC BY 4.0 (replay)".into(),
             },
         ))
     } else {
@@ -551,7 +551,7 @@ pub fn load_replay(path: &Path) -> Result<(Vec<Strike>, Replay), String> {
             strikes,
             Replay {
                 source: "SMHI lightning archive (replay)".into(),
-                attribution: "SMHI, CC BY 4.0".into(),
+                attribution: "SMHI lightning, CC BY 4.0 (replay)".into(),
             },
         ))
     }
@@ -920,7 +920,7 @@ mod tests {
         assert_eq!(value["count"], 7759);
         assert_eq!(value["cloudToGround"], 1473);
         assert_eq!(value["replay"], true);
-        assert_eq!(value["attribution"], "SMHI, CC BY 4.0");
+        assert_eq!(value["attribution"], "SMHI lightning, CC BY 4.0 (replay)");
         assert_eq!(value["trailS"], 1800);
         assert_eq!(value["newest"], "2026-09-23T06:00:00Z");
         assert!(value.get("note").is_none());

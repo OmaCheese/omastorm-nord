@@ -289,7 +289,7 @@ fn a_stored_storm_replays_without_a_request() {
     assert_eq!(line["count"], 7759);
     assert_eq!(line["cloudToGround"], 1473);
     assert_eq!(line["newest"], "2026-09-23T06:00:00Z");
-    assert_eq!(line["attribution"], "SMHI, CC BY 4.0");
+    assert_eq!(line["attribution"], "SMHI lightning, CC BY 4.0 (replay)");
     let path = line["path"].as_str().unwrap();
     assert_eq!(count_of(&engine.file(path)), 7759);
     let log = engine.log();

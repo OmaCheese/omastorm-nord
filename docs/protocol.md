@@ -1806,7 +1806,10 @@ the view are kept. The engine:
   strikes, aborting a fetch in flight, and fetches them again at once for
   whoever has a layer on (they come back `loading` first, as on a start).
   The observations' cached bodies are deleted; the daily station lists
-  (DMI's, Frost's) are kept.
+  (DMI's, Frost's) are kept. An error backoff survives a reset: a provider
+  whose last fetch failed (a 429, a 503) keeps its cached copy and is asked
+  again only when its retry is due, and so do the grid and the lightning
+  after a failure.
 
 **Kept on disk:** the volumes (the tilt store) and the catalogued frames
 whose files are fine. They are immutable, and fetching them again would

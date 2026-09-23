@@ -936,12 +936,17 @@ pub async fn run(runtime: PathBuf) {
         if hub.take_reset() {
             eprintln!("{} Grid metnordic: reset", stamp());
             super::drain(&hub.abort);
-            let _ = fs::remove_file(fetcher.cache.join(CACHE_NAME));
-            fetcher.field_time = None;
-            fetcher.probed = None;
-            fetcher.held = Held::default();
-            fetcher.due = 0;
-            first = true;
+            // Review N3: an error backoff survives a reset: after a failed
+            // fetch the grid, its note and its retry time are kept (and
+            // published again to the clients, whose copy the reset dropped).
+            if fetcher.held.status != "failed" {
+                let _ = fs::remove_file(fetcher.cache.join(CACHE_NAME));
+                fetcher.field_time = None;
+                fetcher.probed = None;
+                fetcher.held = Held::default();
+                fetcher.due = 0;
+                first = true;
+            }
         }
         if !hub.wanted() {
             hub.wake.notified().await;

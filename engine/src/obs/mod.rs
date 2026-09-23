@@ -538,13 +538,16 @@ impl Fetcher {
     /// S47 (`reset`): drop the lists, the failures and the cached bodies
     /// of the observations (the daily station lists are kept: they are not
     /// observations), so every provider is read again at once.
+    ///
+    /// Review N3: an error backoff survives a reset: a part that failed
+    /// (a 429, a 503) keeps its failure time and its cached copy, and is
+    /// asked again only when `MIN_AGE` has passed, reset or not.
     fn reset(&mut self) {
         self.lists = blank_lists("loading", "");
-        self.failed.clear();
         let now = now_ms();
         for id in PROVIDERS {
             for part in id.parts(now, &self.dir).unwrap_or_default() {
-                if part.max_age <= MIN_AGE {
+                if part.max_age <= MIN_AGE && !self.failed.contains_key(part.name) {
                     let _ = fs::remove_file(self.dir.join(part.name));
                 }
             }
@@ -831,6 +834,30 @@ pub(crate) mod tests {
         assert!(!Id::Frost.usable(daily, b""));
         assert!(Id::Dmi.usable(daily, &fixture("dmi_stations_20260922.json.gz")));
         assert!(Id::Dmi.optional(1) && !Id::Dmi.optional(0) && !Id::Frost.optional(0));
+    }
+
+    /// Review N3: a reset forgets the lists and the good bodies, never a
+    /// provider's error backoff.
+    #[test]
+    fn a_reset_keeps_an_error_backoff() {
+        let dir = std::env::temp_dir().join(format!("omastorm-obs-n3-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut fetcher = Fetcher {
+            client: reqwest::Client::new(),
+            dir: dir.clone(),
+            lists: blank_lists("ok", ""),
+            failed: HashMap::new(),
+        };
+        fs::write(dir.join("fmi.xml"), b"x").unwrap();
+        fs::write(dir.join("dmi-obs.json"), b"x").unwrap();
+        fetcher.failed.insert("dmi-obs.json", 5);
+        fetcher.reset();
+        assert_eq!(fetcher.failed.get("dmi-obs.json"), Some(&5));
+        assert!(!dir.join("fmi.xml").exists(), "a good body goes");
+        assert!(dir.join("dmi-obs.json").exists(), "a failed part's copy stays");
+        assert!(fetcher.loading());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

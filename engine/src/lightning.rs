@@ -760,9 +760,11 @@ pub async fn run(dir: PathBuf) {
             status = Status::default();
             last_to = None;
             covered_from = None;
-            last_try = None;
             full_at = None;
-            failures = 0;
+            // Review N3: an error backoff survives a reset.
+            if failures == 0 {
+                last_try = None;
+            }
         }
         if !hub.wanted() {
             hub.wake.notified().await;

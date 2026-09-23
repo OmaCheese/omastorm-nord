@@ -10,8 +10,8 @@ ShellRoot {
     FloatingWindow {
         id: preview
         visible: true
-        implicitWidth: 380
-        implicitHeight: 500
+        implicitWidth: popover.implicitWidth + 72
+        implicitHeight: popover.implicitHeight + 128
         color: "#181414"
         Item {
             id: picture
@@ -21,13 +21,13 @@ ShellRoot {
                 RadarMark { x: 294; y: 8; ink: theme.snapshot.foreground }
             }
             Rectangle {
-                x: 22; y: 42; width: 336; height: 400
+                x: 22; y: 42; width: popover.implicitWidth + 28; height: popover.implicitHeight + 28
                 color: theme.snapshot.background
                 border.width: 2; border.color: theme.snapshot.accent
                 visible: !harness.expanded
                 Popover {
                     id: popover
-                    x: 14; y: 14; width: 308
+                    x: 14; y: 14; width: implicitWidth
                     session: harness.session
                     onExpandRequested: { harness.expanded = true; panel.open("{}"); }
                     onCloseRequested: harness.expanded = true

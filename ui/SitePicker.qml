@@ -27,7 +27,7 @@ Item {
     component Word: Text {
         color: picker.theme.foreground
         font.family: picker.theme.font
-        font.pixelSize: 12
+        font.pixelSize: picker.theme.size.body
         elide: Text.ElideRight
         verticalAlignment: Text.AlignVCenter
     }
@@ -103,7 +103,7 @@ Item {
                         Layout.fillHeight: true
                         color: picker.theme.foreground
                         font.family: picker.theme.font
-                        font.pixelSize: 13
+                        font.pixelSize: picker.theme.size.label
                         verticalAlignment: TextInput.AlignVCenter
                         clip: true
                         leftPadding: 0; rightPadding: 0
@@ -124,7 +124,7 @@ Item {
                             opacity: .9
                         }
                     }
-                    Word { text: "town · county · country"; font.pixelSize: 10; opacity: .45; visible: !picker.compact }
+                    Word { text: "town · county · country"; font.pixelSize: picker.theme.size.small; opacity: .45; visible: !picker.compact }
                 }
             }
             ColumnLayout {
@@ -156,7 +156,7 @@ Item {
                             spacing: 12
                             Word { text: Sites.mark(row.modelData.site.id, row.modelData.idHits, picker.theme.accent); textFormat: Text.StyledText; font.bold: true; color: row.ink; Layout.preferredWidth: 52 }
                             Word { text: Sites.mark(row.modelData.place, row.modelData.placeHits, picker.theme.accent); textFormat: Text.StyledText; color: row.ink; opacity: .9; Layout.fillWidth: true }
-                            Word { text: [row.modelData.site.id === picker.homeSite ? "home" : "", row.modelData.tag, row.modelData.where].filter(t => t).join(" · "); font.pixelSize: 10; color: row.ink; opacity: .6 }
+                            Word { text: [row.modelData.site.id === picker.homeSite ? "home" : "", row.modelData.tag, row.modelData.where].filter(t => t).join(" · "); font.pixelSize: picker.theme.size.small; color: row.ink; opacity: .6 }
                         }
                         MouseArea {
                             anchors.fill: parent
@@ -172,11 +172,11 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 14
-                Word { text: "↑ ↓ move"; font.pixelSize: 10; opacity: .55 }
-                Word { text: "↵ select and lock"; font.pixelSize: 10; opacity: .55 }
-                Word { text: "esc close"; font.pixelSize: 10; opacity: .55; visible: !picker.compact }
+                Word { text: "↑ ↓ move"; font.pixelSize: picker.theme.size.small; opacity: .55 }
+                Word { text: "↵ select and lock"; font.pixelSize: picker.theme.size.small; opacity: .55 }
+                Word { text: "esc close"; font.pixelSize: picker.theme.size.small; opacity: .55; visible: !picker.compact }
                 Item { Layout.fillWidth: true }
-                Word { text: picker.rows.length + " of " + picker.ranked.total; font.pixelSize: 10; opacity: .55 }
+                Word { text: picker.rows.length + " of " + picker.ranked.total; font.pixelSize: picker.theme.size.small; opacity: .55 }
             }
         }
     }

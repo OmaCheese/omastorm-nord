@@ -48,7 +48,7 @@ Rectangle {
                     width: parent.width
                     text: "LOADING"
                     font.family: card.theme.font
-                    font.pixelSize: card.compact ? 10 : 11
+                    font.pixelSize: card.compact ? card.theme.size.small : card.theme.size.caption
                     font.letterSpacing: 1
                     color: card.theme.foreground
                     opacity: 0.6
@@ -59,7 +59,7 @@ Rectangle {
                     visible: text !== ""
                     elide: Text.ElideRight
                     font.family: card.theme.font
-                    font.pixelSize: card.compact ? 11 : 13
+                    font.pixelSize: card.compact ? card.theme.size.caption : card.theme.size.label
                     color: card.theme.foreground
                 }
             }
@@ -70,7 +70,7 @@ Rectangle {
                 // Before the engine counts there is no honest number.
                 text: card.counted ? card.engine.percent + " %" : "…"
                 font.family: card.theme.font
-                font.pixelSize: card.compact ? 24 : 32
+                font.pixelSize: card.compact ? card.theme.size.body * 2 : Math.round(card.theme.size.body * 8 / 3)
                 font.bold: true
                 color: card.theme.accent
             }
@@ -124,7 +124,7 @@ Rectangle {
                             width: card.compact ? 12 : 14
                             text: parent.parent.done ? "✓" : parent.parent.active ? "●" : "○"
                             font.family: card.theme.font
-                            font.pixelSize: card.compact ? 11 : 13
+                            font.pixelSize: card.compact ? card.theme.size.caption : card.theme.size.label
                             color: parent.parent.active || parent.parent.done ? card.theme.accent : card.theme.foreground
                             opacity: parent.parent.active || parent.parent.done ? 1 : 0.45
                             SequentialAnimation on opacity {
@@ -138,7 +138,7 @@ Rectangle {
                         Text {
                             text: modelData.name
                             font.family: card.theme.font
-                            font.pixelSize: card.compact ? 11 : 13
+                            font.pixelSize: card.compact ? card.theme.size.caption : card.theme.size.label
                             font.bold: parent.parent.active
                             color: parent.parent.active ? card.theme.accent : card.theme.foreground
                             opacity: parent.parent.active ? 1 : parent.parent.done ? 0.75 : 0.45
@@ -153,7 +153,7 @@ Rectangle {
                         maximumLineCount: card.compact ? 2 : 3
                         elide: Text.ElideRight
                         font.family: card.theme.font
-                        font.pixelSize: card.compact ? 10 : 11
+                        font.pixelSize: card.compact ? card.theme.size.small : card.theme.size.caption
                         color: card.theme.foreground
                         opacity: 0.8
                     }

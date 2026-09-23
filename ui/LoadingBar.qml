@@ -81,7 +81,7 @@ Item {
             : stage === "history" ? "Fetching history" : stage || "";
     }
     /// The names' size; S41 made them readable at a glance.
-    property int nameSize: 10
+    property int nameSize: bar.theme && bar.theme.size ? bar.theme.size.small : 10
 
     visible: !!bar.loading || bar.segments.length > 0
     implicitHeight: bar.thickness + (bar.names ? nameRow.implicitHeight + 2 : 0)

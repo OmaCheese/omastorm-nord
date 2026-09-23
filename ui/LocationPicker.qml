@@ -33,7 +33,7 @@ Item {
     component Word: Text {
         color: picker.theme.foreground
         font.family: picker.theme.font
-        font.pixelSize: 12
+        font.pixelSize: picker.theme.size.body
         elide: Text.ElideRight
         verticalAlignment: Text.AlignVCenter
     }
@@ -191,7 +191,7 @@ Item {
                             Layout.fillHeight: true
                             color: picker.theme.foreground
                             font.family: picker.theme.font
-                            font.pixelSize: 13
+                            font.pixelSize: picker.theme.size.label
                             verticalAlignment: TextInput.AlignVCenter
                             clip: true
                             leftPadding: 0; rightPadding: 0
@@ -216,13 +216,13 @@ Item {
                                 opacity: .9
                             }
                         }
-                        Word { text: "place"; font.pixelSize: 10; opacity: .45; visible: !picker.compact }
+                        Word { text: "place"; font.pixelSize: picker.theme.size.small; opacity: .45; visible: !picker.compact }
                     }
                 }
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10
-                    Word { text: "LAT"; font.pixelSize: 10; opacity: .55; Layout.preferredWidth: 28 }
+                    Word { text: "LAT"; font.pixelSize: picker.theme.size.small; opacity: .55; Layout.preferredWidth: 28 }
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: 28
@@ -236,7 +236,7 @@ Item {
                             anchors.rightMargin: 8
                             color: picker.theme.foreground
                             font.family: picker.theme.font
-                            font.pixelSize: 12
+                            font.pixelSize: picker.theme.size.body
                             verticalAlignment: TextInput.AlignVCenter
                             clip: true
                             Keys.onPressed: event => {
@@ -249,7 +249,7 @@ Item {
                             }
                         }
                     }
-                    Word { text: "LON"; font.pixelSize: 10; opacity: .55; Layout.preferredWidth: 28 }
+                    Word { text: "LON"; font.pixelSize: picker.theme.size.small; opacity: .55; Layout.preferredWidth: 28 }
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: 28
@@ -263,7 +263,7 @@ Item {
                             anchors.rightMargin: 8
                             color: picker.theme.foreground
                             font.family: picker.theme.font
-                            font.pixelSize: 12
+                            font.pixelSize: picker.theme.size.body
                             verticalAlignment: TextInput.AlignVCenter
                             clip: true
                             Keys.onPressed: event => {
@@ -297,7 +297,7 @@ Item {
                                 anchors.rightMargin: 12
                                 spacing: 12
                                 Word { text: row.modelData.name; font.bold: true; color: row.ink; Layout.fillWidth: true }
-                                Word { text: row.modelData.where; font.pixelSize: 10; color: row.ink; opacity: .6 }
+                                Word { text: row.modelData.where; font.pixelSize: picker.theme.size.small; color: row.ink; opacity: .6 }
                             }
                             MouseArea {
                                 anchors.fill: parent
@@ -328,12 +328,12 @@ Item {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 14
-                    Word { text: "tab fields"; font.pixelSize: 10; opacity: .55; visible: !picker.compact }
-                    Word { text: "↑ ↓ move"; font.pixelSize: 10; opacity: .55 }
-                    Word { text: "↵ set location"; font.pixelSize: 10; opacity: .55 }
-                    Word { text: "esc close"; font.pixelSize: 10; opacity: .55; visible: !picker.compact }
+                    Word { text: "tab fields"; font.pixelSize: picker.theme.size.small; opacity: .55; visible: !picker.compact }
+                    Word { text: "↑ ↓ move"; font.pixelSize: picker.theme.size.small; opacity: .55 }
+                    Word { text: "↵ set location"; font.pixelSize: picker.theme.size.small; opacity: .55 }
+                    Word { text: "esc close"; font.pixelSize: picker.theme.size.small; opacity: .55; visible: !picker.compact }
                     Item { Layout.fillWidth: true }
-                    Word { text: picker.rows.length ? picker.rows.length + " shown" : ""; font.pixelSize: 10; opacity: .55 }
+                    Word { text: picker.rows.length ? picker.rows.length + " shown" : ""; font.pixelSize: picker.theme.size.small; opacity: .55 }
                 }
             }
         }

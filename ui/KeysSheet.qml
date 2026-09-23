@@ -29,7 +29,7 @@ Item {
     component Word: Text {
         color: sheet.theme.foreground
         font.family: sheet.theme.font
-        font.pixelSize: 12
+        font.pixelSize: sheet.theme.size.body
         elide: Text.ElideRight
         verticalAlignment: Text.AlignVCenter
     }
@@ -64,9 +64,9 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 10
-                Word { text: "KEYS"; font.bold: true; font.pixelSize: 14; font.letterSpacing: 2 }
+                Word { text: "KEYS"; font.bold: true; font.pixelSize: sheet.theme.size.title; font.letterSpacing: 2 }
                 Item { Layout.fillWidth: true }
-                Word { text: "rebindable in ~/.config/omastorm-se/config.toml"; font.pixelSize: 10; opacity: .55 }
+                Word { text: "rebindable in ~/.config/omastorm-se/config.toml"; font.pixelSize: sheet.theme.size.small; opacity: .55 }
             }
             GridLayout {
                 Layout.fillWidth: true
@@ -102,7 +102,7 @@ Item {
                                             color: "transparent"
                                             border.width: 1
                                             border.color: Qt.alpha(sheet.theme.foreground, .4)
-                                            Word { id: cap; anchors.centerIn: parent; text: parent.modelData; font.pixelSize: 11 }
+                                            Word { id: cap; anchors.centerIn: parent; text: parent.modelData; font.pixelSize: sheet.theme.size.caption }
                                         }
                                     }
                                 }
@@ -115,7 +115,7 @@ Item {
             // S40: My mosaic's panel has its own keys, fixed, in force while
             // it is open (the window's stand down then).
             Rectangle { Layout.fillWidth: true; height: 1; color: Qt.alpha(sheet.theme.foreground, .17) }
-            Word { text: "MY MOSAIC PANEL"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1; opacity: .6 }
+            Word { text: "MY MOSAIC PANEL"; font.pixelSize: sheet.theme.size.small; font.bold: true; font.letterSpacing: 1; opacity: .6 }
             Flow {
                 Layout.fillWidth: true
                 spacing: 14
@@ -134,7 +134,7 @@ Item {
                                 color: "transparent"
                                 border.width: 1
                                 border.color: Qt.alpha(sheet.theme.foreground, .4)
-                                Word { id: mosaicCap; anchors.centerIn: parent; text: parent.modelData; font.pixelSize: 11 }
+                                Word { id: mosaicCap; anchors.centerIn: parent; text: parent.modelData; font.pixelSize: sheet.theme.size.caption }
                             }
                         }
                         Word { text: mosaicKey.modelData.label; height: 18; opacity: .85; leftPadding: 2 }
@@ -146,7 +146,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 elide: Text.ElideNone
-                font.pixelSize: 10
+                font.pixelSize: sheet.theme.size.small
                 opacity: .55
                 lineHeight: 1.4
                 text: sheet.closeKeys

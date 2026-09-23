@@ -15,7 +15,7 @@ ColumnLayout {
         textFormat: Text.PlainText
         color: prompt.theme.foreground
         font.family: prompt.theme.font
-        font.pixelSize: 12
+        font.pixelSize: prompt.theme.size.body
     }
     component Action: Button {
         Layout.alignment: Qt.AlignHCenter
@@ -26,7 +26,7 @@ ColumnLayout {
             text: parent.text
             color: prompt.theme.foreground
             font.family: prompt.theme.font
-            font.pixelSize: 12
+            font.pixelSize: prompt.theme.size.body
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             opacity: parent.enabled ? 1 : .5
@@ -37,7 +37,7 @@ ColumnLayout {
             border.color: parent.activeFocus ? prompt.theme.accent : Qt.alpha(prompt.theme.foreground, .4)
         }
     }
-    Word { text: "Choose your location"; font.bold: true; font.pixelSize: 13 }
+    Word { text: "Choose your location"; font.bold: true; font.pixelSize: prompt.theme.size.label }
     Action {
         objectName: "approximateLocation"
         text: prompt.session.locating ? "Finding your location…" : "Use approximate location"
@@ -48,7 +48,7 @@ ColumnLayout {
     Word {
         visible: !prompt.session.ipLocationDismissed && !!prompt.session.locationError
         text: prompt.session.locationError
-        font.pixelSize: 11
+        font.pixelSize: prompt.theme.size.caption
     }
     Action { objectName: "manualLocation"; text: "Choose manually"; onClicked: prompt.manualChosen() }
 }

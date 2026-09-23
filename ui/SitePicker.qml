@@ -54,10 +54,16 @@ Item {
     }
     signal chosen(var site)
     // S48: every match, no row limit; the ranking and the group hairlines stay.
-    readonly property var ranked: open ? Sites.rank(sites, query, centerLat, centerLon, Infinity, Qt.locale().measurementSystem === Locale.MetricSystem) : ({ rows: [], total: 0 })
+    // Review N4: ranked from the centre as it was at open, so a map that
+    // moves behind the scrim does not re-rank (and reset) the list.
+    property real rankLat: 0
+    property real rankLon: 0
+    readonly property var ranked: open ? Sites.rank(sites, query, rankLat, rankLon, Infinity, Qt.locale().measurementSystem === Locale.MetricSystem) : ({ rows: [], total: 0 })
     readonly property var rows: ranked.rows
     visible: open
     function show(text) {
+        rankLat = centerLat;
+        rankLon = centerLon;
         field.text = text || "";
         selected = 0;
         open = true;

@@ -477,6 +477,28 @@ the file visible to it.
 `OMASTORM_OBS_BASE` sends every provider's request to another scheme and
 host (tests point it at a closed port). Fixtures: `data/fixtures/obs/`.
 
+## MET Nordic grid (S43)
+
+`src/obs/grid.rs` reads MET Norway's hourly 1 km **MET Nordic analysis**
+(2 m temperature, 10 m wind) for `set_layers` `source` `grid` or `both`
+([docs/protocol.md](../docs/protocol.md#the-met-nordic-grid)). It never
+downloads the 114 MB file: over OPeNDAP it asks `thredds.met.no` for
+`time` alone (about 100 bytes), and when that names a newer hour, one
+DAP2 subset (about 1.9 MB: temperature every 3 km, wind every 24 km).
+The analysis for HH:00 is written about HH:15, so the next probe is at
+HH+1:20, then every 10 minutes until the hour is in: one download an hour
+at most, and nothing while no client shows the grid. The subset is cached
+as `$XDG_CACHE_HOME/omastorm-se/obs/metnordic.dods`.
+
+The grid is a Lambert conformal conic on a sphere (lat 63°, lon 15°,
+R 6371 km); `grid.rs` inverts it to draw the temperature as a Web
+Mercator RGBA PNG (1200 px wide, about 0.6 MB, on the stations' colour
+scale) under `tex/grid-temp-<hour>-<tag>.png`, which the texture cleanup
+keeps while it is the newest, and the wind as a point list (7 275 points).
+Every fetch writes a `Grid metnordic: requests=… bytes=… hour=…` line to
+`engine.log`. `OMASTORM_OBS_BASE` redirects it too. Fixtures:
+`data/fixtures/obs/metnordic_*`.
+
 ## Basemap
 
 `build.rs` converts Natural Earth lines to a compact polyline blob and embeds

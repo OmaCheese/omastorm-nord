@@ -67,7 +67,7 @@ capture() {
   wait "$pid"
 }
 
-back() { local n=$1 out=(); for ((i = 0; i < n; i++)); do out+=("keys run previous_frame"); done; printf '%s\n' "${out[@]}"; }
+back() { local n=$1 i; for ((i = 0; i < n; i++)); do echo "keys run previous_frame"; done; }
 
 # Warm up: the first window starts the engine and backfills Vara.
 DELAY=${WARM:-40000} capture warmup dark radar,lightning 700 58.9 15.3

@@ -293,6 +293,12 @@ Item {
         recentSites = [siteId].concat(recentSites.filter(id => id !== siteId)).slice(0, 4);
     }
     function keyNote(action) { return (bindings[action] || []).map(KeyMap.pretty).join(" "); }
+    // Review S1: what the menu reads from the engine's state, as strings
+    // and numbers that change only when their value does, so the stream of
+    // state messages does not rebuild the rows (and move the submenu).
+    readonly property string shownProductKey: state && state.product ? state.product.id + "/" + state.product.elevationIndex : ""
+    readonly property string productRowsKey: JSON.stringify(productRows)
+    readonly property int mosaicCount: mosaicSet ? mosaicSet.sites.length : 0
     readonly property var mapMenuRows: {
         if (!mapMenu.opened) return [];
         var rows = [{kind: "header", label: "REGION"}];
@@ -300,16 +306,18 @@ Item {
         for (let s of composites)
             rows.push({label: (s.name || s.id).toUpperCase(), note: "COMPOSITE", current: s.id === siteId, run: () => app.choose(s)});
         var mine = engine.sites.find(s => s.provider === "mosaic");
-        if (mine) rows.push({label: "MY MOSAIC", note: mosaicSet && mosaicSet.sites.length ? mosaicSet.sites.length + " RADARS" : "", current: mine.id === siteId, run: () => app.choose(mine)});
+        if (mine) rows.push({label: "MY MOSAIC", note: mosaicCount ? mosaicCount + " RADARS" : "", current: mine.id === siteId, run: () => app.choose(mine)});
         for (let id of recentSites) {
             let r = engine.sites.find(x => x.id === id);
-            if (r) rows.push({label: (r.name || r.id).toUpperCase(), note: r.country || "", current: r.id === siteId, run: () => app.choose(r)});
+            // Review S3: these go first when the card would not fit.
+            if (r) rows.push({label: (r.name || r.id).toUpperCase(), note: r.country || "", current: r.id === siteId, droppable: true, run: () => app.choose(r)});
         }
         rows.push({label: "MORE…", key: keyNote("search"), run: () => picker.show("")});
         rows.push({kind: "sep"});
-        rows.push({label: "PRODUCT · " + (productLabel || "—"), enabled: productRows.length > 0,
-                   sub: productRows.map(r => ({label: r.label, note: r.note,
-                                               current: !!state && !!state.product && state.product.id === r.product && state.product.elevationIndex === r.index,
+        var products = JSON.parse(productRowsKey);
+        rows.push({label: "PRODUCT · " + (productLabel || "—"), enabled: products.length > 0,
+                   sub: products.map(r => ({label: r.label, note: r.note,
+                                               current: shownProductKey === r.product + "/" + r.index,
                                                run: () => app.chooseProduct(r)}))});
         rows.push({kind: "header", label: "LAYERS"});
         var l = store.layers;

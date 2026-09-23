@@ -237,6 +237,7 @@ fn the_grid_is_fetched_once_and_drawn_under_tex() {
         .collect();
     assert_eq!(first, [52.3, 1.92, 5.0, 270.0]);
     assert_eq!(grid["wind"]["spacingKm"], 24.0);
+    assert_eq!(grid["wind"]["cols"], WX);
     // A stations-only client never hears of the grid.
     assert!(next_obs(&mut stations, "stations", REPLY).is_some());
     assert!(next_obs(&mut stations, "grid", Duration::from_secs(2)).is_none());

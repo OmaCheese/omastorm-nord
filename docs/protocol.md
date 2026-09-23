@@ -1688,7 +1688,7 @@ one more `obs` line, `source` `grid`, with only the layers it has on:
  "temperature":{"texture":"tex/grid-temp-20260923T04Z-5c1e0a9d.png",
                 "bounds":[-11.77,52.3,41.77,74.27],"width":1200,"height":1500,
                 "minC":-3.1,"maxC":18.8},
- "wind":{"spacingKm":24,"points":[[52.3,1.92,6.4,231],[52.42,2.27,6.1,229]]},
+ "wind":{"spacingKm":24,"cols":75,"points":[[52.3,1.92,6.4,231],[52.42,2.27,6.1,229]]},
  "provider":{"id":"metnordic","name":"MET Norway","status":"ok"},
  "attribution":"MET Norway (CC BY 4.0)"}
 ```
@@ -1711,7 +1711,11 @@ one more `obs` line, `source` `grid`, with only the layers it has on:
   conformal), as `[lat, lon, speed m/s, from-direction °]` rows: speed and
   direction as in the station list (`windMs`, `windDirDeg`: where the wind
   blows **from**, clockwise from true north). Every point of the grid is
-  sent (about 7 000); a client thins them by zoom as it thins stations.
+  sent (75 × 97 = 7 275), row by row from the south-west corner, `cols` to
+  a row, so point `i` sits at row `i / cols`, column `i % cols`; a point
+  without a value has `null` speed and direction. A client thins them by
+  zoom, e.g. every `k`-th row and column, which stays put while the map
+  pans.
 - `provider.status` is `ok`, or `failed` with a `note` (the last fetch
   failed; the previous grid stays while it is under 3 hours old). With no
   grid at all (the first fetch failed) the line has neither `temperature`

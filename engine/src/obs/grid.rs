@@ -414,8 +414,10 @@ pub fn png(image: &Image) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The wind points as JSON rows `[lat, lon, m/s, from °]`, every point of
-/// the wind plane with both values.
+/// The wind points as JSON rows `[lat, lon, m/s, from °]`, row by row
+/// from the south-west corner (`cols` to a row), every point of the wind
+/// plane; a point without both values has `null` for them, so a point's
+/// place in the list is its place in the grid.
 pub fn wind_points(field: &Field, lcc: &Lcc) -> String {
     let (s, d) = (&field.wind_ms, &field.wind_dir);
     let mut out = String::from("[");
@@ -423,18 +425,19 @@ pub fn wind_points(field: &Field, lcc: &Lcc) -> String {
         for col in 0..s.nx {
             let at = row * s.nx + col;
             let (ms, deg) = (s.values[at], d.values.get(at).copied().unwrap_or(f64::NAN));
-            if !ms.is_finite() || !deg.is_finite() {
-                continue;
-            }
             let (lat, lon) = lcc.inverse(s.x0 + col as f64 * s.step, s.y0 + row as f64 * s.step);
             if out.len() > 1 {
                 out.push(',');
             }
-            let _ = write!(
-                out,
-                "[{lat:.2},{lon:.2},{ms:.1},{:.0}]",
-                deg.rem_euclid(360.0)
-            );
+            if ms.is_finite() && deg.is_finite() {
+                let _ = write!(
+                    out,
+                    "[{lat:.2},{lon:.2},{ms:.1},{:.0}]",
+                    deg.rem_euclid(360.0)
+                );
+            } else {
+                let _ = write!(out, "[{lat:.2},{lon:.2},null,null]");
+            }
         }
     }
     out.push(']');
@@ -490,8 +493,9 @@ pub fn draw(field: &Field) -> io::Result<Drawn> {
     })
     .to_string();
     let wind = format!(
-        "{{\"spacingKm\":{},\"points\":{}}}",
+        "{{\"spacingKm\":{},\"cols\":{},\"points\":{}}}",
         (field.wind_ms.step / 1000.0).round(),
+        field.wind_ms.nx,
         wind_points(field, &lcc)
     );
     Ok(Drawn {
@@ -971,6 +975,7 @@ mod tests {
         assert_eq!(both["temperature"]["width"], IMAGE_WIDTH);
         assert_eq!(both["temperature"]["bounds"].as_array().unwrap().len(), 4);
         assert_eq!(both["wind"]["spacingKm"], 240.0);
+        assert_eq!(both["wind"]["cols"], 8);
         assert_eq!(both["attribution"], "MET Norway (CC BY 4.0)");
         assert_eq!(both["provider"]["status"], "ok");
         let temp = parse(Layers {

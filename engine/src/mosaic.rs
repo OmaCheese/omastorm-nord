@@ -4289,8 +4289,8 @@ mod tests {
     #[test]
     #[ignore]
     fn the_cold_runs_arrivals_replayed() {
-        let path = std::env::var("S31_ARRIVALS")
-            .expect("S31_ARRIVALS names the live run's arrivals.json");
+        let path =
+            std::env::var("S31_ARRIVALS").expect("S31_ARRIVALS names the live run's arrivals.json");
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let n = v["radars"].as_u64().unwrap() as usize;
@@ -4387,8 +4387,8 @@ mod tests {
         /// Built and sent, to the frame in the client's timeline.
         const DRAW_MS: i64 = 200;
 
-        let path = std::env::var("S31_ARRIVALS")
-            .expect("S31_ARRIVALS names the live run's arrivals.json");
+        let path =
+            std::env::var("S31_ARRIVALS").expect("S31_ARRIVALS names the live run's arrivals.json");
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let n = v["radars"].as_u64().unwrap() as usize;

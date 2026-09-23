@@ -50,8 +50,31 @@ QtObject {
         light: isLight(color(setting("popups.background", colors.background), "#1a1b26")),
         // Both Text and Canvas resolve the generic family through Qt/fontconfig.
         font: "monospace",
-        baseSize: Number(setting("font.base-size", 12)) > 0 ? Number(setting("font.base-size", 12)) : 12
+        baseSize: base,
+        size: typeScale(base)
     })
+    /// S46: Omarchy's text size (`[font] base-size` in shell.toml, which the
+    /// monitor plugin's text-size selector writes through
+    /// `omarchy-display-text-size`). The FileViews below watch the file, so
+    /// a change re-flows every open surface without a restart.
+    readonly property real base: Number(setting("font.base-size", 12)) > 0 ? Number(setting("font.base-size", 12)) : 12
+    /// S46: the type scale every surface sizes its text from, never a
+    /// literal pixel size. At the default base of 12: small 10, caption 11,
+    /// body 12, label 13, title 14, heading 17, display 19. `small` is the
+    /// floor (base − 2, and never under 8 px at the tiniest Omarchy size);
+    /// `k` scales fixed geometry (card widths, row heights) with the text.
+    function typeScale(b) {
+        return {
+            small: Math.max(8, Math.round(b - 2)),
+            caption: Math.round(b - 1),
+            body: Math.round(b),
+            label: Math.round(b + 1),
+            title: Math.round(b + 2),
+            heading: Math.round(b + 5),
+            display: Math.round(b + 7),
+            k: Math.max(0.75, b / 12)
+        };
+    }
     function reload() {
         colorsFile.reload();
         shellFile.reload();

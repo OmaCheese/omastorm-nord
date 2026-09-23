@@ -996,6 +996,11 @@ impl Shared {
         // backfill may still bring a history stage).
         if skip_known {
             self.loading.reset();
+            // S49 review S3: the poller's own restart (an outage, a silent
+            // feed) is a load too: its first frame cuts what cannot join
+            // up with it, so a night offline is not spliced onto the
+            // morning.
+            self.timeline.window_ms = Some(self.window_ms(&station, want));
         } else {
             let has_frame = !fresh && !self.state.frame.scan_time.is_empty();
             let kind = loading::kind_of(&station, want);
@@ -3464,6 +3469,30 @@ mod tests {
         );
         assert_eq!(s49_times(&shared), ["14:05", "14:10", "14:15", "14:20"]);
         assert_eq!(shared.state.frame.scan_time, iso(s49_at(14, 20)));
+    }
+    /// Review S3: after the poller's own restart (the feed was out from
+    /// 10:10 to 14:25) the restarted load's first frame cuts the frames
+    /// before the outage, as a new load's would.
+    #[test]
+    fn a_poller_restart_after_an_outage_cuts_the_splice() {
+        let mut shared = s49_opened("s49-restart", s49_lowb, &s49_morning());
+        let own = s49_store(&shared, s49_at(10, 15));
+        shared.backfilled(own).unwrap();
+        assert_eq!(shared.timeline.stored.len(), 16, "joins up");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        {
+            let _guard = runtime.enter();
+            shared.restart_live("the feed is unavailable", true);
+            if let Some(task) = shared.live.take() {
+                task.abort();
+            }
+        }
+        let back = s49_store(&shared, s49_at(14, 25));
+        shared.backfilled(back).unwrap();
+        assert_eq!(s49_times(&shared), ["14:25"]);
     }
     /// A source that brings nothing new (offline, silent, no network)
     /// keeps its stale frames: a replay of a catalogued frame is not the

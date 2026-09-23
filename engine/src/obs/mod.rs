@@ -14,6 +14,7 @@
 pub mod dmi;
 pub mod fmi;
 pub mod frost;
+pub mod grid;
 pub mod smhi;
 
 use chrono::{DateTime, SecondsFormat, Utc};

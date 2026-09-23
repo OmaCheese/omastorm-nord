@@ -47,8 +47,8 @@ window.
   arrives, so the loop never jumps from this morning to now; offline, they
   stay.
 - **Weather layers.** Temperature and wind from about 700 weather stations in
-  Sweden, Norway, Finland and Denmark, the MET Nordic 1 km analysis under
-  them, and lightning strikes from FMI's NORDLIS network with a fading
+  Sweden, Norway, Finland and Denmark (Norway's need a free Frost client ID),
+  MET Norway's hourly MET Nordic analysis under them, and lightning strikes from FMI's NORDLIS network with a fading
   30-minute trail. All off until you switch them on in LAYERS.
 - **Loading you can see.** A cold load shows its steps and one overall
   percentage; a stuck load or layer has one Reset.

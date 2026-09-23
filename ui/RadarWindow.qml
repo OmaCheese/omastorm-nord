@@ -942,7 +942,8 @@ Item {
                         LabelText {
                             id: productText
                             Layout.fillWidth: true
-                            Layout.minimumWidth: 20
+                            // S44 review SF5: the credit gives way first.
+                            Layout.minimumWidth: Math.min(120, implicitWidth)
                             horizontalAlignment: Text.AlignRight
                             // An angle only for one scan angle (REF, S20); a
                             // product built from several has none to show.
@@ -968,10 +969,17 @@ Item {
                         }
                         // The source's credit, verbatim (SMHI, MET Norway, FMI, DMI, OPERA).
                         LabelText {
-                            // S44: the strikes' credit beside the frame's.
-                            text: app.attribution + (app.store.layers.lightning && engine.lightning && engine.lightning.attribution
+                            // S44: the strikes' credit beside the frame's
+                            // (compact: in the lightning key on the map). It
+                            // shrinks, eliding, before the product name does
+                            // (review SF5).
+                            text: app.attribution + (!win.compact && app.store.layers.lightning && engine.lightning && engine.lightning.attribution
                                 ? (app.attribution ? " · " : "") + engine.lightning.attribution : "")
                             visible: text !== ""
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: implicitWidth
+                            Layout.minimumWidth: Math.min(40, implicitWidth)
                             font.letterSpacing: 1; opacity: .55
                         }
                     }
@@ -1085,6 +1093,7 @@ Item {
                         && (!app.newestComplete || !app.scan || app.frameIndex >= app.frames.length - 1
                             || app.scan.id === app.newestComplete.id)
                     clockMs: Number(Quickshell.env("OMASTORM_LIGHTNING_CLOCK_MS") || 0)
+                    creditInKey: win.compact
                 }
                 // S42: the weather stations over the radar.
                 ObsLayer {

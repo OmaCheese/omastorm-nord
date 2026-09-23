@@ -58,15 +58,23 @@ Item {
     property var mys: null
     property var clouds: null       // Uint8Array, 1 = in-cloud
     property int count: 0
-    property string loadedPath: ""
+    // Review SF4: two files, `path` (the whole ring, rewritten at most every
+    // 5 minutes) and `recent` (from `recentFrom` on, every minute); drawn
+    // merged: `path`'s strikes before recentFrom, then all of `recent`.
     readonly property string path: on && message && typeof message.path === "string" ? message.path : ""
-    function parse(buffer) {
-        times = null; mxs = null; mys = null; clouds = null; count = 0;
-        if (!buffer || !buffer.byteLength || buffer.byteLength < 16) return;
+    readonly property string recentPath: on && message && typeof message.recent === "string" ? message.recent : ""
+    readonly property real recentFrom: {
+        var t = message && message.recentFrom ? Date.parse(message.recentFrom) : NaN;
+        return isFinite(t) ? t : -Infinity;
+    }
+    property var full: null
+    property var recent: null
+    function decode(buffer) {
+        if (!buffer || !buffer.byteLength || buffer.byteLength < 16) return null;
         var view = new DataView(buffer);
-        if (view.getUint8(0) !== 0x4f || view.getUint8(1) !== 0x53 || view.getUint8(2) !== 0x4c || view.getUint8(3) !== 0x31) return;
+        if (view.getUint8(0) !== 0x4f || view.getUint8(1) !== 0x53 || view.getUint8(2) !== 0x4c || view.getUint8(3) !== 0x31) return null;
         var n = view.getUint32(4, true);
-        if (buffer.byteLength !== 16 + 16 * n) return;
+        if (buffer.byteLength !== 16 + 16 * n) return null;
         var base = view.getFloat64(8, true);
         var t = new Float64Array(n), x = new Float64Array(n), y = new Float64Array(n), c = new Uint8Array(n);
         for (var i = 0, o = 16; i < n; i++, o += 16) {
@@ -77,20 +85,34 @@ Item {
             y[i] = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
             c[i] = view.getUint8(o + 14) & 1;
         }
+        return { t: t, x: x, y: y, c: c, n: n };
+    }
+    /// The drawn arrays from the two files.
+    function merge() {
+        var f = path !== "" ? full : null, r = recentPath !== "" ? recent : null;
+        var keep = 0;
+        if (f) { keep = f.n; if (r) while (keep > 0 && f.t[keep - 1] >= recentFrom) keep--; }
+        var rn = r ? r.n : 0, n = keep + rn;
+        var t = new Float64Array(n), x = new Float64Array(n), y = new Float64Array(n), c = new Uint8Array(n);
+        if (keep) { t.set(f.t.subarray(0, keep)); x.set(f.x.subarray(0, keep)); y.set(f.y.subarray(0, keep)); c.set(f.c.subarray(0, keep)); }
+        if (rn) { t.set(r.t, keep); x.set(r.x, keep); y.set(r.y, keep); c.set(r.c, keep); }
         times = t; mxs = x; mys = y; clouds = c; count = n;
+        canvas.requestPaint();
     }
-    onPathChanged: {
-        if (path === "") { parse(null); loadedPath = ""; canvas.requestPaint(); }
-    }
+    onPathChanged: if (path === "") { full = null; merge(); }
+    onRecentPathChanged: if (recentPath === "") { recent = null; merge(); }
+    onRecentFromChanged: merge()
     FileView {
-        id: file
+        id: fullFile
         path: root.path !== "" ? root.runtime + root.path : ""
         printErrors: false
-        onLoaded: {
-            root.parse(file.data());
-            root.loadedPath = root.path;
-            canvas.requestPaint();
-        }
+        onLoaded: { root.full = root.decode(fullFile.data()); root.merge(); }
+    }
+    FileView {
+        id: recentFile
+        path: root.recentPath !== "" ? root.runtime + root.recentPath : ""
+        printErrors: false
+        onLoaded: { root.recent = root.decode(recentFile.data()); root.merge(); }
     }
     /// The first index with time > `ms` (times sorted).
     function upper(ms) {
@@ -217,6 +239,8 @@ Item {
     /// The key's words: honest about what NORDLIS sees.
     readonly property string credit: message && message.attribution ? message.attribution : "FMI NORDLIS, CC BY 4.0"
     property bool showKey: true
+    /// The credit in the key (the window's compact header has no room).
+    property bool creditInKey: false
     /// Where the key sits: top left, below the map's north mark.
     property real keyTop: 34
     Rectangle {
@@ -292,7 +316,7 @@ Item {
                 }
             }
             Text {
-                text: Math.round(root.trailMs / 60000) + " min"
+                text: Math.round(root.trailMs / 60000) + " min" + (root.creditInKey ? " · " + root.credit : "")
                 color: root.theme ? root.theme.foreground : "#a9b1d6"
                 font.family: root.theme ? root.theme.font : "monospace"
                 font.pixelSize: 9

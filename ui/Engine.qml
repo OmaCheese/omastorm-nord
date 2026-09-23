@@ -153,8 +153,10 @@ QtObject {
     /// ask the engine to load the current choices afresh. The station, the
     /// product, the layers and the view stay as they are.
     function resetAll() {
-        if (incompatible) return;
+        // Review S2: one at a time (Shift+R autorepeat reconnected per key).
+        if (incompatible || resetting) return;
         resetting = true;
+        resetTimeout.restart();
         state = null;
         obs = null;
         grid = null;
@@ -167,10 +169,24 @@ QtObject {
         error = "";
         layersSent = false;
         layersLine = "";
-        var previous = socket;
+        // Review S1: the old connection stays open until the new one's
+        // hello, so the engine never sees this client gone (a composite's
+        // product would go back to the composite).
+        if (retiring) retiring.destroy();
+        retiring = socket;
         socket = socketFactory.createObject(engine);
-        if (previous) previous.destroy();
     }
+    property var retiring: null
+    /// End a Reset: `sent` when the new connection's hello came and the
+    /// `reset` went; otherwise (no hello within 5 s, or the new connection
+    /// failed) the engine is down, and it says so.
+    function endReset(sent) {
+        resetting = false;
+        resetTimeout.stop();
+        if (retiring) { retiring.destroy(); retiring = null; }
+        if (!sent && !state && !incompatible) error = disconnectedText;
+    }
+    property Timer resetTimeout: Timer { interval: 5000; onTriggered: engine.endReset(false) }
     /// Places answering this client's `search_places`; a reply, not state.
     signal placesReady(var message)
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-se/"
@@ -716,8 +732,8 @@ QtObject {
                 // S47: a Reset asks the engine before the layers go again,
                 // so they come back fetched afresh.
                 if (resetting) {
-                    resetting = false;
                     socket.write(JSON.stringify({type: "reset"}) + "\n");
+                    endReset(true);
                     resetDone();
                 }
                 sendLayers();
@@ -786,12 +802,15 @@ QtObject {
     property var socket: socketFactory.createObject(engine)
     property Component socketFactory: Component {
         Socket {
+            id: sock
             path: engine.runtime + "engine.sock"
             connected: true
-            parser: SplitParser { onRead: data => engine.receive(data) }
+            // S47: a connection a Reset replaced (kept open until the new
+            // one's hello, review S1) says nothing and is not listened to.
+            parser: SplitParser { onRead: data => { if (engine.socket === sock) engine.receive(data); } }
             onConnectedChanged: {
-                // S47: the connection a Reset replaced says nothing.
-                if (!connected && !engine.incompatible && !engine.resetting) {
+                if (engine.socket !== sock) return;
+                if (!connected && !engine.incompatible) {
                     engine.state = null;
                     engine.obs = null;
                     engine.grid = null;
@@ -800,7 +819,7 @@ QtObject {
                 }
             }
             onError: {
-                if (!engine.incompatible) engine.error = engine.unavailableText;
+                if (engine.socket === sock && !engine.incompatible) engine.error = engine.unavailableText;
             }
         }
     }
@@ -811,6 +830,9 @@ QtObject {
         // A failed initial connect leaves Quickshell's underlying socket
         // allocated; toggling connected cannot retry it. Replace the object.
         onTriggered: {
+            // S47 review S2: a Reset whose new connection did not come up
+            // is over (the engine is down): no stale `reset` later.
+            if (engine.resetting) engine.endReset(false);
             var previous = engine.socket;
             engine.socket = engine.socketFactory.createObject(engine);
             previous.destroy();

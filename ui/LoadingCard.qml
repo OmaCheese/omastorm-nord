@@ -99,7 +99,7 @@ Rectangle {
                     text: (modelData.state === "loading" ? "● " : modelData.state === "error" ? "✗ " : "✓ ") + modelData.text
                     elide: Text.ElideRight
                     font.family: card.theme.font
-                    font.pixelSize: card.compact ? 10 : 11
+                    font.pixelSize: card.compact ? card.theme.size.small : card.theme.size.caption
                     color: modelData.state === "loading" ? card.theme.accent : modelData.state === "error" && card.theme.red ? card.theme.red : card.theme.foreground
                     opacity: modelData.state === "ok" ? 0.7 : 1
                 }

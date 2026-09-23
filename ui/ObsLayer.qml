@@ -116,7 +116,7 @@ Item {
     /// Review S5: the room a number takes past an arrow's head, for the
     /// thinning cell: the 95th percentile label's real width ("10 (15)" is
     /// about 40 px), measured with the label's own font.
-    TextMetrics { id: numberMetrics; font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"; font.pixelSize: stationLayer.compact ? 9 : 10; font.bold: true }
+    TextMetrics { id: numberMetrics; font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"; font.pixelSize: stationLayer.sizes.small; font.bold: true }
     function textWidth(t) { numberMetrics.text = t; return numberMetrics.advanceWidth; }
     function numberRoomFor(samples) {
         if (!wind || !samples.length) return 0;
@@ -319,7 +319,7 @@ Item {
                 style: Text.Outline
                 styleColor: stationLayer.arrowHalo
                 font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
-                font.pixelSize: stationLayer.compact ? 9 : 10
+                font.pixelSize: stationLayer.sizes.small
                 font.bold: true
                 opacity: mark.s.grid && stationLayer.stationsOn ? .6 : 1
             }
@@ -550,7 +550,7 @@ Item {
                     model: stationLayer.bands.length
                     Column {
                         required property int index
-                        width: 26
+                        width: Math.round(26 * Math.max(1, stationLayer.sizes.k))
                         spacing: 1
                         Item {
                             width: parent.width
@@ -570,7 +570,7 @@ Item {
                             text: stationLayer.bandName(index)
                             color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
                             font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
-                            font.pixelSize: 8
+                            font.pixelSize: stationLayer.sizes.small
                             opacity: .8
                         }
                     }
@@ -580,7 +580,7 @@ Item {
                     anchors.bottom: parent.bottom
                     color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
                     font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
-                    font.pixelSize: 8
+                    font.pixelSize: stationLayer.sizes.small
                     opacity: .8
                 }
             }

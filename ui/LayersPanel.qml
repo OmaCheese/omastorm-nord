@@ -277,7 +277,7 @@ Item {
                 readonly property bool hot: resetArea.containsMouse || panel.cursor === panel.resetRow
                 readonly property color accent: panel.theme ? panel.theme.accent : "#7aa2f7"
                 Layout.fillWidth: true
-                implicitHeight: 36
+                implicitHeight: Math.round(36 * Math.max(1, panel.sizes.k))
                 color: hot ? Qt.alpha(panel.theme ? panel.theme.foreground : "#a9b1d6", .08) : "transparent"
                 RowLayout {
                     anchors.fill: parent
@@ -288,9 +288,9 @@ Item {
                         spacing: 0
                         Layout.fillWidth: true
                         Word { text: "↻ RESET"; color: resetRowItem.hot ? resetRowItem.accent : (panel.theme ? panel.theme.foreground : "#a9b1d6"); Layout.fillWidth: true }
-                        Word { text: "reload radar and layers · shift+r"; font.pixelSize: 9; opacity: .55; Layout.fillWidth: true }
+                        Word { text: "reload radar and layers · shift+r"; font.pixelSize: panel.sizes.small; opacity: .55; Layout.fillWidth: true }
                     }
-                    Word { text: "r"; font.pixelSize: 10; opacity: .45 }
+                    Word { text: "r"; font.pixelSize: panel.sizes.small; opacity: .45 }
                 }
                 MouseArea {
                     id: resetArea

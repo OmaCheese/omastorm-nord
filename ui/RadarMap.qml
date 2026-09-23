@@ -796,6 +796,26 @@ Item {
         smooth: false
         mipmap: false
     }
+    // S43: a Web Mercator image under the radar, over the basemap: the MET
+    // Nordic temperature field, {source, bounds: [west, south, east, north]}
+    // or null. Columns are linear in longitude and rows in Mercator y, so
+    // the picture is placed by its corners and scaled with the map.
+    property var underlay: null
+    property real underlayOpacity: .5
+    Image {
+        id: underlayImage
+        readonly property var b: map.underlay && map.underlay.bounds ? map.underlay.bounds : [0, 0, 0, 0]
+        visible: !!map.underlay && status === Image.Ready
+        source: map.underlay ? map.underlay.source : ""
+        x: map.sx(map.mercatorX(b[0]))
+        y: map.sy(map.mercatorY(b[3]))
+        width: (map.mercatorX(b[2]) - map.mercatorX(b[0])) * map.worldPixels
+        height: (map.mercatorY(b[1]) - map.mercatorY(b[3])) * map.worldPixels
+        opacity: map.underlayOpacity
+        asynchronous: true
+        smooth: true
+        mipmap: true
+    }
     ShaderEffect {
         id: radarEffect
         visible: map.drawable

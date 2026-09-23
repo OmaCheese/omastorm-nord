@@ -12,10 +12,22 @@ import QtQuick
 //
 // It is an overlay the size of the map (`map` is a RadarMap): the map's own
 // mouse handling stays underneath; hover is a passive HoverHandler.
+//
+// S43: `source` stations, grid or both. From the MET Nordic grid, wind is
+// the same arrows on the grid's points (thinned with the stations, which
+// win their cells, so with both the grid fills the gaps between stations
+// and draws under them, fainter), and temperature is the field under the
+// radar: `underlay`, which the map draws (RadarMap.underlay).
 Item {
     id: stationLayer
     property var map
     property var obs: null
+    /// S43: the engine's `obs` with source grid, and where it comes from.
+    property var grid: null
+    property string source: "stations"
+    property string runtime: ""
+    readonly property bool stationsOn: source !== "grid"
+    readonly property bool gridOn: source === "grid" || source === "both"
     property bool temp: false
     property bool wind: false
     property var theme
@@ -25,7 +37,11 @@ Item {
     /// Room kept free at the bottom right for the map credit.
     property real creditHeight: 30
     readonly property bool light: !!(theme && theme.light)
-    readonly property var stations: obs && Array.isArray(obs.stations) ? obs.stations : []
+    readonly property var stations: stationsOn && obs && Array.isArray(obs.stations) ? obs.stations : []
+    readonly property var gridPoints: gridOn && wind && grid && grid.wind && Array.isArray(grid.wind.points) ? grid.wind.points : []
+    /// The grid's temperature for the map to draw under the radar, or null.
+    readonly property var underlay: temp && gridOn && grid && grid.temperature && runtime
+        ? { source: "file://" + runtime + grid.temperature.texture, bounds: grid.temperature.bounds } : null
     readonly property bool on: temp || wind
     visible: on
 
@@ -139,7 +155,7 @@ Item {
     function useful(s) { return (temp && hasTemp(s)) || (wind && hasWind(s)); }
     function rethin() {
         if (!map || !on) { if (shown.length) shown = []; return; }
-        var world = map.worldPixels, grid = {}, out = [];
+        var world = map.worldPixels, cells = {}, out = [];
         thinnedAt = world;
         thinCount++;
         var list = stations.filter(useful).map(s => ({
@@ -148,17 +164,43 @@ Item {
         }));
         var cell = cellFor(list);
         list.sort((a, b) => a.rank - b.rank);
+        function clearAt(x, y) {
+            var gx = Math.floor(x / cell), gy = Math.floor(y / cell);
+            for (var dx = -1; dx <= 1; dx++)
+                for (var dy = -1; dy <= 1; dy++)
+                    for (var q of cells[(gx + dx) + ":" + (gy + dy)] || [])
+                        if (Math.hypot(q.x - x, q.y - y) < cell) return false;
+            return true;
+        }
         for (var p of list) {
             var x = p.mx * world, y = p.my * world;
-            var gx = Math.floor(x / cell), gy = Math.floor(y / cell), clear = true;
-            for (var dx = -1; dx <= 1 && clear; dx++)
-                for (var dy = -1; dy <= 1 && clear; dy++)
-                    for (var q of grid[(gx + dx) + ":" + (gy + dy)] || [])
-                        if (Math.hypot(q.x - x, q.y - y) < cell) { clear = false; break; }
-            if (!clear) continue;
-            var key = gx + ":" + gy;
-            (grid[key] = grid[key] || []).push({x: x, y: y});
+            if (!clearAt(x, y)) continue;
+            var key = Math.floor(x / cell) + ":" + Math.floor(y / cell);
+            (cells[key] = cells[key] || []).push({x: x, y: y});
             out.push(p);
+        }
+        // S43: the grid's arrows on a lattice, every k-th row and column so
+        // they sit an arrow apart; the lattice does not move with the map,
+        // so only the points near the view are made (again after a pan),
+        // and a point a station's cell already holds gives way to it.
+        var points = gridPoints;
+        if (points.length) {
+            var cols = grid.wind.cols > 0 ? grid.wind.cols : points.length;
+            var spacingPx = (grid.wind.spacingKm || 24) * world / (2 * Math.PI * 6371 * Math.cos(map.centerLat * Math.PI / 180));
+            var lengths = points.filter(g => g[2] !== null).map(g => arrowLength(g[2])).sort((a, b) => a - b);
+            var p95 = lengths.length ? lengths[Math.min(lengths.length - 1, Math.floor(lengths.length * .95))] : 14;
+            var k = Math.max(1, Math.ceil((p95 + 10) / Math.max(1, spacingPx)));
+            var margin = 80, gridTime = grid.time;
+            for (var i = 0; i < points.length; i++) {
+                var row = Math.floor(i / cols), col = i % cols, g = points[i];
+                if (row % k || col % k || g[2] === null || g[3] === null) continue;
+                var mx = map.mercatorX(g[1]), my = map.mercatorY(g[0]);
+                var sx = map.sx(mx), sy = map.sy(my);
+                if (sx < -margin || sy < -margin || sx > width + margin || sy > height + margin) continue;
+                if (!clearAt(mx * world, my * world)) continue;
+                out.push({ s: { id: "grid:" + i, grid: true, lat: g[0], lon: g[1], windMs: g[2], windDirDeg: g[3], time: gridTime },
+                           mx: mx, my: my });
+            }
         }
         shown = out;
     }
@@ -171,12 +213,19 @@ Item {
         if (map && thinnedAt > 0 && Math.abs(map.worldPixels / thinnedAt - 1) < .1) return;
         thin.restart();
     }
+    // S43: a pan brings other grid points into view (the stations stay).
+    function schedulePan() { if (gridPoints.length) thin.restart(); }
     onStationsChanged: rethin()
+    onGridPointsChanged: rethin()
+    onWidthChanged: schedulePan()
+    onHeightChanged: schedulePan()
     onTempChanged: rethin()
     onWindChanged: rethin()
     Connections {
         target: stationLayer.map
         function onWorldPixelsChanged() { stationLayer.scheduleThin(); }
+        function onViewCenterXChanged() { stationLayer.schedulePan(); }
+        function onViewCenterYChanged() { stationLayer.schedulePan(); }
     }
 
     Repeater {
@@ -194,6 +243,8 @@ Item {
             x: stationLayer.map ? stationLayer.map.sx(modelData.mx) : 0
             y: stationLayer.map ? stationLayer.map.sy(modelData.my) : 0
             visible: x > -60 && y > -60 && x < stationLayer.width + 60 && y < stationLayer.height + 60
+            // S43: stations over the grid's arrows.
+            z: s.grid ? 0 : 1
             // The arrow: its tail at the station, pointing downwind.
             Image {
                 readonly property int bandIndex: stationLayer.band(mark.s.windMs || 0)
@@ -203,6 +254,8 @@ Item {
                 x: -width / 2; y: -height + 1
                 transformOrigin: Item.Bottom
                 rotation: mark.drawWind ? (mark.s.windDirDeg + 180) % 360 : 0
+                // S43: with both, the grid's arrows step back.
+                opacity: mark.s.grid && stationLayer.stationsOn ? .55 : 1
                 smooth: true
             }
             // Calm: a small ring at the station.
@@ -271,7 +324,8 @@ Item {
     function one(v) { return (Math.round(v * 10) / 10).toFixed(1).replace("-", "−"); }
     readonly property var providerNames: ({smhi: "SMHI", fmi: "FMI", dmi: "DMI", frost: "MET Norway"})
     function tipLines(s) {
-        var lines = [s.name, (providerNames[s.provider] || s.provider) + " · " + hhmm(s.time)];
+        var lines = s.grid ? ["MET Nordic grid", "MET Norway analysis · " + hhmm(s.time)]
+            : [s.name, (providerNames[s.provider] || s.provider) + " · " + hhmm(s.time)];
         if (hasTemp(s)) lines.push(one(s.tempC) + " °C");
         if (hasWind(s)) lines.push(s.windMs < 0.5 ? "calm" : "wind " + one(s.windMs) + " m/s from " + compass(s.windDirDeg) + " (" + Math.round(s.windDirDeg) + "°)");
         else if (s.windMs !== null && s.windMs !== undefined) lines.push("wind " + one(s.windMs) + " m/s");
@@ -312,8 +366,16 @@ Item {
 
     // The legend: the temperature scale and the wind key, with the credit.
     readonly property var skipped: obs && Array.isArray(obs.providers) ? obs.providers.filter(p => p.status !== "ok") : []
-    readonly property string credit: (obs && obs.attribution ? obs.attribution : "")
-        + (skipped.some(p => p.id === "frost" && p.status === "skipped") ? " · Norway: no stations" : "")
+    readonly property string stationCredit: !stationsOn ? ""
+        : !stations.length ? "Stations loading…"
+        : (obs && obs.attribution ? obs.attribution : "")
+          + (skipped.some(p => p.id === "frost" && p.status === "skipped") ? " · Norway: no stations" : "")
+    // S43: the grid's credit with its hour.
+    readonly property string gridCredit: !gridOn ? ""
+        : !grid ? "Grid loading…"
+        : !grid.time ? "MET Nordic grid: " + (grid.provider && grid.provider.note ? grid.provider.note : "none")
+        : "MET Nordic analysis " + hhmm(grid.time) + ", " + grid.attribution
+    readonly property string credit: [stationCredit, gridCredit].filter(x => x).join("\n")
     Rectangle {
         id: legendBox
         anchors.right: parent.right
@@ -322,8 +384,9 @@ Item {
         anchors.bottomMargin: stationLayer.creditHeight
         width: legendColumn.implicitWidth + 16
         height: legendColumn.implicitHeight + 10
-        // Review N4: under the stations, so it never hides one.
-        z: -1
+        // Review N4: under the stations, so it never hides one; S43: over
+        // the grid's arrows, which cover the whole map.
+        z: .5
         color: Qt.alpha(stationLayer.theme ? stationLayer.theme.background : "#1a1b26", .8)
         Column {
             id: legendColumn
@@ -384,7 +447,7 @@ Item {
                 }
             }
             Text {
-                text: stationLayer.stations.length ? stationLayer.credit : "Stations loading…"
+                text: stationLayer.credit
                 color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
                 font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
                 font.pixelSize: 9

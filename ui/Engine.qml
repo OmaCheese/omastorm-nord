@@ -28,18 +28,29 @@ QtObject {
     // S42: the weather layers this connection shows, {temp, wind}; sent as
     // set_layers on every connect once a layer has been on (an older
     // engine just logs the command), and the engine's `obs` for them.
-    property var layers: ({temp: false, wind: false})
+    // S43: `source` (stations, grid or both) says where they come from;
+    // `grid` is the engine's `obs` with source grid (the MET Nordic
+    // analysis), held apart from the stations' `obs`.
+    property var layers: ({temp: false, wind: false, source: "stations"})
     property bool layersSent: false
     property string layersLine: ""
     property var obs: null
+    property var grid: null
+    readonly property string layerSource: layers && (layers.source === "grid" || layers.source === "both") ? layers.source : "stations"
+    readonly property bool stationsWanted: !!(layers && (layers.temp || layers.wind)) && layerSource !== "grid"
+    readonly property bool gridWanted: !!(layers && (layers.temp || layers.wind)) && layerSource !== "stations"
     onLayersChanged: sendLayers()
     function sendLayers() {
         var on = !!(layers && (layers.temp || layers.wind));
-        if (!on) obs = null;
+        if (!stationsWanted) obs = null;
+        if (!gridWanted) grid = null;
         if (!on && !layersSent) return;
         if (!socket || !socket.connected) return;
         // Review N7: the same layers again (a store reload) are not re-sent.
-        var line = JSON.stringify({type: "set_layers", temp: !!layers.temp, wind: !!layers.wind});
+        var command = {type: "set_layers", temp: !!layers.temp, wind: !!layers.wind};
+        // An S42 engine knows only stations; `source` goes out when it is not.
+        if (layerSource !== "stations") command.source = layerSource;
+        var line = JSON.stringify(command);
         if (layersSent && line === layersLine) return;
         layersSent = true;
         layersLine = line;
@@ -624,8 +635,12 @@ QtObject {
                 tileReady(message);
             } else if (message.type === "places") {
                 placesReady(message);
+            } else if (message.type === "obs" && message.source === "grid") {
+                if (message.temperature && !validTexturePath(message.temperature.texture))
+                    throw new Error("Invalid grid texture path: " + JSON.stringify(message.temperature.texture));
+                grid = gridWanted ? message : null;
             } else if (message.type === "obs") {
-                obs = layers && (layers.temp || layers.wind) && Array.isArray(message.stations) ? message : null;
+                obs = stationsWanted && Array.isArray(message.stations) ? message : null;
             }
         } catch (e) { state = null; error = "Invalid engine message: " + e; }
     }
@@ -643,6 +658,7 @@ QtObject {
                 if (!connected && !engine.incompatible) {
                     engine.state = null;
                     engine.obs = null;
+                    engine.grid = null;
                     engine.error = engine.disconnectedText;
                 }
             }

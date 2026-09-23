@@ -65,7 +65,7 @@ FocusScope {
         loopSite: card.session.loopSite
         onLoopRequested: site => card.session.loopSite = site
         // S42: the station layers follow the window's switches.
-        layers: ({temp: card.session.layers.temp, wind: card.session.layers.wind})
+        layers: ({temp: card.session.layers.temp, wind: card.session.layers.wind, source: card.session.layers.source})
     }
     // The reach the window's product menu set for each radar (S29).
     function step(delta) { connection.stepBy(delta); }
@@ -171,6 +171,8 @@ FocusScope {
                     }).filter(c => c !== null);
                 }
                 radarOpacity: !card.session.layers.radar ? 0 : card.condition === "unavailable" ? .6 : 1
+                // S43: the MET Nordic temperature field under the radar.
+                underlay: popoverObs.underlay
                 interactive: !card.session.needsLocation
                 onNavigated: (lat, lon, spanKm) => card.session.userNavigated(lat, lon, spanKm)
                 onTilesNeeded: (z, x0, y0, x1, y1) => connection.send({type: "tiles_needed", z: z, x0: x0, y0: y0, x1: x1, y1: y1})
@@ -186,9 +188,13 @@ FocusScope {
             Connections { target: connection; function onTileReady(tile) { map.tileReady(tile); } }
             // S42: the weather stations, small; only the credit of the legend.
             ObsLayer {
+                id: popoverObs
                 anchors.fill: parent
                 map: map
                 obs: connection.obs
+                grid: connection.grid
+                source: card.session.layers.source
+                runtime: connection.runtime
                 temp: card.session.layers.temp
                 wind: card.session.layers.wind
                 theme: card.theme

@@ -565,6 +565,16 @@ pub enum Command {
         lat: f64,
         lon: f64,
     },
+    /// The weather layers this client shows (S42), answered with `obs`
+    /// to the sender; `source` is `stations` (default) or, from S43, `grid`.
+    SetLayers {
+        #[serde(default)]
+        temp: bool,
+        #[serde(default)]
+        wind: bool,
+        #[serde(default)]
+        source: Option<String>,
+    },
     /// Anything newer than this build.
     #[serde(other)]
     Unsupported,

@@ -15,6 +15,8 @@ QtObject {
     property Remembered remembered: Remembered {}
     /// My mosaic's last set (S25), sent again to an engine that has none.
     property MosaicStore mosaicStore: MosaicStore {}
+    /// The weather layers' switches (S42), shared by the window and popover.
+    property LayersStore layers: LayersStore {}
     property bool mosaicResent: false
     property Theme theme: Theme {}
     property bool windowOpen: false

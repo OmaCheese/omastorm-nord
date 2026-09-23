@@ -7,7 +7,8 @@
 
 // Bindings are Qt key sequences separated by spaces: "h Left" binds both.
 // Shift+L is the lock because lowercase l pans; the digit keys pick a
-// treatment; `w` toggles the weak-return floor; `?` opens the sheet; Escape with nothing open closes the window.
+// treatment; `w` toggles the weak-return floor; Ctrl+L opens the layers
+// panel (S42: plain l pans and Shift+L locks); `?` opens the sheet; Escape with nothing open closes the window.
 var ACTIONS = [
     { id: "search", keys: "/ s" },
     { id: "nearest", keys: "n" },
@@ -29,6 +30,7 @@ var ACTIONS = [
     { id: "glyphs", keys: "2" },
     { id: "stipple", keys: "3" },
     { id: "weak", keys: "w" },
+    { id: "layers", keys: "Ctrl+L" },
     { id: "help", keys: "?" },
     { id: "close", keys: "Escape" }
 ];
@@ -48,6 +50,7 @@ var ROWS = [
      { label: "oldest / newest frame", actions: ["oldest", "newest"] },
      { label: "Pixels, Glyphs, Stipple", actions: ["pixels", "glyphs", "stipple"] },
      { label: "weak returns: hide / show", actions: ["weak"] },
+     { label: "layers: radar, temperature, wind", actions: ["layers"] },
      { label: "this sheet · esc closes", actions: ["help"] }]
 ];
 var TREATMENTS = ["PIXELS", "GLYPHS", "STIPPLE"];

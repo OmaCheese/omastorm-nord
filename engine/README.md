@@ -445,6 +445,38 @@ composite's own newest frame (its stable files kept published through
 `State::referenced_files`), which both clients draw in place of the
 placeholder.
 
+## Weather stations (S42)
+
+`src/obs/` reads the national weather-station networks for the weather
+layers (temperature and wind; `set_layers` and `obs` in
+[docs/protocol.md](../docs/protocol.md#weather-layers)): one module per
+provider, normalised to one station list, stations older than 90 minutes
+dropped. Nothing is fetched while no client has a layer on; each provider
+at most every 10 minutes, bodies cached in
+`$XDG_CACHE_HOME/omastorm-se/obs/`; every fetch writes an `Obs <provider>:
+requests=… bytes=… stations=…` line to `engine.log`.
+
+| Provider | Key | Requests per update |
+|---|---|---|
+| SMHI (`smhi.rs`) | none | 4 (one file per parameter), skipped until the next hour once this hour's reports are in |
+| FMI (`fmi.rs`) | none | 1 WFS multipoint coverage |
+| DMI (`dmi.rs`) | none (`opendataapi.dmi.dk` since DMI left `dmigw.govcloud.dk`) | 1, plus the station list once a day |
+| MET Norway Frost (`frost.rs`) | client ID | 2 (Frost caps URLs at 2048 characters, so ~250 WMO stations go in chunks of 124), plus the station list once a day |
+
+**Frost client ID.** Frost answers 401 without one. The engine reads it
+from the environment variable `FROST_CLIENT_ID`, else from a line
+`FROST_CLIENT_ID=<id>` in `$XDG_CONFIG_HOME/omastorm-se/frost.env`
+(default `~/.config/omastorm-se/frost.env`; keep it mode 600). It is sent
+as HTTP basic auth (the ID as user name, empty password); the client
+secret in that file is for OAuth2 and is not read. The ID never goes into
+a URL, the cache, a log line or a fixture. With neither, Norway is skipped
+and `obs.providers` says so (`status: "skipped"`). A service that starts
+the engine (the web instance's `omastorm-web` unit) needs the variable or
+the file visible to it.
+
+`OMASTORM_OBS_BASE` sends every provider's request to another scheme and
+host (tests point it at a closed port). Fixtures: `data/fixtures/obs/`.
+
 ## Basemap
 
 `build.rs` converts Natural Earth lines to a compact polyline blob and embeds

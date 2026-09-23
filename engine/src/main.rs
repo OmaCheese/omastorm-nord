@@ -4,6 +4,7 @@ mod grid3d;
 mod loading;
 mod mosaic;
 mod netstats;
+mod obs;
 mod odim;
 mod osm;
 mod products;
@@ -1624,6 +1625,7 @@ impl Shared {
             | Command::SearchPlaces { .. }
             | Command::SetSection { .. }
             | Command::Profile { .. }
+            | Command::SetLayers { .. }
             | Command::Unsupported => {
                 return None;
             }
@@ -2296,6 +2298,14 @@ fn receive(
             let mut shared = shared.lock().unwrap();
             return shared.sections.ask(client, reply.clone(), lat, lon);
         }
+        // S42: layers are per client and answered with `obs` (obs.rs).
+        Ok(Command::SetLayers { temp, wind, source }) => match source.as_deref() {
+            None | Some("stations") => {
+                return obs::HUB.set(client, obs::Layers { temp, wind }, reply);
+            }
+            Some("grid") => "set_layers source grid is not built yet (S43).".into(),
+            Some(_) => "set_layers source must be stations or grid.".into(),
+        },
         Ok(Command::Profile { .. }) => {
             "profile needs lat in [-90, 90] and lon in [-180, 180].".into()
         }
@@ -2369,6 +2379,7 @@ fn client(
         {
             let mut shared = shared.lock().unwrap();
             shared.clients.retain(|(client_id, _)| *client_id != id);
+            obs::HUB.remove(id);
             // S24c: a section goes with the client that set it.
             let Shared {
                 sections, state, ..
@@ -2679,6 +2690,8 @@ fn serve(dir: PathBuf) -> io::Result<()> {
     runtime.spawn(player(shared.clone(), wake));
     runtime.spawn(sections(shared.clone()));
     runtime.spawn(netstats::report(netstats::period()));
+    // S42: the weather layers' fetcher, idle until a client wants one.
+    runtime.spawn(obs::run());
     shared.lock().unwrap().keep_warm();
     let cleanup_shared = shared.clone();
     runtime.spawn(async move {

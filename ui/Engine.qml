@@ -25,6 +25,26 @@ QtObject {
     property bool incompatible: false
     /// One tile answering this client's `tiles_needed`; a reply, not state.
     signal tileReady(var tile)
+    // S42: the weather layers this connection shows, {temp, wind}; sent as
+    // set_layers on every connect once a layer has been on (an older
+    // engine just logs the command), and the engine's `obs` for them.
+    property var layers: ({temp: false, wind: false})
+    property bool layersSent: false
+    property string layersLine: ""
+    property var obs: null
+    onLayersChanged: sendLayers()
+    function sendLayers() {
+        var on = !!(layers && (layers.temp || layers.wind));
+        if (!on) obs = null;
+        if (!on && !layersSent) return;
+        if (!socket || !socket.connected) return;
+        // Review N7: the same layers again (a store reload) are not re-sent.
+        var line = JSON.stringify({type: "set_layers", temp: !!layers.temp, wind: !!layers.wind});
+        if (layersSent && line === layersLine) return;
+        layersSent = true;
+        layersLine = line;
+        socket.write(line + "\n");
+    }
     /// Places answering this client's `search_places`; a reply, not state.
     signal placesReady(var message)
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-se/"
@@ -562,6 +582,8 @@ QtObject {
                 referenceSites = message.referenceSites || [];
                 products = message.products || [];
                 mosaic = message.mosaic && Array.isArray(message.mosaic.rules) ? message.mosaic : null;
+                layersSent = false;
+                sendLayers();
             }
             else if (message.type === "state") {
                 var frame = message.frame;
@@ -602,6 +624,8 @@ QtObject {
                 tileReady(message);
             } else if (message.type === "places") {
                 placesReady(message);
+            } else if (message.type === "obs") {
+                obs = layers && (layers.temp || layers.wind) && Array.isArray(message.stations) ? message : null;
             }
         } catch (e) { state = null; error = "Invalid engine message: " + e; }
     }
@@ -618,6 +642,7 @@ QtObject {
             onConnectedChanged: {
                 if (!connected && !engine.incompatible) {
                     engine.state = null;
+                    engine.obs = null;
                     engine.error = engine.disconnectedText;
                 }
             }

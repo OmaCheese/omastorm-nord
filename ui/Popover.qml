@@ -64,6 +64,8 @@ FocusScope {
         loopShared: true
         loopSite: card.session.loopSite
         onLoopRequested: site => card.session.loopSite = site
+        // S42: the station layers follow the window's switches.
+        layers: ({temp: card.session.layers.temp, wind: card.session.layers.wind})
     }
     // The reach the window's product menu set for each radar (S29).
     function step(delta) { connection.stepBy(delta); }
@@ -168,7 +170,7 @@ FocusScope {
                         return { lat: r.lat, lon: r.lon, km: full };
                     }).filter(c => c !== null);
                 }
-                radarOpacity: card.condition === "unavailable" ? .6 : 1
+                radarOpacity: !card.session.layers.radar ? 0 : card.condition === "unavailable" ? .6 : 1
                 interactive: !card.session.needsLocation
                 onNavigated: (lat, lon, spanKm) => card.session.userNavigated(lat, lon, spanKm)
                 onTilesNeeded: (z, x0, y0, x1, y1) => connection.send({type: "tiles_needed", z: z, x0: x0, y0: y0, x1: x1, y1: y1})
@@ -182,6 +184,18 @@ FocusScope {
                 Component.onCompleted: applyView()
             }
             Connections { target: connection; function onTileReady(tile) { map.tileReady(tile); } }
+            // S42: the weather stations, small; only the credit of the legend.
+            ObsLayer {
+                anchors.fill: parent
+                map: map
+                obs: connection.obs
+                temp: card.session.layers.temp
+                wind: card.session.layers.wind
+                theme: card.theme
+                compact: true
+                showLegend: false
+                creditHeight: 32
+            }
             Connections {
                 target: card.session
                 function onViewChanged() { map.applyView(); }

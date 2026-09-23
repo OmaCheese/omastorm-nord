@@ -12,6 +12,7 @@ Remembered 1.0 Remembered.qml
 KeysSheet 1.0 KeysSheet.qml
 LayersPanel 1.0 LayersPanel.qml
 LayersStore 1.0 LayersStore.qml
+LightningLayer 1.0 LightningLayer.qml
 Panel 1.0 Panel.qml
 Popover 1.0 Popover.qml
 RadarBar 1.0 RadarBar.qml

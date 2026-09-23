@@ -6,9 +6,10 @@ import Quickshell.Io
 // across restarts in layers.json beside state.json (as mosaic.json is).
 // Radar is on and the station layers off until someone says otherwise.
 // S43: `source` says where temperature and wind come from: the stations,
-// the MET Nordic grid, or both (stations drawn over the grid).
-// OMASTORM_LAYERS ("radar,temp,wind", any subset, "none" for none; plus
-// "grid" or "both" for the source) outranks
+// the MET Nordic grid, or both (stations drawn over the grid). S44 adds
+// Lightning (off by default).
+// OMASTORM_LAYERS ("radar,temp,wind,lightning", any subset, "none" for none;
+// plus "grid" or "both" for the source) outranks
 // the file for checks and captures and is never written back; OMASTORM_STATE
 // puts the file beside that one; OMASTORM_CONFIG without OMASTORM_STATE keeps
 // it in memory.
@@ -27,6 +28,8 @@ QtObject {
     property bool wind: false
     property string source: "stations"
     readonly property var sources: ["stations", "grid", "both"]
+    /// S44: NORDLIS lightning strikes, off by default (the human's call).
+    property bool lightning: false
     readonly property bool any: temp || wind
     property string error: ""
     // Review N7: the file this store just wrote reads back unchanged.
@@ -40,10 +43,11 @@ QtObject {
             temp = v.temp === true;
             wind = v.wind === true;
             source = sources.indexOf(v.source) >= 0 ? v.source : "stations";
+            lightning = v.lightning === true;
         } catch (e) { /* a bad file keeps the defaults */ }
     }
     function set(name, on) {
-        if (name !== "radar" && name !== "temp" && name !== "wind") return;
+        if (name !== "radar" && name !== "temp" && name !== "wind" && name !== "lightning") return;
         if (root[name] === on) return;
         root[name] = on;
         save();
@@ -61,7 +65,7 @@ QtObject {
     }
     function save() {
         if (!path) return;
-        var text = JSON.stringify({ radar: radar, temp: temp, wind: wind, source: source });
+        var text = JSON.stringify({ radar: radar, temp: temp, wind: wind, source: source, lightning: lightning });
         written = text;
         var slash = path.lastIndexOf("/");
         var dir = slash >= 0 ? path.slice(0, slash) : ".";
@@ -88,5 +92,6 @@ QtObject {
         temp = parts.indexOf("temp") >= 0;
         wind = parts.indexOf("wind") >= 0;
         source = parts.indexOf("both") >= 0 ? "both" : parts.indexOf("grid") >= 0 ? "grid" : "stations";
+        lightning = parts.indexOf("lightning") >= 0;
     }
 }

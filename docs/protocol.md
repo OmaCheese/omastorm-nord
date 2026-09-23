@@ -346,6 +346,8 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 - `set_layers` (S42) turns the weather layers on or off for its sender,
   from the stations, the MET Nordic grid (S43) or both (`source`);
   answered with `obs`. See [Weather layers](#weather-layers).
+  S44 adds `lightning` to it, answered with `lightning`. See
+  [Lightning](#lightning).
 - `set_mosaic` (S25) chooses My mosaic's radars and the combine rule (S37
   took the per-radar reach out). The rules are in [My mosaic](#my-mosaic).
 - `set_section` (S24c) sets, moves or (with neither point) clears the
@@ -1744,6 +1746,131 @@ nothing. Every fetch writes one `Grid metnordic` line to `engine.log`.
 | Cadence, latency | hourly; the HH:00 analysis appears about HH:15 |
 | Size | about 2 MB per hour as fetched; the PNG about 0.5 MB |
 
+## Lightning
+
+S44 adds lightning strikes beside the radar: the located flashes of
+**NORDLIS**, the Nordic lightning network (Sweden, Norway, Finland and the
+Baltic states share its sensors), from the Finnish Meteorological
+Institute's open feed. Like the weather layers it is per client: a client
+turns it on with `set_layers`, and one that never does receives nothing
+new.
+
+```json
+{"type":"set_layers","temp":false,"wind":false,"lightning":true}
+```
+
+- `lightning` is an optional boolean in `set_layers`, `false` when absent,
+  independent of `temp`, `wind` and `source`. An engine older than S44
+  ignores the field (and sends no `lightning`). Off (the state of every
+  connection until it says otherwise) means the engine sends that client
+  no `lightning`, and while no client has it on the engine makes **no
+  lightning request** at all.
+- Turning it on is answered with `lightning` at once when the engine holds
+  strikes, otherwise after the first fetch; turning it off is not
+  answered.
+
+`hello` carries `lightning` (additive, always sent from S44) so a client
+can offer the switch only to an engine that has it:
+
+```json
+"lightning":{"source":"FMI NORDLIS","attribution":"FMI NORDLIS, CC BY 4.0","trailS":1800,"keepS":18000,"pollS":60}
+```
+
+- `trailS`: how long a strike stays drawn, fading from new to old (30
+  minutes). `keepS`: how far back the engine keeps strikes (5 hours, the
+  live loop's backfill). `pollS`: the shortest time between two fetches.
+
+```json
+{"type":"lightning","v":2,"status":"ok","path":"tex/lightning-3f9a1c2e5b7d9f01.bin",
+ "recent":"tex/lightning-9c0d4e5f6a7b8c9d.bin","recentFrom":"2026-07-05T11:15:00Z",
+ "from":"2026-07-05T07:00:00Z","to":"2026-07-05T12:00:00Z","count":7759,"cloudToGround":1473,
+ "newest":"2026-07-05T11:59:58Z","source":"FMI NORDLIS","attribution":"FMI NORDLIS, CC BY 4.0",
+ "trailS":1800,"replay":false}
+```
+
+- `path` names the strikes file (below) under the runtime directory, the
+  same `tex/<one segment>` rule as textures; `""` when `count` is 0. A new
+  set of strikes is a new name (the name is a hash of the contents), so a
+  client fetches a path once.
+- `recent` (additive, review SF4) names a second strikes file, rewritten
+  after every fetch: every held strike from `recentFrom` (45 minutes
+  before `to`) on; `""` when there is none. `path`, the whole ring, is
+  rewritten at most every 5 minutes (and at once when a fetch brings a
+  strike older than `recentFrom`, e.g. a gap re-fetched after a pause), so a
+  phone in a storm fetches a few tens of kB a minute, not the whole five
+  hours. A client merges the two: `path`'s strikes before `recentFrom`,
+  then all of `recent` (the same as merging by time and position, since
+  `recent` holds every strike from `recentFrom` on). A client that reads
+  only `path` still works; its newest strikes are then up to 5 minutes
+  late.
+- `from`–`to` is the time the files cover: `to` is the end of the last
+  successful fetch, `from` at most `keepS` before it. `count` strikes, of
+  which `cloudToGround` are cloud-to-ground (both files merged); `newest` is the newest strike's
+  time (`""` without one). A quiet window (0 strikes) is `ok`, not an
+  error.
+- `status` is `ok`, or `failed` when the last fetch failed; a failed one
+  keeps the previous `path`, `recent` and `to` and adds `note` (e.g. `"HTTP 503"`).
+  The engine then waits longer before the next try (1, 2, 4 … up to 15
+  minutes).
+- `replay` is `true` when the engine replays a stored storm instead of
+  fetching (below); `source` and `attribution` then name the stored file's
+  provider, e.g. `"SMHI lightning archive (replay)"` and
+  `"SMHI lightning, CC BY 4.0 (replay)"`.
+- `lightning` is sent to every client with it on whenever the file or
+  `status` changes, and once a minute while fetching, with `to`
+  moved on; a client redraws its fading trail on its own clock.
+
+**The strikes file** (`tex/lightning-<hash>.bin`), little-endian:
+
+| Bytes | Field |
+|---|---|
+| 0–3 | `OSL1` |
+| 4–7 | u32 strike count |
+| 8–15 | f64 base time, ms since the epoch (the first strike's) |
+| then 16 bytes per strike, oldest first: | |
+| +0 | u32 ms after the base time |
+| +4 | f32 latitude (°N; EPSG:4258, drawn as WGS 84) |
+| +8 | f32 longitude (°E) |
+| +12 | i16 peak current, kA (the sign is the polarity; negative is usual for ground flashes) |
+| +14 | u8 flags: bit 0 set = in-cloud, clear = cloud-to-ground |
+| +15 | u8 multiplicity (strokes in the flash; 0 or 1 for in-cloud pulses) |
+
+A busy hour (5 July 2026, 11–12Z: 7,759 strikes) is 124 kB; five hours of
+such a day about 0.6 MB, while its `recent` file is about 95 kB.
+
+**How a client draws it.** Each strike is a point, not a texture: in-cloud
+pulses small, cloud-to-ground bold (a cross), so the reliable part of the
+network stands out; about four in five NORDLIS pulses are in-cloud, and
+in-cloud detection is incomplete, so a client labels the layer as strikes
+of this network ("NORDLIS strikes"), not all lightning. With the newest
+frame shown live, strikes from the last `trailS` fade from new to old by
+their age now; while looping or at an older frame, the reference time is
+the frame's `scanTime` plus its 5 minutes, and the strikes of the
+`trailS` before it fade by their age then. The credit is `attribution`.
+
+**Fetching.** Only while at least one client has lightning on, at most
+once every `pollS` (60 s): one request to
+`https://opendata.fmi.fi/wfs` for the stored query
+`fmi::observations::lightning::multipointcoverage` over the Nordic box
+(`bbox=3,53,33,71.5`), `starttime` 15 minutes before the last fetch's
+end (late strikes arrive) or `keepS` back for the first, `endtime` now.
+The answer is GML (FMI offers no JSON): `positions` rows `lat lon
+unixtime`, tuples `multiplicity peak_current cloud_indicator
+ellipse_major`; repeated rows are dropped. FMI's limits are 600 requests
+per 5 minutes and 20,000 a day per address; two engines polling once a
+minute are 2,880. Each fetch writes a `Lightning` line to `engine.log`
+(`requests=1 bytes=… strikes=… new=…`), and the request is counted in the
+`Net other` line. Strikes are held in memory only.
+
+**Replay.** `OMASTORM_LIGHTNING_REPLAY=<file>` makes the engine replay a
+stored storm instead of fetching: an SMHI archive day file (`data.json`,
+UALF fields, optionally gzipped) or an FMI answer (`.xml`, optionally
+gzipped). The strikes are shifted so the file's newest one falls at
+`OMASTORM_LIGHTNING_REPLAY_END` (ISO 8601) or, without it, at the moment
+the engine starts; checks and captures use the vendored storm hour
+(`data/fixtures/lightning/smhi_lightning_20260705T11Z.json.gz`) so they
+work on a quiet day. No request is made in replay.
+
 ## Configuration
 
 `~/.config/omastorm-se/config.toml` and
@@ -1926,3 +2053,13 @@ Additive since (S31, still version 2):
   radar its poller reports silent.
 - A client older than S31 ignores `loading`; a client facing an older
   engine finds none and shows `connection.status` `loading` as before.
+
+Additive since (S44, still version 2):
+
+- `set_layers` accepts `lightning` (optional, default `false`); the engine
+  answers the clients that turned it on with `lightning` messages naming a
+  strikes file under `tex/` ([Lightning](#lightning)). `hello.lightning` is
+  new and always sent.
+- A client older than S44 never sends `lightning` and so receives nothing
+  new; a client facing an older engine finds no `hello.lightning` and
+  offers no switch.

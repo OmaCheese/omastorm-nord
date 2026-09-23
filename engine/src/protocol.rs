@@ -98,6 +98,8 @@ pub struct Hello {
     pub mosaic: crate::mosaic::Info,
     /// The shape of sections and profiles (S24c, additive).
     pub sections: crate::grid3d::Info,
+    /// Lightning strikes on offer (S44, additive).
+    pub lightning: crate::lightning::Info,
 }
 
 /// The launcher's view of a running daemon's hello. Only the fields needed to
@@ -574,6 +576,9 @@ pub enum Command {
         wind: bool,
         #[serde(default)]
         source: Option<String>,
+        /// Lightning strikes (S44), answered with `lightning`.
+        #[serde(default)]
+        lightning: bool,
     },
     /// Anything newer than this build.
     #[serde(other)]

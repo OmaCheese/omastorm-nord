@@ -65,7 +65,8 @@ FocusScope {
         loopSite: card.session.loopSite
         onLoopRequested: site => card.session.loopSite = site
         // S42: the station layers follow the window's switches.
-        layers: ({temp: card.session.layers.temp, wind: card.session.layers.wind, source: card.session.layers.source})
+        layers: ({temp: card.session.layers.temp, wind: card.session.layers.wind, source: card.session.layers.source,
+                  lightning: card.session.layers.lightning})
     }
     // The reach the window's product menu set for each radar (S29).
     function step(delta) { connection.stepBy(delta); }
@@ -186,6 +187,24 @@ FocusScope {
                 Component.onCompleted: applyView()
             }
             Connections { target: connection; function onTileReady(tile) { map.tileReady(tile); } }
+            // S44: lightning strikes, small, without the key.
+            LightningLayer {
+                anchors.fill: parent
+                map: map
+                message: connection.lightning
+                runtime: connection.runtime
+                on: card.session.layers.lightning
+                theme: card.theme
+                compact: true
+                showKey: false
+                frame: card.scan
+                live: {
+                    var st = card.state, tl = st && st.timeline ? st.timeline : [];
+                    if (connection.playing || !st || st.source !== "live") return false;
+                    var done = tl.filter(f => f.status === "complete");
+                    return !card.scan || !done.length || card.scan.id === done[done.length - 1].id || card.scan.id === tl[tl.length - 1].id;
+                }
+            }
             // S42: the weather stations, small; only the credit of the legend.
             ObsLayer {
                 id: popoverObs
@@ -375,6 +394,7 @@ FocusScope {
                 : connection.site && connection.site.attribution ? connection.site.attribution : ""
             text: (radarCredit ? radarCredit + " · " : "") + (map.osmOnScreen ? "© OpenStreetMap" : "Natural Earth")
                 + (connection.referenceSites.length ? " · other radars: EUMETNET" : "")
+                + (card.session.layers.lightning && connection.lightning && connection.lightning.attribution ? " · " + connection.lightning.attribution : "")
         }
     }
 }

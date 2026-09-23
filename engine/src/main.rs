@@ -1,6 +1,7 @@
 mod catalog;
 mod composite;
 mod grid3d;
+mod lightning;
 mod loading;
 mod mosaic;
 mod netstats;
@@ -146,6 +147,7 @@ fn hello() -> Hello {
         reference_sites: reference::sites(),
         mosaic: mosaic::info(),
         sections: grid3d::info(),
+        lightning: lightning::info(),
     }
 }
 fn fixture_frame() -> Frame {
@@ -2218,6 +2220,8 @@ fn cleanup(dir: &Path, shared: &Mutex<Shared>, retirement: &mut Retirement) -> i
         .collect();
     // S43: the grid's newest temperature texture, which no `state` names.
     referenced.extend(obs::grid::HUB.texture().map(|path| dir.join(path)));
+    // S44: the strikes files the newest line names, which no `state` names.
+    referenced.extend(lightning::HUB.paths().iter().map(|path| dir.join(path)));
     for path in retirement.sweep(present, &referenced, Instant::now()) {
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -2301,8 +2305,15 @@ fn receive(
             return shared.sections.ask(client, reply.clone(), lat, lon);
         }
         // S42: layers are per client and answered with `obs` (obs.rs); S43:
-        // from the stations, the MET Nordic grid (obs/grid.rs) or both.
-        Ok(Command::SetLayers { temp, wind, source }) => {
+        // from the stations, the MET Nordic grid (obs/grid.rs) or both; S44:
+        // `lightning` rides the same command, applied only once the command
+        // is valid (review NIT9: all or nothing).
+        Ok(Command::SetLayers {
+            temp,
+            wind,
+            source,
+            lightning,
+        }) => {
             let (stations, grid) = match source.as_deref() {
                 None | Some("stations") => (true, false),
                 Some("grid") => (false, true),
@@ -2312,6 +2323,7 @@ fn receive(
             if !stations && !grid {
                 "set_layers source must be stations, grid or both.".into()
             } else {
+                lightning::HUB.set(client, lightning, reply);
                 let off = obs::Layers::default();
                 let on = obs::Layers { temp, wind };
                 obs::HUB.set(client, if stations { on } else { off }, reply);
@@ -2393,6 +2405,7 @@ fn client(
             shared.clients.retain(|(client_id, _)| *client_id != id);
             obs::HUB.remove(id);
             obs::grid::HUB.remove(id);
+            lightning::HUB.remove(id);
             // S24c: a section goes with the client that set it.
             let Shared {
                 sections, state, ..
@@ -2707,6 +2720,8 @@ fn serve(dir: PathBuf) -> io::Result<()> {
     runtime.spawn(obs::run());
     // S43: the MET Nordic grid's, idem; its textures go under `tex/`.
     runtime.spawn(obs::grid::run(dir.clone()));
+    // S44: lightning's poller, idle until a client turns it on.
+    runtime.spawn(lightning::run(dir.clone()));
     shared.lock().unwrap().keep_warm();
     let cleanup_shared = shared.clone();
     runtime.spawn(async move {

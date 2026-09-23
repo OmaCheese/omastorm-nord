@@ -132,6 +132,7 @@ Item {
     /// Paints since start, for checks.
     property int paints: 0
     property int drawn: 0
+    property int paintMs: 0
 
     Canvas {
         id: canvas
@@ -144,6 +145,7 @@ Item {
         transformOrigin: Item.Center
         scale: root.paintedWorld > 0 && root.world > 0 ? root.world / root.paintedWorld : 1
         onPaint: {
+            var started = Date.now();
             var ctx = getContext("2d");
             ctx.reset();
             if (!root.on || !root.map || !root.count || root.world <= 0) {
@@ -207,6 +209,7 @@ Item {
             root.paintedY = cy;
             root.drawn = drawn;
             root.paints++;
+            root.paintMs = Date.now() - started;
         }
     }
 

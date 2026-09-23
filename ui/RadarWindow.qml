@@ -461,7 +461,7 @@ Item {
         function lightning(): string {
             var m = engine.lightning;
             return JSON.stringify({on: app.store.layers.lightning, status: m ? m.status : "", count: lightningLayer.count,
-                                   shown: lightningLayer.shownCounts, drawn: lightningLayer.drawn, paints: lightningLayer.paints,
+                                   shown: lightningLayer.shownCounts, drawn: lightningLayer.drawn, paints: lightningLayer.paints, paintMs: lightningLayer.paintMs,
                                    live: lightningLayer.live, ref: new Date(lightningLayer.refMs).toISOString(),
                                    replay: m ? m.replay : null, attribution: m ? m.attribution : "", hello: !!engine.lightningInfo,
                                    frames: app.frames.filter(f => f.status === "complete").length, frame: app.scan ? app.scan.scanTime : ""});

@@ -205,6 +205,13 @@ picker_run() {
   done
   v=$(pview)
   check48 "$tag keys End/PageUp/Home/PageDown/Down/Up keep the selection in view (last $v)" "$(jq '.selectedVisible and .selected > 0' <<< "$v")" "$v"
+  # Review SF2: a pointer resting over the list does not take the
+  # selection when the rows slide under it.
+  read -r lx ly < <(centre pickerList)
+  call input key Home; sleep .08
+  call input move "$lx" "$ly"; sleep .1
+  call input key End; sleep .2
+  check48 "$tag End with the pointer resting over the list selects the last row" "$(pview | jq --argjson n "$(call picker matches | jq length)" '.selected == $n - 1 and .selectedVisible')" "$(pview)"
   call input key Home; sleep .08
   check48 "$tag Home goes to the top" "$(pview | jq '.selected == 0 and .contentY == 0')" "$(pview)"
   call input key End; sleep .1

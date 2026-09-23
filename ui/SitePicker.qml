@@ -31,6 +31,8 @@ Item {
     // Whether the field holds the keyboard; closed, it must not.
     readonly property bool fieldFocused: field.activeFocus
     property int selected: 0
+    /// Where the pointer last moved over the rows, in picker coordinates.
+    property point hoverPoint: Qt.point(-1, -1)
     /// S48: the list, for checks (its scroll) and the wheel.
     readonly property Item listItem: list
     readonly property int rowHeight: Math.round(28 * Math.max(1, theme.size.k))
@@ -234,7 +236,16 @@ Item {
                         MouseArea {
                             anchors.fill: parent
                             hoverEnabled: true
-                            onPositionChanged: picker.selected = row.index
+                            // Review SF2: only a real pointer move selects. Qt
+                            // re-delivers hover when the rows slide under a
+                            // resting pointer (a key, the wheel, the bar);
+                            // that must not drag the selection along.
+                            onPositionChanged: mouse => {
+                                var p = mapToItem(picker, mouse.x, mouse.y);
+                                if (p.x === picker.hoverPoint.x && p.y === picker.hoverPoint.y) return;
+                                picker.hoverPoint = p;
+                                picker.selected = row.index;
+                            }
                             onClicked: { picker.selected = row.index; picker.accept(); }
                         }
                     }

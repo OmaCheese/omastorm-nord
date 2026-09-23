@@ -264,9 +264,6 @@ struct ObsLine<'a> {
     status: &'static str,
     /// S47: the providers that have answered, of all, while `loading`.
     percent: u32,
-    /// S47: seconds since the newest observation, absent with none.
-    #[serde(rename = "ageSeconds", skip_serializing_if = "Option::is_none")]
-    age_seconds: Option<i64>,
 }
 
 /// S47: the layer's status and percent from its providers' statuses.
@@ -325,7 +322,6 @@ pub fn line(lists: &[(ProviderInfo, Vec<Station>)], now: i64) -> String {
         attribution,
         status,
         percent,
-        age_seconds: (newest > 0).then(|| ((now - newest) / 1000).max(0)),
     };
     let mut text = serde_json::to_string(&message).expect("obs serializes");
     text.push('\n');
@@ -911,7 +907,9 @@ pub(crate) mod tests {
         // S47: the layer's own status, with the newest observation's age.
         assert_eq!(value["status"], "ok");
         assert_eq!(value["percent"], 100);
-        assert_eq!(value["ageSeconds"], 60);
+        // Review M1: no age in the line (it would change every tick and
+        // resend the whole list); `time` says how old the newest is.
+        assert!(value.get("ageSeconds").is_none());
         // Stale by the time the line is built: dropped from the list.
         let later = line(&lists, now + 2 * STALE_MS);
         let value: serde_json::Value = serde_json::from_str(&later).unwrap();
@@ -931,7 +929,6 @@ pub(crate) mod tests {
             (v["status"].as_str(), v["percent"].as_u64()),
             (Some("loading"), Some(0))
         );
-        assert!(v.get("ageSeconds").is_none(), "no station, no age");
         lists[0].0.status = "ok";
         lists[0].1.push(station(now - 600_000, Some(9.0)));
         lists[1].0.status = "failed";
@@ -982,6 +979,22 @@ pub(crate) mod tests {
         hub.reset();
         hub.set(1, temp, &tx);
         assert!(rx.try_recv().is_err());
+    }
+
+    /// Review M1: the fetcher rebuilds the line every tick; the same lists
+    /// 30 s later are the same line, delivered once.
+    #[test]
+    fn the_same_lists_a_tick_later_are_not_sent_again() {
+        let now = parse_iso("2026-09-23T10:12:44Z").unwrap();
+        let mut lists = blank_lists("ok", "");
+        lists[0].1.push(station(now - 600_000, Some(9.0)));
+        let hub = Hub::default();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        hub.set(1, Layers { temp: true, wind: false }, &tx);
+        hub.publish(line(&lists, now));
+        hub.publish(line(&lists, now + 30_000));
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err(), "one delivery for the same lists");
     }
 
     #[test]

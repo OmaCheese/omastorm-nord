@@ -1676,8 +1676,9 @@ others, and a client that never sends `set_layers` never receives `obs`
   answered with `status` `loading`, and `percent` the share of the four
   that have (0, 25, 50, 75); a client can say "Fetching weather stations
   (2 of 4 providers)". `percent` is 100 otherwise. A refresh of a list
-  that is already in is not `loading`. `ageSeconds` is the age of the
-  newest observation in the list, absent with none. A failed provider's
+  that is already in is not `loading`. The stations' line carries no age
+  (it would change every 30 s and send the whole list again): `time`, the
+  newest observation's, says how old it is. A failed provider's
   `note` is what went wrong (`dmi-obs.json: HTTP 503 Service
   Unavailable`); a client names it rather than drawing nothing silently.
 
@@ -1746,8 +1747,8 @@ one more `obs` line, `source` `grid`, with only the layers it has on:
   nor `wind`, and the note says why. S47: before the first grid since the
   engine started (or a `reset`) is in, a line with `provider.status`
   `loading` (note `loading`) says so at once.
-- `status`, `percent`, `ageSeconds` (S47, additive), as on the stations'
-  line: `status` `loading` (then `percent` 0) until a grid is in, `ok`
+- `status`, `percent`, `ageSeconds` (S47, additive): like the stations'
+  line (which has no `ageSeconds`), `status` `loading` (then `percent` 0) until a grid is in, `ok`
   with one to show, `error` with none; `ageSeconds` is the shown hour's
   age. A refresh to a newer hour is not announced as `loading`.
 - The line is sent to a client when it asks (S47: every time it asks),

@@ -1796,6 +1796,8 @@ the view are kept. The engine:
 - checks the current ring in the frame catalog and drops the rows whose
   frame no longer reads or whose texture files are gone or empty, so they
   are built again rather than named to clients that cannot load them;
+- stops playback (`state.playing` `false`, as a `select_site` does: the
+  timeline is rebuilt under it; a client presses play again);
 - opens the ring again (its newest frame shows at once) and starts the
   poller with the catalogued frames replayed, the load's tracker from 0:
   `state.loading` shows its first stage at 0 % even with a frame on

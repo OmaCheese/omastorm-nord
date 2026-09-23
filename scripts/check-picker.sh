@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The site picker (DESIGN.md, picker as built) in the real window, driven
 # through its IPC handler against the fixture daemon: the tiers and the
-# distance order, the four-row cut, the empty and the hopeless query, the
+# distance order, every match listed (S48: no row cut), the empty and the hopeless query, the
 # selection keys, and Enter selecting and locking the station for real. Run
 # through check.sh, whose scratch daemon it leaves on the chosen station; it
 # comes last there for that reason.
@@ -27,10 +27,10 @@ for _ in {1..50}; do [[ $(call matches) != '[]' ]] && break; sleep .1; done
 m=$(call matches)
 [[ $m == '["sweden",'* ]] || fail "Empty query did not list the composite first: $m"
 m=$(jq -c 'map(select(. != "sweden" and . != "nordic" and . != "mymosaic"))' <<< "$m")
-# My mosaic (S25) takes none of the four rows.
 [[ $m == '["vara","atvidaberg"'* || $m == '["vara","angelholm"'* ]] || fail "Empty query did not list the nearest stations after the composites: $m"
 # 44: SMHI's 12 radars, ORD's 29 (NO, FI, DK: S15), the national composite (protocol v2, S8), OPERA's Nordic one (S16) and My mosaic (S25). S36 took Spain and Iberia out.
 expect 'Empty query counts the whole table' '{"open":true,"query":"","selected":0,"total":44,"focused":true}' "$(call status)"
+expect 'Empty query lists the whole table (S48)' '44' "$(call matches | jq length)"
 call open vara
 expect 'ID prefix ranks first' '"vara"' "$(call matches | cut -d, -f1 | tr -d '[]')"
 call open ostersund
@@ -45,9 +45,10 @@ expect 'A hopeless query counts nothing' '{"open":true,"query":"zzzq","selected"
 call close
 expect 'Close clears the picker' '{"open":false,"query":"","selected":0,"total":0,"focused":false}' "$(call status)"
 call open a
-call move 1; call move 5
-expect 'Down stops at the last of four rows' '3' "$(call status | grep -o '"selected":[0-9]*' | cut -d: -f2)"
-call move -9
+last=$(( $(call matches | jq length) - 1 ))
+call move 1; call move 99
+expect 'Down stops at the last row' "$last" "$(call status | grep -o '"selected":[0-9]*' | cut -d: -f2)"
+call move -99
 expect 'Up stops at the first row' '0' "$(call status | grep -o '"selected":[0-9]*' | cut -d: -f2)"
 call open balsta
 first=$(call matches | cut -d, -f1 | tr -d '[]"')

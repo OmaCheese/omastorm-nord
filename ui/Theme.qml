@@ -5,6 +5,9 @@ import "Toml.js" as Toml
 
 QtObject {
     id: root
+    /// Whether this Theme answers `theme reload` (scripts/hooks/omastorm).
+    /// The standalone window's does; the plugin session's never does (S48:
+    /// PluginSession turns it off), nor the panel's window (RadarWindow).
     property bool registerIpc: true
     readonly property string themePath: Quickshell.env("OMASTORM_THEME_DIR") || (Quickshell.env("HOME") + "/.local/state/omarchy/current/theme")
     readonly property string userPath: Quickshell.env("OMASTORM_USER_SHELL") || (Quickshell.env("HOME") + "/.config/omarchy/shell.toml")
@@ -104,8 +107,15 @@ QtObject {
         onLoaded: root.user = root.parse(text())
         onLoadFailed: root.user = ({})
     }
+    // S48: one Theme per process answers `theme reload` (scripts/hooks):
+    // the standalone window's. The plugin's session and the panel's window
+    // stay off it, since the Omarchy shell hosts other plugins that register
+    // `theme` too (upstream Omastorm does); the FileViews above already
+    // follow a theme change there. A disabled handler is neither a
+    // duplicate nor a handler without a target.
     property IpcHandler ipc: IpcHandler {
-        target: root.registerIpc ? "theme" : ""
+        enabled: root.registerIpc
+        target: "theme"
         function reload(): void { root.reload(); }
     }
 }

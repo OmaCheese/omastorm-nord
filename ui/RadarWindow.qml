@@ -271,7 +271,9 @@ Item {
         || treatmentMenu.opened || productMenu.opened || mapMenu.opened || legendZoom !== ""
         || (mosaicPicker.open && !mosaicPicker.docked)
     function wheelSinks() {
-        return [helpChip, followChip, scaleBar, ringCaptionBox, loadingCard, mapCredit, northMark,
+        // S48 review SF3: not the loading card; nothing on it scrolls, and
+        // during a cold load it sits over the map centre, where the wheel zooms.
+        return [helpChip, followChip, scaleBar, ringCaptionBox, mapCredit, northMark,
                 obsLayer.legendItem, obsLayer.tipItem, lightningLayer.keyItem, mosaicPicker];
     }
     function wheelBlockedAt(mx, my) {
@@ -355,7 +357,7 @@ Item {
         function shownRows(): string { return JSON.stringify(mapMenu.shownRows.map(r => r.kind || r.label)); }
         function legend(name: string): void { app.legendZoom = name; }
         function rect(name: string): string {
-            var it = ({map: map, picker: picker.cardItem, chip: siteTitle, menu: mapMenu.cardItem, submenu: mapMenu.subItem,
+            var it = ({map: map, picker: picker.cardItem, pickerList: picker.listItem, chip: siteTitle, menu: mapMenu.cardItem, submenu: mapMenu.subItem,
                        layers: layersPanel.cardItem, sheet: sheet.cardItem, location: locationPicker.cardItem, mosaic: mosaicPicker, treatment: treatmentMenu, product: productMenu,
                        help: helpChip, scale: scaleBar, rings: ringCaptionBox, loading: loadingCard, credit: mapCredit, north: northMark,
                        obsLegend: obsLayer.legendItem, obsTip: obsLayer.tipItem, lightningKey: lightningLayer.keyItem,
@@ -678,6 +680,8 @@ Item {
         function move(delta: int): void { picker.move(delta); }
         function matches(): string { return JSON.stringify(picker.rows.map(r => r.site.id)); }
         function status(): string { return JSON.stringify({open: picker.open, query: picker.query, selected: picker.selected, total: picker.ranked.total, focused: picker.fieldFocused}); }
+        // S48: the list's scroll, what it shows whole, and the card's place.
+        function view(): string { return JSON.stringify(picker.viewStatus()); }
     }
     // My mosaic's checklist from outside, for checks and captures (S25):
     // quickshell ipc --pid <pid> call mosaic toggle vara

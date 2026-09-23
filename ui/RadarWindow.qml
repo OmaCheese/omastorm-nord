@@ -271,7 +271,9 @@ Item {
         || treatmentMenu.opened || productMenu.opened || mapMenu.opened || legendZoom !== ""
         || (mosaicPicker.open && !mosaicPicker.docked)
     function wheelSinks() {
-        return [helpChip, followChip, scaleBar, ringCaptionBox, loadingCard, mapCredit, northMark,
+        // S48 review SF3: not the loading card; nothing on it scrolls, and
+        // during a cold load it sits over the map centre, where the wheel zooms.
+        return [helpChip, followChip, scaleBar, ringCaptionBox, mapCredit, northMark,
                 obsLayer.legendItem, obsLayer.tipItem, lightningLayer.keyItem, mosaicPicker];
     }
     function wheelBlockedAt(mx, my) {

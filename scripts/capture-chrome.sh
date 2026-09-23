@@ -315,6 +315,15 @@ for name in obsLegend lightningKey help scale north credit; do
 done
 call chrome legend obs; sleep .3
 read -r x y < <(centre obsLegend); wheel_over "enlarged obs legend" "$x" "$y"
+# S48 review SF3: the loading card is no wheel sink: the wheel over it zooms.
+r=$(call chrome rect loading)
+if [[ $(jq -r .visible <<< "$r") == true ]]; then
+  call chrome legend ""; sleep .2
+  read -r x y < <(centre loading)
+  a=$(span); call input wheel "$x" "$y" 120; sleep .25; b=$(span)
+  if [[ $a != "$b" ]]; then echo "WHEEL over the loading card at $x,$y: span $a -> $b zooms: PASS"
+  else echo "WHEEL over the loading card at $x,$y: span $a unchanged: FAIL"; fail=1; fi
+else echo "WHEEL over the loading card: not shown, skipped"; fi
 call chrome legend ""
 call mosaic open; sleep .6
 read -r x y < <(centre mosaic); wheel_over "My mosaic panel" "$x" "$y"

@@ -137,10 +137,13 @@ QtObject {
     property Timer layersWatch: Timer {
         interval: 15000
         repeat: true
-        running: !!engine.socket && engine.socket.connected && engine.layersSent
+        running: !!engine.socket && engine.socket.connected && engine.layersSent && engine.reasked < 4
             && ((engine.stationsWanted && !engine.obs) || (engine.gridWanted && !engine.grid) || (engine.lightningWanted && !engine.lightning && !!engine.lightningInfo))
-        onTriggered: { engine.layersLine = ""; engine.sendLayers(); }
+        onTriggered: { engine.reasked++; engine.layersLine = ""; engine.sendLayers(); }
     }
+    /// Re-asks on this connection; an engine with no weather layers at all
+    /// (older than S42) is not asked for ever.
+    property int reasked: 0
     /// S47: a Reset is under way: the connection is being replaced, and the
     /// new one sends `reset` after `hello`.
     property bool resetting: false
@@ -709,6 +712,7 @@ QtObject {
                 layersSent = false;
                 gridRefused = false;
                 lightningSent = false;
+                reasked = 0;
                 // S47: a Reset asks the engine before the layers go again,
                 // so they come back fetched afresh.
                 if (resetting) {

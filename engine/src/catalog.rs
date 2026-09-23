@@ -456,19 +456,28 @@ impl Catalog {
     /// or empty, so the poller builds them again instead of the timeline
     /// naming files a client cannot load. Returns how many went.
     pub fn revalidate(&self, site: &str, variant: &str) -> io::Result<usize> {
+        let readable = |path: &Path| fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0);
+        // Review N4: each dropped row says why.
         let broken: Vec<String> = self
             .list_variant(site, variant)?
             .into_iter()
-            .filter(|entry| match &entry.record {
-                None => true,
-                Some(record) => {
-                    let readable =
-                        |path: &Path| fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0);
-                    !readable(&record.texture)
-                        || (record.frame.kind != FrameKind::Grid && !readable(&record.azimuth_lut))
-                }
+            .filter_map(|entry| {
+                let why = match &entry.record {
+                    None => "its frame does not read".to_owned(),
+                    Some(record) if !readable(&record.texture) => {
+                        format!("texture {} missing or empty", record.texture.display())
+                    }
+                    Some(record)
+                        if record.frame.kind != FrameKind::Grid
+                            && !readable(&record.azimuth_lut) =>
+                    {
+                        format!("lookup {} missing or empty", record.azimuth_lut.display())
+                    }
+                    Some(_) => return None,
+                };
+                eprintln!("Frame catalog: {}: dropped on reset: {why}", entry.id);
+                Some(entry.id)
             })
-            .map(|entry| entry.id)
             .collect();
         let conn = self.conn.lock().unwrap();
         for id in &broken {

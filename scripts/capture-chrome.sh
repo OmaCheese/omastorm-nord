@@ -108,10 +108,12 @@ done
 # The popover card at each size, in its harness (PopoverHarness), offline.
 want popover && for base in 9 12 16; do
   cp "$run/user-$base.toml" "$run/user.toml"
-  OMASTORM_THEME_DIR="$dark" OMASTORM_USER_SHELL="$run/user.toml" quickshell -p ui/PopoverHarness.qml > "$run/popover-$base.log" 2>&1 &
+  # OMASTORM_ROOT: the session ensures this checkout's engine, the one the
+  # windows used, instead of stopping it as another build's (review N3).
+  OMASTORM_ROOT="$PWD" OMASTORM_THEME_DIR="$dark" OMASTORM_USER_SHELL="$run/user.toml" quickshell -p ui/PopoverHarness.qml > "$run/popover-$base.log" 2>&1 &
   pid=$!
   for _ in {1..200}; do call popover status > /dev/null 2>&1 && break; sleep .1; done
-  for _ in {1..100}; do call popover status 2>/dev/null | jq -e '.frame | contains("loading") | not' > /dev/null 2>&1 && break; sleep .2; done
+  for _ in {1..150}; do call popover status 2>/dev/null | jq -e '.site == "vara" and .condition == "ok" and (.frame | contains("loading") | not)' > /dev/null 2>&1 && break; sleep .2; done
   sleep 1
   rm -f "$out/popover-base-$base.png"
   call popover capture "$out/popover-base-$base.png"
@@ -176,6 +178,35 @@ call chrome legend ""
 call mosaic open; sleep .6
 read -r x y < <(centre mosaic); wheel_over "My mosaic panel" "$x" "$y"
 call mosaic close; sleep .3
+
+# ---- a right press over an open overlay (review M1) ------------------------------
+# rclick_over <overlay> <open call> <status field test>: a right click on the
+# overlay's card leaves it open with the keys (Escape then closes it) and
+# the menu shut; a right click on its scrim closes it like a left one.
+rclick() { call input rpress "$1" "$2"; call input rrelease "$1" "$2"; sleep .25; }
+rclick_over() {
+  local name=$1 open=$2 isopen=$3 x y
+  # shellcheck disable=SC2086
+  call $open; sleep .35
+  read -r x y < <(centre "$name")
+  rclick "$x" "$y"
+  local shown menu
+  shown=$(eval "$isopen"); menu=$(call chrome status | field .menu)
+  call input key Escape; sleep .25
+  local after; after=$(eval "$isopen")
+  if [[ $shown == true && $menu == false && $after == false ]]; then echo "RIGHT click on the $name card: stays open, menu shut, Escape still closes it: PASS"
+  else echo "RIGHT click on the $name card: open=$shown menu=$menu afterEscape=$after: FAIL"; fail=1; fi
+  # shellcheck disable=SC2086
+  call $open; sleep .35
+  rclick 30 "$my"
+  shown=$(eval "$isopen"); menu=$(call chrome status | field .menu)
+  if [[ $shown == false && $menu == false ]]; then echo "RIGHT click on the $name scrim: closes it, no menu: PASS"
+  else echo "RIGHT click on the $name scrim: open=$shown menu=$menu: FAIL"; fail=1; call chrome closeMenu; fi
+}
+rclick_over picker "picker open x" "call picker status | field .open"
+rclick_over location "location open x" "call location status | field .open"
+rclick_over sheet "keys run help" "call keys status | field .sheet"
+rclick_over layers "layers panel true" "call layers status | field .panel"
 
 # ---- a right press never pans ------------------------------------------------------
 before=$(call chrome status | jq -c '{lat, lon, span}')

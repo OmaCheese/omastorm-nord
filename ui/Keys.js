@@ -9,6 +9,8 @@
 // Shift+L is the lock because lowercase l pans; the digit keys pick a
 // treatment; `w` toggles the weak-return floor; Ctrl+L opens the layers
 // panel (S42: plain l pans and Shift+L locks); `?` opens the sheet; Escape with nothing open closes the window.
+// S47: Shift+R resets (reloads the radar and the layers with the current
+// choices; plain `0` still resets the view to the location).
 var ACTIONS = [
     { id: "search", keys: "/ s" },
     { id: "nearest", keys: "n" },
@@ -31,6 +33,7 @@ var ACTIONS = [
     { id: "stipple", keys: "3" },
     { id: "weak", keys: "w" },
     { id: "layers", keys: "Ctrl+L" },
+    { id: "reset_all", keys: "Shift+R" },
     { id: "help", keys: "?" },
     { id: "close", keys: "Escape" }
 ];
@@ -51,6 +54,7 @@ var ROWS = [
      { label: "Pixels, Glyphs, Stipple", actions: ["pixels", "glyphs", "stipple"] },
      { label: "weak returns: hide / show", actions: ["weak"] },
      { label: "layers: radar, temperature, wind", actions: ["layers"] },
+     { label: "reset: reload radar and layers", actions: ["reset_all"] },
      { label: "this sheet · esc closes", actions: ["help"] }]
 ];
 var TREATMENTS = ["PIXELS", "GLYPHS", "STIPPLE"];

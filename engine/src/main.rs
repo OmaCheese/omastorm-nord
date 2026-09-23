@@ -93,6 +93,11 @@ const RETIRE_AFTER: Duration = Duration::from_secs(30);
 /// `tile_ready` lines in a burst, so the queue holds a couple of those; a
 /// client that still falls behind is dropped by the next broadcast.
 const QUEUE: usize = 128;
+/// S47: a second `reset` within this long of the last is a no-op.
+const RESET_EVERY: Duration = Duration::from_secs(10);
+/// S47 review S1: how long the engine must have had no client before a
+/// composite's product goes back to the composite.
+const UNWATCHED_GRACE: Duration = Duration::from_secs(3);
 /// The credit on an archived Level II frame (the checks' KTLX, DEC-10).
 const LEVEL_II_CREDIT: &str = "NOAA NEXRAD Level II";
 /// Playback advances one frame per tick and loops (DESIGN.md, timeline).
@@ -746,6 +751,15 @@ struct Shared {
     sections: grid3d::Sections,
     /// The load a client waits for and what `state.loading` says (S31).
     loading: loading::Tracker,
+    /// S47: each connection's writer stops when its `Notify` fires: a
+    /// client `broadcast` drops for a full queue is closed, so it
+    /// reconnects, instead of staying connected without states.
+    kicks: HashMap<u64, Arc<Notify>>,
+    /// S47: when the last `reset` ran; another within `RESET_EVERY` is a
+    /// no-op.
+    last_reset: Option<Instant>,
+    /// S47 review S1: since when no client is connected.
+    unwatched_since: Option<Instant>,
 }
 impl Shared {
     fn snapshot(&mut self) -> String {
@@ -897,6 +911,11 @@ impl Shared {
     /// clears `unavailable` / `offline`. `skip_known` is true on a respawn
     /// so a catalogued replay is not published again.
     fn restart_live(&mut self, why: &str, skip_known: bool) {
+        self.restart_live_as(why, skip_known, false);
+    }
+    /// `restart_live`; with `fresh` (a reset, review N1) the load's first
+    /// stage shows from 0 even with a frame on screen.
+    fn restart_live_as(&mut self, why: &str, skip_known: bool, fresh: bool) {
         let site = self.state.site.id.clone();
         if site.is_empty() || self.state.source != Source::Live {
             return;
@@ -921,7 +940,7 @@ impl Shared {
         if skip_known {
             self.loading.reset();
         } else {
-            let has_frame = !self.state.frame.scan_time.is_empty();
+            let has_frame = !fresh && !self.state.frame.scan_time.is_empty();
             let kind = loading::kind_of(&station, want);
             let under =
                 (kind == loading::Kind::Made && station.kind == SiteKind::Grid && !has_frame)
@@ -1216,8 +1235,16 @@ impl Shared {
     /// back to its composite (`REF`), its product frames stay catalogued and
     /// the choice stays aside for the next radar, so a closed tab does not
     /// fetch 41 radars' volumes all night. True when anything changed.
+    /// S47 review S1: only once no client has been connected for
+    /// `UNWATCHED_GRACE` (checked from the 1 s tick), so a client's
+    /// reconnect (a Reset, a page reload) does not cost the product.
     fn release_unwatched_product(&mut self) -> bool {
-        if !self.clients.is_empty() || self.state.source != Source::Live {
+        if !self.clients.is_empty() {
+            self.unwatched_since = None;
+            return false;
+        }
+        let since = *self.unwatched_since.get_or_insert_with(Instant::now);
+        if since.elapsed() < UNWATCHED_GRACE || self.state.source != Source::Live {
             return false;
         }
         let Some(station) = self
@@ -1576,9 +1603,82 @@ impl Shared {
             return;
         }
         self.last_broadcast = message.clone();
-        // Never let a stalled UI hold up other clients. Its writer closes on EOF.
-        self.clients
-            .retain(|(_, client)| client.try_send(message.clone()).is_ok());
+        // Never let a stalled UI hold up other clients. S47: the connection
+        // of a client dropped here is closed (its writer is kicked): its
+        // queue is also held by the layer hubs, its reader and its tile
+        // task, so it used to stay open, answering commands and taking
+        // `obs`, but never hearing another `state`: a stuck window.
+        let mut dropped = Vec::new();
+        self.clients.retain(|(id, client)| {
+            let kept = client.try_send(message.clone()).is_ok();
+            if !kept {
+                dropped.push(*id);
+            }
+            kept
+        });
+        for id in dropped {
+            if let Some(kick) = self.kicks.remove(&id) {
+                eprintln!(
+                    "{} Client {id}: its queue is full; closing it so it reconnects",
+                    iso(now_ms())
+                );
+                kick.notify_one();
+            }
+        }
+    }
+    /// S47 (`reset`, docs/protocol.md): abort the pollers, drop the
+    /// timeline and the load, drop the current ring's rows whose files are
+    /// gone, and load the current station and product afresh, the tracker
+    /// from 0. The volumes on disk (tilt store, catalog files) are kept.
+    /// False, changing nothing, within `RESET_EVERY` of the last.
+    fn reset(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .last_reset
+            .is_some_and(|t| now.duration_since(t) < RESET_EVERY)
+        {
+            eprintln!(
+                "{} Reset: ignored (the last was under 10 s ago)",
+                iso(now_ms())
+            );
+            return false;
+        }
+        self.last_reset = Some(now);
+        for (_, (task, _)) in self.warm_pollers.drain() {
+            task.abort();
+        }
+        if let Some(task) = self.live.take() {
+            task.abort();
+        }
+        self.pending = None;
+        self.state.playing = false;
+        let site = self.state.site.id.clone();
+        let station = self.sites.iter().find(|s| s.id == site).cloned();
+        let (Some(station), Source::Live) = (station, self.state.source) else {
+            eprintln!("{} Reset: no live station; layers only", iso(now_ms()));
+            self.loading.reset();
+            return true;
+        };
+        let want = self.want();
+        let variant = self.variant_for(&station, want);
+        match self.catalog.revalidate(&station.id, &variant) {
+            Ok(0) => {}
+            Ok(n) => eprintln!(
+                "{} Reset {site}: dropped {n} catalogued frames whose files are gone",
+                iso(now_ms())
+            ),
+            Err(e) => eprintln!("{} Reset {site}: checking the catalog: {e}", iso(now_ms())),
+        }
+        self.timeline = Timeline::new(Vec::new());
+        self.frame_ms = None;
+        if let Err(message) = self.open_catalog(&station, want) {
+            eprintln!("{} Reset {site}: {message}", iso(now_ms()));
+        }
+        self.state.connection.status = ConnectionStatus::Loading;
+        // The load starts from 0 whatever is on screen, so the bar shows it.
+        self.restart_live_as("reset: loading afresh", false, true);
+        self.keep_warm();
+        true
     }
     /// One engine.log line whenever the selected station's condition
     /// changes (`scripts/soak-report.sh` reads them as episodes).
@@ -1643,6 +1743,7 @@ impl Shared {
             | Command::SetSection { .. }
             | Command::Profile { .. }
             | Command::SetLayers { .. }
+            | Command::Reset
             | Command::Unsupported => {
                 return None;
             }
@@ -2354,6 +2455,21 @@ fn receive(
         Ok(Command::Profile { .. }) => {
             "profile needs lat in [-90, 90] and lon in [-180, 180].".into()
         }
+        // S47: forget what is transient, load the current choices afresh.
+        Ok(Command::Reset) => {
+            let mut shared = shared.lock().unwrap();
+            if shared.reset() {
+                eprintln!("{} Reset: by client {client}", iso(now_ms()));
+                obs::HUB.reset();
+                obs::grid::HUB.reset();
+                lightning::HUB.reset();
+            }
+            // Everyone hears the load; the sender gets the state even when
+            // nothing changed (it dropped its own on reset).
+            shared.last_broadcast.clear();
+            shared.broadcast();
+            return;
+        }
         Ok(command) => match shared.lock().unwrap().apply(command) {
             Some(message) => message,
             None => return,
@@ -2379,6 +2495,7 @@ fn client(
     let (reader, mut writer) = stream.into_split();
     let (tx, mut rx) = mpsc::channel::<String>(QUEUE);
     let (tiles_tx, tiles_rx) = mpsc::channel::<tiles::Request>(8);
+    let kick = Arc::new(Notify::new());
     let id;
     {
         let mut shared = shared.lock().unwrap();
@@ -2391,10 +2508,12 @@ fn client(
         id = shared.next_client;
         shared.next_client += 1;
         shared.clients.push((id, tx.clone()));
+        shared.kicks.insert(id, kick.clone());
     }
     tokio::spawn(serve_tiles(shared.clone(), osm, tx.clone(), tiles_rx));
     tokio::spawn(async move {
-        while let Some(message) = rx.recv().await {
+        // S47: or until `broadcast` kicks it for a full queue.
+        while let Some(Some(message)) = obs::or_abort(rx.recv(), &kick).await {
             if !matches!(
                 timeout(WRITE_TIMEOUT, writer.write_all(message.as_bytes())).await,
                 Ok(Ok(()))
@@ -2424,6 +2543,7 @@ fn client(
         {
             let mut shared = shared.lock().unwrap();
             shared.clients.retain(|(client_id, _)| *client_id != id);
+            shared.kicks.remove(&id);
             obs::HUB.remove(id);
             obs::grid::HUB.remove(id);
             lightning::HUB.remove(id);
@@ -2434,7 +2554,8 @@ fn client(
             if sections.client_left(id, &mut state.section) {
                 shared.broadcast();
             }
-            // Review M1: the last client gone, a composite's product stops.
+            // Review M1: the last client gone, a composite's product stops
+            // (S47 review S1: after UNWATCHED_GRACE, from the 1 s tick).
             if shared.release_unwatched_product() {
                 shared.broadcast();
             }
@@ -2718,6 +2839,9 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         logged_condition: None,
         sections: grid3d::Sections::default(),
         loading: loading::Tracker::default(),
+        kicks: HashMap::new(),
+        last_reset: None,
+        unwatched_since: None,
     }));
     // My mosaic's set as the last live run left it (S25, review #11).
     if source == Source::Live {
@@ -3021,6 +3145,9 @@ mod tests {
             logged_condition: None,
             sections: grid3d::Sections::default(),
             loading: loading::Tracker::default(),
+            kicks: HashMap::new(),
+            last_reset: None,
+            unwatched_since: None,
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3028,6 +3155,51 @@ mod tests {
             .unwrap();
         (shared, runtime)
     }
+    /// S47: a client `broadcast` drops for a full queue is kicked (its
+    /// writer stops and the connection closes), not left open without
+    /// states.
+    #[test]
+    fn a_client_dropped_for_a_full_queue_is_kicked() {
+        let (mut shared, runtime) = live_shared("kick");
+        let (full, _rx) = mpsc::channel::<String>(1);
+        full.try_send(String::new()).unwrap();
+        let (fine, mut fine_rx) = mpsc::channel::<String>(4);
+        let kick = Arc::new(Notify::new());
+        shared.clients.push((7, full));
+        shared.clients.push((8, fine));
+        shared.kicks.insert(7, kick.clone());
+        shared.kicks.insert(8, Arc::new(Notify::new()));
+        shared.broadcast();
+        assert_eq!(
+            shared.clients.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [8]
+        );
+        assert!(!shared.kicks.contains_key(&7) && shared.kicks.contains_key(&8));
+        assert!(fine_rx.try_recv().is_ok());
+        runtime
+            .block_on(async { timeout(Duration::from_millis(100), kick.notified()).await })
+            .expect("the dropped client's writer is kicked");
+    }
+
+    /// S47: `reset` loads the current station afresh with the tracker from
+    /// 0, and a second within `RESET_EVERY` changes nothing.
+    #[test]
+    fn a_reset_starts_the_load_again_and_a_second_is_ignored() {
+        let (mut shared, runtime) = live_shared("reset");
+        let _guard = runtime.enter();
+        assert!(shared.select_site("vara").0);
+        // The load's first frame came in: nothing is loading any more.
+        shared.loading.reset();
+        assert!(shared.loading.wire(Instant::now()).is_none());
+        let before = shared.live.as_ref().map(|t| t.id());
+        assert!(shared.reset());
+        let loading = shared.loading.wire(Instant::now()).expect("loading again");
+        assert_eq!((loading.percent, loading.done), (0, 0));
+        assert_ne!(shared.live.as_ref().map(|t| t.id()), before, "a new poller");
+        assert_eq!(shared.state.site.id, "vara");
+        assert!(!shared.reset(), "within 10 s: a no-op");
+    }
+
     /// Review M1: a composite's product stops, back to the composite, when
     /// the engine's last client has gone; a radar's product and My mosaic
     /// are left alone.
@@ -3047,6 +3219,10 @@ mod tests {
         );
         assert_eq!(shared.state.product, cmax);
         shared.clients.clear();
+        // S47 review S1: not the moment the last client goes (a reconnect).
+        assert!(!shared.release_unwatched_product(), "within the grace");
+        assert_eq!(shared.state.product, cmax);
+        shared.unwatched_since = Some(Instant::now() - UNWATCHED_GRACE);
         assert!(shared.release_unwatched_product());
         assert_eq!(shared.state.product, products::Choice::default());
         assert_eq!(

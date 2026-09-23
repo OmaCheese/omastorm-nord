@@ -580,6 +580,9 @@ pub enum Command {
         #[serde(default)]
         lightning: bool,
     },
+    /// S47: forget what is transient and load the current choices afresh
+    /// (docs/protocol.md, Reset). Answered with a `state` to everyone.
+    Reset,
     /// Anything newer than this build.
     #[serde(other)]
     Unsupported,

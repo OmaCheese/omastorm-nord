@@ -13,6 +13,13 @@ import QtQuick
 // It is an overlay the size of the map (`map` is a RadarMap): the map's own
 // mouse handling stays underneath; hover is a passive HoverHandler.
 //
+// S47: each arrow has its speed beside it in m/s, rounded ("7"), with the
+// gust when the station reports one ("7 (12)"): past the arrow's head, so
+// the temperature keeps the upwind side; the thinning cell grows by the
+// number's room. The grid's arrows carry numbers on a sparser lattice
+// (every other lattice point both ways). The legend lists the speed bands
+// in m/s under an arrow of each length.
+//
 // S43: `source` stations, grid or both. From the MET Nordic grid, wind is
 // the same arrows on the grid's points (thinned with the stations, which
 // win their cells, so with both the grid fills the gaps between stations
@@ -83,6 +90,30 @@ Item {
     // image (review S2); a station's arrow is that image, rotated.
     readonly property var bands: [[2, 14, 1.6], [4, 18, 1.8], [7, 23, 2.1], [11, 29, 2.5], [16, 35, 2.9], [1e9, 42, 3.3]]
     function band(ms) { for (var i = 0; i < bands.length; i++) if (ms < bands[i][0]) return i; return bands.length - 1; }
+    /// S47: the bands in words, m/s: "<2", "2–4", … "16+".
+    function bandName(i) {
+        if (i === 0) return "<" + bands[0][0];
+        if (i === bands.length - 1) return bands[i - 1][0] + "+";
+        return bands[i - 1][0] + "–" + bands[i][0];
+    }
+    /// S47: the speed beside an arrow, m/s rounded, with the gust in
+    /// brackets when there is one worth saying (above the mean).
+    function speedText(s) {
+        var text = String(Math.round(s.windMs));
+        if (s.gustMs !== null && s.gustMs !== undefined && Math.round(s.gustMs) > Math.round(s.windMs))
+            text += " (" + Math.round(s.gustMs) + ")";
+        return text;
+    }
+    /// Review S5: the room a number takes past an arrow's head, for the
+    /// thinning cell: the 95th percentile label's real width ("10 (15)" is
+    /// about 40 px), measured with the label's own font.
+    TextMetrics { id: numberMetrics; font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"; font.pixelSize: stationLayer.compact ? 9 : 10; font.bold: true }
+    function textWidth(t) { numberMetrics.text = t; return numberMetrics.advanceWidth; }
+    function numberRoomFor(samples) {
+        if (!wind || !samples.length) return 0;
+        var widths = samples.map(s => textWidth(speedText(s))).sort((a, b) => a - b);
+        return Math.ceil(widths[Math.min(widths.length - 1, Math.floor(widths.length * .95))]) + 6;
+    }
     function arrowLength(ms) { return bands[band(ms)][1]; }
     property var arrowUrls: []
     Repeater {
@@ -145,7 +176,7 @@ Item {
         if (!wind) return 40;
         var lengths = list.filter(p => hasWind(p.s)).map(p => arrowLength(p.s.windMs)).sort((a, b) => a - b);
         var p95 = lengths.length ? lengths[Math.min(lengths.length - 1, Math.floor(lengths.length * .95))] : 14;
-        return temp ? p95 + 34 : p95 + 10;
+        return (temp ? p95 + 34 : p95 + 10) + numberRoomFor(list.filter(p => hasWind(p.s)).map(p => p.s));
     }
     function hash(text) {
         var h = 2166136261;
@@ -187,7 +218,9 @@ Item {
         if (points.length) {
             var cols = grid.wind.cols > 0 ? grid.wind.cols : points.length;
             var spacingPx = (grid.wind.spacingKm || 24) * world / (2 * Math.PI * 6371 * Math.cos(map.centerLat * Math.PI / 180));
-            var k = Math.max(1, Math.ceil((gridP95 + 10) / Math.max(1, spacingPx)));
+            // Numbers sit on every other lattice point, so half their room.
+            var room = numberRoomFor(points.filter(g => g[2] !== null).slice(0, 400).map(g => ({windMs: g[2], gustMs: null})));
+            var k = Math.max(1, Math.ceil((gridP95 + 10 + room / 2) / Math.max(1, spacingPx)));
             var margin = 80, gridTime = grid.time;
             for (var i = 0; i < points.length; i++) {
                 var row = Math.floor(i / cols), col = i % cols, g = points[i];
@@ -196,8 +229,9 @@ Item {
                 var sx = map.sx(mx), sy = map.sy(my);
                 if (sx < -margin || sy < -margin || sx > width + margin || sy > height + margin) continue;
                 if (!clearAt(mx * world, my * world)) continue;
+                // S47: numbers on every other lattice point both ways.
                 out.push({ s: { id: "grid:" + i, grid: true, lat: g[0], lon: g[1], windMs: g[2], windDirDeg: g[3], time: gridTime },
-                           mx: mx, my: my });
+                           mx: mx, my: my, numbered: (row / k) % 2 === 0 && (col / k) % 2 === 0 });
             }
         }
         shown = out;
@@ -260,6 +294,25 @@ Item {
                 // S43: with both, the grid's arrows step back.
                 opacity: mark.s.grid && stationLayer.stationsOn ? .55 : 1
                 smooth: true
+            }
+            // S47: the speed past the arrow's head, m/s (and the gust).
+            Text {
+                // Past the head by the label's own half extent along the
+                // wind, so a wide "10 (15)" never sits on its arrow.
+                readonly property real reach: stationLayer.arrowLength(mark.s.windMs || 0) + 4
+                    + Math.abs(mark.fromX) * implicitWidth / 2 + Math.abs(mark.fromY) * implicitHeight / 2
+                visible: mark.drawWind && !mark.calm && (!mark.s.grid || mark.modelData.numbered === true)
+                text: visible ? stationLayer.speedText(mark.s) : ""
+                // Downwind of the station, where the arrow points.
+                x: Math.round(-mark.fromX * reach - implicitWidth / 2)
+                y: Math.round(-mark.fromY * reach - implicitHeight / 2)
+                color: stationLayer.arrowInk
+                style: Text.Outline
+                styleColor: stationLayer.arrowHalo
+                font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
+                font.pixelSize: stationLayer.compact ? 9 : 10
+                font.bold: true
+                opacity: mark.s.grid && stationLayer.stationsOn ? .6 : 1
             }
             // Calm: a small ring at the station.
             Rectangle {
@@ -369,13 +422,18 @@ Item {
 
     // The legend: the temperature scale and the wind key, with the credit.
     readonly property var skipped: obs && Array.isArray(obs.providers) ? obs.providers.filter(p => p.status !== "ok") : []
+    // S47: loading says how far, and no stations says why (it used to say
+    // "loading" for ever when every provider had failed).
+    readonly property int providersDone: obs ? (obs.providers || []).filter(p => p.status !== "loading").length : 0
     readonly property string stationCredit: !stationsOn ? ""
-        : !stations.length ? "Stations loading…"
+        : !obs || (obs.status === "loading" && !stations.length) ? "Stations loading…" + (obs && obs.providers ? " (" + providersDone + " of " + obs.providers.length + " providers)" : "")
+        : !stations.length ? "No stations: " + (skipped.filter(p => p.status !== "loading").map(p => p.name + " " + p.status).join(", ") || "none reported")
         : (obs && obs.attribution ? obs.attribution : "")
+          + (obs.status === "loading" ? " · loading " + providersDone + " of " + (obs.providers || []).length : "")
           + (skipped.some(p => p.id === "frost" && p.status === "skipped") ? " · Norway: no stations" : "")
     // S43: the grid's credit with its hour.
     readonly property string gridCredit: !gridOn ? ""
-        : !grid ? "Grid loading…"
+        : !grid || grid.status === "loading" ? "Grid loading…"
         : !grid.time ? "MET Nordic grid: " + (grid.provider && grid.provider.note ? grid.provider.note : "none")
         : "MET Nordic analysis " + hhmm(grid.time) + ", " + grid.attribution
     readonly property string credit: [stationCredit, gridCredit].filter(x => x).join("\n")
@@ -449,12 +507,55 @@ Item {
                     font.bold: true
                 }
                 Text {
-                    text: "wind blows to · longer = stronger · ○ calm"
+                    text: "wind blows to · 7 (12) = m/s (gust) · ○ calm"
                     color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
                     font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
                     font.pixelSize: 9
                     opacity: .8
                     anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+            // S47: the speed bands, an arrow of each length over its m/s.
+            Row {
+                id: bandKey
+                visible: stationLayer.wind && stationLayer.showLegend
+                spacing: 2
+                Repeater {
+                    model: stationLayer.bands.length
+                    Column {
+                        required property int index
+                        width: 26
+                        spacing: 1
+                        Item {
+                            width: parent.width
+                            height: stationLayer.bands[stationLayer.bands.length - 1][1] * .6 + 2
+                            Image {
+                                source: stationLayer.arrowUrls[index] || ""
+                                width: 16 * .6
+                                height: (stationLayer.bands[index][1] + 2) * .6
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.bottom: parent.bottom
+                                smooth: true
+                            }
+                        }
+                        Text {
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            text: stationLayer.bandName(index)
+                            color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
+                            font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
+                            font.pixelSize: 8
+                            opacity: .8
+                        }
+                    }
+                }
+                Text {
+                    text: "m/s"
+                    anchors.bottom: parent.bottom
+                    color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
+                    font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
+                    font.pixelSize: 8
+                    opacity: .8
                 }
             }
             Text {

@@ -14,6 +14,9 @@ Item {
 
     /// `state.loading`, or null while nothing is loading.
     property var loading: null
+    /// S47: the weather layers still loading (Engine.layerLoads), drawn as
+    /// one segment named by what is fetched when the radar has no load.
+    property var layers: []
     /// The host's palette (Theme.qml): `accent` and `foreground`.
     property var theme
     /// Name the stages under the segments. The window has the room for it;
@@ -28,6 +31,13 @@ Item {
     /// the whole bar when the engine is older than S35.
     readonly property var segments: {
         const l = bar.loading;
+        if (!l && bar.layers && bar.layers.length > 0) {
+            let sum = 0;
+            for (const x of bar.layers)
+                sum += Math.max(0, Math.min(100, Number(x.percent) || 0));
+            return [{ "stage": "layers", "share": 100, "percent": Math.round(sum / bar.layers.length), "state": "active",
+                      "label": bar.layers.map(x => x.text).join(" · ") }];
+        }
         if (!l)
             return [];
         const stages = l.stages;
@@ -64,14 +74,16 @@ Item {
 
     /// The stage in words, under its segment: named by the work (S41),
     /// as Engine.stepName names it.
-    function stageName(stage) {
+    function stageName(stage, label) {
+        if (stage === "layers")
+            return label || "Fetching weather layers";
         return stage === "first" ? "Fetching radar data" : stage === "build" ? "Engine: building the frame"
             : stage === "history" ? "Fetching history" : stage || "";
     }
     /// The names' size; S41 made them readable at a glance.
     property int nameSize: 10
 
-    visible: !!bar.loading
+    visible: !!bar.loading || bar.segments.length > 0
     implicitHeight: bar.thickness + (bar.names ? nameRow.implicitHeight + 2 : 0)
     // Review NIT4: an Item anchored left/right/bottom keeps its default
     // height of 0 unless it is given one, and its children then hang below
@@ -131,7 +143,7 @@ Item {
                 x: bar.edge(index)
                 width: bar.widths[index] || 0
                 height: nameRow.implicitHeight
-                text: bar.stageName(modelData.stage)
+                text: bar.stageName(modelData.stage, modelData.label)
                 font.pixelSize: bar.nameSize
                 font.family: bar.theme.font || "monospace"
                 elide: Text.ElideRight

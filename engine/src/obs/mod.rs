@@ -34,6 +34,8 @@ pub const STALE_MS: i64 = 90 * 60 * 1000;
 /// How often the list is rebuilt while a layer is on (stale stations drop
 /// out, due providers are fetched).
 const TICK: Duration = Duration::from_secs(30);
+/// S47: how soon a line a client's full queue refused is offered again.
+pub const RETRY: Duration = Duration::from_secs(1);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// The biggest body accepted (FMI's answer is about 300 kB, DMI's station
 /// list about 460 kB).
@@ -238,7 +240,8 @@ impl Id {
 pub struct ProviderInfo {
     pub id: &'static str,
     pub name: &'static str,
-    /// `ok`, `failed`, or `skipped`.
+    /// `ok`, `failed`, or `skipped`; S47: `loading` until its first
+    /// answer since the engine started or a reset.
     pub status: &'static str,
     pub stations: usize,
     pub attribution: &'static str,
@@ -256,6 +259,27 @@ struct ObsLine<'a> {
     stations: Vec<&'a Station>,
     providers: &'a [ProviderInfo],
     attribution: String,
+    /// S47: the layer as a whole, `loading` (a provider has not answered
+    /// yet), `ok`, or `error` (no provider could be read).
+    status: &'static str,
+    /// S47: the providers that have answered, of all, while `loading`.
+    percent: u32,
+}
+
+/// S47: the layer's status and percent from its providers' statuses.
+pub fn layer_status(providers: &[ProviderInfo]) -> (&'static str, u32) {
+    let total = providers.len().max(1) as u32;
+    let answered = providers.iter().filter(|p| p.status != "loading").count() as u32;
+    if answered < total {
+        return ("loading", answered * 100 / total);
+    }
+    if providers
+        .iter()
+        .all(|p| p.status == "failed" || p.status == "skipped")
+    {
+        return ("error", 100);
+    }
+    ("ok", 100)
 }
 
 /// The `obs` line for these providers' stations at `now` (stale ones
@@ -283,6 +307,7 @@ pub fn line(lists: &[(ProviderInfo, Vec<Station>)], now: i64) -> String {
         format!("{} (CC BY 4.0)", names.join(", "))
     };
     let newest = stations.iter().map(|s| s.ms).max().unwrap_or(0);
+    let (status, percent) = layer_status(&providers);
     let message = ObsLine {
         kind: "obs",
         v: crate::protocol::VERSION,
@@ -295,6 +320,8 @@ pub fn line(lists: &[(ProviderInfo, Vec<Station>)], now: i64) -> String {
         stations,
         providers: &providers,
         attribution,
+        status,
+        percent,
     };
     let mut text = serde_json::to_string(&message).expect("obs serializes");
     text.push('\n');
@@ -323,30 +350,73 @@ pub static HUB: LazyLock<Hub> = LazyLock::new(Hub::default);
 pub struct Hub {
     inner: Mutex<HubInner>,
     wake: Notify,
+    /// S47: a reset aborts the fetch in flight.
+    abort: Notify,
+}
+
+/// A client with a layer on, and which `obs` line it has had.
+struct Watcher {
+    layers: Layers,
+    tx: Sender<String>,
+    /// The `generation` of the last line that reached its queue; behind
+    /// the hub's, it has not had the newest.
+    delivered: u64,
 }
 
 #[derive(Default)]
 struct HubInner {
-    clients: HashMap<u64, (Layers, Sender<String>)>,
+    clients: HashMap<u64, Watcher>,
     last: Option<String>,
+    /// Bumped whenever `last` changes (from 1; a watcher at 0 has had none).
+    generation: u64,
+    /// S47: a reset the fetcher has not applied yet.
+    reset: bool,
+}
+
+impl HubInner {
+    /// S47: hand `last` to every watcher that has not had it. A full queue
+    /// (a client busy drawing) keeps it owed rather than losing it: the
+    /// stations bug was a line dropped here once and never sent again.
+    /// True while one is still owed.
+    fn deliver(&mut self) -> bool {
+        let Some(last) = &self.last else { return false };
+        let mut owed = false;
+        for watcher in self.clients.values_mut() {
+            if watcher.delivered == self.generation {
+                continue;
+            }
+            match watcher.tx.try_send(last.clone()) {
+                Ok(()) => watcher.delivered = self.generation,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => owed = true,
+                // Gone: its connection's cleanup removes it.
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        owed
+    }
 }
 
 impl Hub {
-    /// `set_layers` from `client`. A client turning its first layer on gets
-    /// the newest list at once, and the fetcher wakes.
+    /// `set_layers` from `client`. S47: any `set_layers` with a layer on
+    /// is answered with the newest list (a client that lost it may ask
+    /// again); the first one on wakes the fetcher.
     pub fn set(&self, client: u64, layers: Layers, reply: &Sender<String>) {
         let mut inner = self.inner.lock().unwrap();
         let before = inner
             .clients
             .get(&client)
-            .map(|(l, _)| *l)
+            .map(|w| w.layers)
             .unwrap_or_default();
         if layers.any() {
-            inner.clients.insert(client, (layers, reply.clone()));
-            if !before.any() {
-                if let Some(last) = &inner.last {
-                    let _ = reply.try_send(last.clone());
-                }
+            inner.clients.insert(
+                client,
+                Watcher {
+                    layers,
+                    tx: reply.clone(),
+                    delivered: 0,
+                },
+            );
+            if inner.deliver() || !before.any() {
                 self.wake.notify_one();
             }
         } else {
@@ -360,17 +430,29 @@ impl Hub {
     pub fn wanted(&self) -> bool {
         !self.inner.lock().unwrap().clients.is_empty()
     }
-    /// Send `line` to every client with a layer on, when it differs from
-    /// the last one sent.
-    fn publish(&self, line: String) {
+    /// Send `line` to every client with a layer on that has not had it.
+    /// True while a client is still owed it (its queue was full).
+    fn publish(&self, line: String) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        if inner.last.as_deref() == Some(line.as_str()) {
-            return;
+        if inner.last.as_deref() != Some(line.as_str()) {
+            inner.last = Some(line);
+            inner.generation += 1;
         }
-        for (_, tx) in inner.clients.values() {
-            let _ = tx.try_send(line.clone());
-        }
-        inner.last = Some(line);
+        inner.deliver()
+    }
+    /// S47 (`reset`): forget the list; the fetcher drops its lists and
+    /// cached bodies, aborts a fetch in flight, and starts again.
+    pub fn reset(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.last = None;
+        inner.generation += 1;
+        inner.reset = true;
+        drop(inner);
+        self.abort.notify_one();
+        self.wake.notify_one();
+    }
+    fn take_reset(&self) -> bool {
+        std::mem::take(&mut self.inner.lock().unwrap().reset)
     }
 }
 
@@ -448,9 +530,33 @@ impl Fetcher {
         Ok(Fetcher {
             client,
             dir,
-            lists: blank_lists("ok", ""),
+            lists: blank_lists("loading", ""),
             failed: HashMap::new(),
         })
+    }
+
+    /// S47 (`reset`): drop the lists, the failures and the cached bodies
+    /// of the observations (the daily station lists are kept: they are not
+    /// observations), so every provider is read again at once.
+    ///
+    /// Review N3: an error backoff survives a reset: a part that failed
+    /// (a 429, a 503) keeps its failure time and its cached copy, and is
+    /// asked again only when `MIN_AGE` has passed, reset or not.
+    fn reset(&mut self) {
+        self.lists = blank_lists("loading", "");
+        let now = now_ms();
+        for id in PROVIDERS {
+            for part in id.parts(now, &self.dir).unwrap_or_default() {
+                if part.max_age <= MIN_AGE && !self.failed.contains_key(part.name) {
+                    let _ = fs::remove_file(self.dir.join(part.name));
+                }
+            }
+        }
+    }
+
+    /// Whether a provider has not answered since the start or a reset.
+    fn loading(&self) -> bool {
+        self.lists.iter().any(|(info, _)| info.status == "loading")
     }
 
     async fn get(&self, url: &str, auth: bool) -> Result<Vec<u8>, String> {
@@ -528,6 +634,10 @@ impl Fetcher {
                     Ok(body) => {
                         bytes += body.len();
                         self.failed.remove(part.name);
+                        // S47: the directory may have gone under a running
+                        // engine (a cleared cache); every provider then
+                        // failed "nothing cached" until a restart.
+                        let _ = fs::create_dir_all(&self.dir);
                         if let Err(e) = write_atomic(&path, &body) {
                             eprintln!("{} Obs {}: caching {}: {e}", stamp(), id.key(), part.name);
                         }
@@ -591,9 +701,40 @@ impl Fetcher {
     }
 }
 
+/// S47: `work`, or `None` as soon as `abort` is notified (a reset), which
+/// drops the work where it stands (the engine has no `select!`).
+pub async fn or_abort<F: std::future::Future>(work: F, abort: &Notify) -> Option<F::Output> {
+    use std::task::Poll;
+    let mut work = std::pin::pin!(work);
+    let mut aborted = std::pin::pin!(abort.notified());
+    std::future::poll_fn(|cx| {
+        if let Poll::Ready(value) = work.as_mut().poll(cx) {
+            return Poll::Ready(Some(value));
+        }
+        if aborted.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// S47: consume a stored `abort` permit (a reset notified while nothing
+/// waited on it), once that reset has been applied, so it does not abort
+/// the next fetch as well.
+pub fn drain(abort: &Notify) {
+    let mut stale = std::pin::pin!(abort.notified());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    let _ = stale.as_mut().poll(&mut context);
+}
+
 /// The fetcher's task: while a client has a layer on, keep every provider
 /// fresh and publish the list when it changes; otherwise sleep until one
-/// turns a layer on.
+/// turns a layer on. S47: while a provider has not answered (the first
+/// round, or after a reset) the list goes out after each provider, with
+/// `status` `loading` and its `percent`; a line a busy client could not
+/// take is offered again every `RETRY` until it is; a reset aborts the
+/// round in flight.
 pub async fn run() {
     let hub = &*HUB;
     let mut fetcher = match Fetcher::new() {
@@ -612,17 +753,37 @@ pub async fn run() {
     };
     let mut first = true;
     loop {
+        if hub.take_reset() {
+            eprintln!("{} Obs: reset", stamp());
+            drain(&hub.abort);
+            fetcher.reset();
+            first = true;
+        }
         if !hub.wanted() {
             hub.wake.notified().await;
             continue;
         }
         let now = now_ms();
-        for index in 0..PROVIDERS.len() {
-            fetcher.update(index, now, first).await;
+        let round = async {
+            let progress = fetcher.loading();
+            if progress {
+                hub.publish(line(&fetcher.lists, now_ms()));
+            }
+            for index in 0..PROVIDERS.len() {
+                fetcher.update(index, now, first).await;
+                if progress && index + 1 < PROVIDERS.len() {
+                    hub.publish(line(&fetcher.lists, now_ms()));
+                }
+            }
+        };
+        if or_abort(round, &hub.abort).await.is_none() {
+            continue;
         }
         first = false;
-        hub.publish(line(&fetcher.lists, now_ms()));
-        let _ = tokio::time::timeout(TICK, hub.wake.notified()).await;
+        let owed = hub.publish(line(&fetcher.lists, now_ms()));
+        // A client still owed the newest line is offered it again soon (the
+        // next round publishes it; nothing is fetched that is not due).
+        let _ = tokio::time::timeout(if owed { RETRY } else { TICK }, hub.wake.notified()).await;
     }
 }
 
@@ -673,6 +834,33 @@ pub(crate) mod tests {
         assert!(!Id::Frost.usable(daily, b""));
         assert!(Id::Dmi.usable(daily, &fixture("dmi_stations_20260922.json.gz")));
         assert!(Id::Dmi.optional(1) && !Id::Dmi.optional(0) && !Id::Frost.optional(0));
+    }
+
+    /// Review N3: a reset forgets the lists and the good bodies, never a
+    /// provider's error backoff.
+    #[test]
+    fn a_reset_keeps_an_error_backoff() {
+        let dir = std::env::temp_dir().join(format!("omastorm-obs-n3-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut fetcher = Fetcher {
+            client: reqwest::Client::new(),
+            dir: dir.clone(),
+            lists: blank_lists("ok", ""),
+            failed: HashMap::new(),
+        };
+        fs::write(dir.join("fmi.xml"), b"x").unwrap();
+        fs::write(dir.join("dmi-obs.json"), b"x").unwrap();
+        fetcher.failed.insert("dmi-obs.json", 5);
+        fetcher.reset();
+        assert_eq!(fetcher.failed.get("dmi-obs.json"), Some(&5));
+        assert!(!dir.join("fmi.xml").exists(), "a good body goes");
+        assert!(
+            dir.join("dmi-obs.json").exists(),
+            "a failed part's copy stays"
+        );
+        assert!(fetcher.loading());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -746,11 +934,104 @@ pub(crate) mod tests {
         assert!(s.get("ms").is_none());
         assert_eq!(value["providers"][1]["status"], "skipped");
         assert_eq!(value["providers"][0]["stations"], 1);
+        // S47: the layer's own status, with the newest observation's age.
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["percent"], 100);
+        // Review M1: no age in the line (it would change every tick and
+        // resend the whole list); `time` says how old the newest is.
+        assert!(value.get("ageSeconds").is_none());
         // Stale by the time the line is built: dropped from the list.
         let later = line(&lists, now + 2 * STALE_MS);
         let value: serde_json::Value = serde_json::from_str(&later).unwrap();
         assert_eq!(value["stations"].as_array().unwrap().len(), 0);
         assert_eq!(value["attribution"], "");
+    }
+
+    #[test]
+    fn the_layer_is_loading_until_every_provider_answered() {
+        let now = parse_iso("2026-09-23T10:12:44Z").unwrap();
+        let mut lists = blank_lists("loading", "");
+        let value = |lists: &[(ProviderInfo, Vec<Station>)]| -> serde_json::Value {
+            serde_json::from_str(&line(lists, now)).unwrap()
+        };
+        let v = value(&lists);
+        assert_eq!(
+            (v["status"].as_str(), v["percent"].as_u64()),
+            (Some("loading"), Some(0))
+        );
+        lists[0].0.status = "ok";
+        lists[0].1.push(station(now - 600_000, Some(9.0)));
+        lists[1].0.status = "failed";
+        let v = value(&lists);
+        assert_eq!(
+            (v["status"].as_str(), v["percent"].as_u64()),
+            (Some("loading"), Some(50))
+        );
+        assert_eq!(
+            v["stations"].as_array().unwrap().len(),
+            1,
+            "stations show as they come"
+        );
+        lists[2].0.status = "failed";
+        lists[3].0.status = "skipped";
+        assert_eq!(value(&lists)["status"], "ok");
+        lists[0].0.status = "failed";
+        assert_eq!(value(&lists)["status"], "error");
+    }
+
+    /// S47, the stations bug (docs/protocol.md, Weather layers): the
+    /// client's queue is full (tile replies, states) when the list is
+    /// published; the line must not be lost for good. Before S47 it was
+    /// dropped and recorded as sent, and a client asking again with the
+    /// layer already on was not answered.
+    #[test]
+    fn a_line_a_full_queue_refused_is_offered_again() {
+        let hub = Hub::default();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.try_send("busy\n".to_owned()).unwrap();
+        let temp = Layers {
+            temp: true,
+            wind: false,
+        };
+        hub.set(1, temp, &tx);
+        hub.publish("stations\n".into());
+        assert_eq!(rx.try_recv().unwrap(), "busy\n");
+        assert!(rx.try_recv().is_err());
+        // The fetcher's next round: the same list, which it still owes.
+        hub.publish("stations\n".into());
+        assert_eq!(rx.try_recv().unwrap(), "stations\n");
+        hub.publish("stations\n".into());
+        assert!(rx.try_recv().is_err(), "delivered once, not repeated");
+        // A client that lost it anyway asks again with the layer on.
+        hub.set(1, temp, &tx);
+        assert_eq!(rx.try_recv().unwrap(), "stations\n");
+        // A reset forgets the list: nothing is held until the next fetch.
+        hub.reset();
+        hub.set(1, temp, &tx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Review M1: the fetcher rebuilds the line every tick; the same lists
+    /// 30 s later are the same line, delivered once.
+    #[test]
+    fn the_same_lists_a_tick_later_are_not_sent_again() {
+        let now = parse_iso("2026-09-23T10:12:44Z").unwrap();
+        let mut lists = blank_lists("ok", "");
+        lists[0].1.push(station(now - 600_000, Some(9.0)));
+        let hub = Hub::default();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        hub.set(
+            1,
+            Layers {
+                temp: true,
+                wind: false,
+            },
+            &tx,
+        );
+        hub.publish(line(&lists, now));
+        hub.publish(line(&lists, now + 30_000));
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err(), "one delivery for the same lists");
     }
 
     #[test]

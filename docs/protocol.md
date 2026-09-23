@@ -341,7 +341,11 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 {"type":"set_section"}
 {"type":"profile","lat":58.70,"lon":13.40}
 {"type":"set_layers","temp":true,"wind":false}
+{"type":"reset"}
 ```
+
+- `reset` (S47) forgets what is transient and loads the current choices
+  afresh; see [Reset](#reset).
 
 - `set_layers` (S42) turns the weather layers on or off for its sender,
   from the stations, the MET Nordic grid (S43) or both (`source`);
@@ -1281,8 +1285,9 @@ reason).
 - `OMASTORM_GRID_BACKFILL` (1–12, the engine's environment) lowers both
   depths, for an engine with less to spend; it never raises them.
 - A product is polled only while its composite is selected and showing it,
-  and while some client is connected: when the engine's last client
-  disconnects while a composite shows a product, the engine goes back to
+  and while some client is connected: when the engine has had no client
+  for 3 seconds (S47: a reconnect, as a Reset or a page reload makes, is
+  not a departure) while a composite shows a product, the engine goes back to
   the composite (`state.product` `REF` index 0; the product's frames stay
   in the catalog, and the choice is kept for the next radar), so a closed
   tab polls no radar all night. The desktop plugin, whose bar keeps one
@@ -1615,7 +1620,9 @@ others, and a client that never sends `set_layers` never receives `obs`
   by leaving `source` out.
 - The command is answered with `obs` to its sender at once when a layer is
   on and the engine holds observations; otherwise `obs` follows the first
-  fetch. With `both`, the stations and the grid come as two `obs` lines,
+  fetch. From S47 **every** `set_layers` with a layer on is answered so,
+  the same layers again included: a client that thinks it lost the line
+  may simply ask again (clients do not repeat an unchanged ask otherwise). With `both`, the stations and the grid come as two `obs` lines,
   told apart by their `source`; a client keeps one of each. Turning both layers off is not answered; the client drops what it
   drew.
 
@@ -1657,7 +1664,24 @@ others, and a client that never sends `set_layers` never receives `obs`
 - `attribution` is one line naming the providers whose stations are in the
   list; a client shows it whenever a layer is drawn.
 - `obs` is sent to every client with a layer on whenever the list changes,
-  and never to one with both off.
+  and never to one with both off. S47: a line a client's queue could not
+  take at that moment (a client busy drawing, its queue full of tile
+  replies and states) stays owed to that client and is offered again
+  every second until it is taken. Before S47 it was dropped for good,
+  which is how the desktop window once never showed its stations.
+- `status` (S47, additive) is the layer as a whole: `loading` until every
+  provider has answered since the engine started (or since a `reset`),
+  then `ok`, or `error` when no provider could be read (all `failed` or
+  `skipped`). While `loading`, the list is sent again after each
+  provider, its stations as far as they came, the providers that have not
+  answered with `status` `loading`, and `percent` the share of the four
+  that have (0, 25, 50, 75); a client can say "Fetching weather stations
+  (2 of 4 providers)". `percent` is 100 otherwise. A refresh of a list
+  that is already in is not `loading`. The stations' line carries no age
+  (it would change every 30 s and send the whole list again): `time`, the
+  newest observation's, says how old it is. A failed provider's
+  `note` is what went wrong (`dmi-obs.json: HTTP 503 Service
+  Unavailable`); a client names it rather than drawing nothing silently.
 
 **Fetching.** Only while at least one client has a layer on. Each provider
 is fetched at most once every 10 minutes, in one bulk request (SMHI's API
@@ -1721,9 +1745,20 @@ one more `obs` line, `source` `grid`, with only the layers it has on:
 - `provider.status` is `ok`, or `failed` with a `note` (the last fetch
   failed; the previous grid stays while it is under 3 hours old). With no
   grid at all (the first fetch failed) the line has neither `temperature`
-  nor `wind`, and the note says why.
-- The line is sent to a client when it asks, and again to every client
-  with the grid on when a new hour arrives. Turning the grid off is not
+  nor `wind`, and the note says why. S47: before the first grid since the
+  engine started (or a `reset`) is in, a line with `provider.status`
+  `loading` (note `loading`) says so at once.
+- `status`, `percent`, `ageSeconds` (S47, additive): like the stations'
+  line (which has no `ageSeconds`), `status` `loading` (then `percent` 0) until a grid is in, `ok`
+  with one to show, `error` with none; `ageSeconds` is the shown hour's
+  age. A refresh to a newer hour is not announced as `loading`.
+- Lightning (S44) has no loading line and no `status`/`percent` of this
+  kind: until its first `lightning` message a client says it is loading
+  (the Qt panel and the web page write "Fetching lightning"); that
+  message's own `status` (`ok` or `failed` with a `note`) says the rest.
+- The line is sent to a client when it asks (S47: every time it asks),
+  and again to every client with the grid on when a new hour arrives; a
+  line a full queue refused stays owed, as the stations' does. Turning the grid off is not
   answered; the client drops what it drew.
 
 **Fetching the grid.** Only while at least one client has a grid layer
@@ -1745,6 +1780,62 @@ nothing. Every fetch writes one `Grid metnordic` line to `engine.log`.
 | Resolution | 1 km at the source; 3 km (temperature) and 24 km (wind) as fetched |
 | Cadence, latency | hourly; the HH:00 analysis appears about HH:15 |
 | Size | about 2 MB per hour as fetched; the PNG about 0.5 MB |
+
+## Reset
+
+S47 adds one command for when something looks stuck: a load that does not
+finish, a layer that never shows, a timeline that stopped moving.
+
+```json
+{"type":"reset"}
+```
+
+It forgets what is transient and loads the **current** choices afresh; the
+station (or composite, or My mosaic's set), the product, the layers and
+the view are kept. The engine:
+
+- aborts the selected station's poller (a radar's, a composite's product
+  builder, My mosaic's) and the keep-warm pollers, and drops the timeline,
+  the sweep in progress and the load's progress;
+- checks the current ring in the frame catalog and drops the rows whose
+  frame no longer reads or whose texture files are gone or empty, so they
+  are built again rather than named to clients that cannot load them;
+- stops playback (`state.playing` `false`, as a `select_site` does: the
+  timeline is rebuilt under it; a client presses play again);
+- opens the ring again (its newest frame shows at once) and starts the
+  poller with the catalogued frames replayed, the load's tracker from 0:
+  `state.loading` shows its first stage at 0 % even with a frame on
+  screen, and the bar follows it as on a `select_site`;
+- forgets the stations' list, the MET Nordic grid and the lightning
+  strikes, aborting a fetch in flight, and fetches them again at once for
+  whoever has a layer on (they come back `loading` first, as on a start).
+  The observations' cached bodies are deleted; the daily station lists
+  (DMI's, Frost's) are kept. An error backoff survives a reset: a provider
+  whose last fetch failed (a 429, a 503) keeps its cached copy and is asked
+  again only when its retry is due, and so do the grid and the lightning
+  after a failure.
+
+**Kept on disk:** the volumes (the tilt store) and the catalogued frames
+whose files are fine. They are immutable, and fetching them again would
+cost SMHI, the ORD bucket and OPERA thousands of requests for nothing.
+
+The command is answered with a `state` to every client (the sender's
+included, even when nothing changed, since a client drops its own state
+on reset). A second `reset` within 10 seconds of the last is a no-op
+(logged `Reset: ignored`); it is still answered with the current `state`.
+Every reset writes `Reset: by client N` to `engine.log`.
+
+**Clients.** A client's Reset also drops its own frames, textures, layer
+lines and loading state and reconnects (`hello`, the state, `set_layers`
+again), then sends `reset`. An engine older than S47 ignores the command
+(`Ignoring unsupported command: reset`), so against one the client's
+reconnect is the whole reset. Qt: `app.resetAll()`, the Reset row of the
+LAYERS panel, `Shift+R`, the popover's Reset; web: Reset in the menu (the
+gateway relays it like any other command).
+
+**Stuck clients.** From S47 a client whose queue is full when a `state` is
+broadcast is disconnected (it reconnects and gets everything again);
+before, it stayed connected but never heard another `state`.
 
 ## Lightning
 

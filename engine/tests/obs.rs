@@ -39,6 +39,26 @@ fn next_of(client: &mut BufReader<UnixStream>, kind: &str, wait: Duration) -> Op
     None
 }
 
+/// S47: the next stations `obs` line that is not `loading`, checking that
+/// those before it are well formed.
+fn next_settled(client: &mut BufReader<UnixStream>, wait: Duration) -> Option<Value> {
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        let value = next_of(client, "obs", deadline - Instant::now())?;
+        if value["source"] != "stations" {
+            continue;
+        }
+        let percent = value["percent"].as_u64().expect("S47: percent");
+        if value["status"] == "loading" {
+            assert!(percent < 100, "{value}");
+            continue;
+        }
+        assert_eq!(percent, 100, "{value}");
+        return Some(value);
+    }
+    None
+}
+
 fn send(client: &mut BufReader<UnixStream>, command: Value) {
     writeln!(client.get_mut(), "{command}").unwrap();
 }
@@ -88,8 +108,16 @@ fn layers_are_per_client_and_answered_with_obs() {
     );
     // S43: the grid is its own `obs` line; with the port closed it says
     // the fetch failed, and holds no layer.
+    // S47: it says it is loading first.
+    let grid = next_of(&mut new, "obs", REPLY).expect("obs source grid");
+    assert_eq!(
+        (grid["source"].as_str(), grid["status"].as_str()),
+        (Some("grid"), Some("loading"))
+    );
+    assert_eq!(grid["provider"]["status"], "loading");
     let grid = next_of(&mut new, "obs", REPLY).expect("obs source grid");
     assert_eq!(grid["source"], "grid");
+    assert_eq!(grid["status"], "error");
     assert_eq!(grid["provider"]["status"], "failed");
     assert!(grid.get("temperature").is_none());
     send(
@@ -102,7 +130,9 @@ fn layers_are_per_client_and_answered_with_obs() {
         &mut new,
         json!({"type":"set_layers","temp":true,"wind":true}),
     );
-    let obs = next_of(&mut new, "obs", REPLY).expect("obs after set_layers");
+    let obs = next_settled(&mut new, REPLY).expect("obs after set_layers");
+    // S47: every provider failed or is skipped: the layer is in error.
+    assert_eq!(obs["status"], "error");
     assert_eq!(obs["v"], 2);
     assert_eq!(obs["source"], "stations");
     assert_eq!(obs["stations"], json!([]));
@@ -125,11 +155,40 @@ fn layers_are_per_client_and_answered_with_obs() {
     send(&mut new, json!({"type":"set_layers"}));
     send(&mut new, json!({"type":"set_layers","wind":true}));
     assert!(next_of(&mut new, "obs", Duration::from_secs(3)).is_some());
+    // S47: the same layers again are answered too (a client that lost the
+    // line asks again).
+    send(&mut new, json!({"type":"set_layers","wind":true}));
+    assert!(next_of(&mut new, "obs", Duration::from_secs(3)).is_some());
 
     let log = fs::read_to_string(&log_path).unwrap_or_default();
     assert!(log.contains("Obs frost: skipped"), "{log}");
     assert!(log.contains("Obs smhi: requests=4 failed"), "{log}");
     assert_eq!(log.matches("Obs fmi: requests=1").count(), 1, "{log}");
+
+    // S47: `reset` forgets the list and reads it again, loading from 0;
+    // everyone hears a state. A second within 10 s is a no-op.
+    send(&mut new, json!({"type":"reset"}));
+    assert!(
+        next_of(&mut old, "state", REPLY).is_some(),
+        "the others hear the reset"
+    );
+    let loading = next_of(&mut new, "obs", REPLY).expect("obs after reset");
+    assert_eq!(loading["status"], "loading", "{loading}");
+    assert_eq!(loading["percent"], 0);
+    assert!(next_settled(&mut new, REPLY).is_some());
+    send(&mut new, json!({"type":"reset"}));
+    assert!(
+        next_of(&mut new, "state", REPLY).is_some(),
+        "answered, though ignored"
+    );
+    thread::sleep(Duration::from_secs(1));
+    let log = fs::read_to_string(&log_path).unwrap_or_default();
+    // Review N3: every provider failed (the port is closed), and an error
+    // backoff survives the reset: nothing is asked again before it is due.
+    assert_eq!(log.matches("Obs fmi: requests=1").count(), 1, "{log}");
+    assert!(log.contains("Obs: reset"), "{log}");
+    assert_eq!(log.matches("Reset: by client").count(), 1, "{log}");
+    assert!(log.contains("Reset: ignored"), "{log}");
 }
 
 struct Guard(std::process::Child, PathBuf);

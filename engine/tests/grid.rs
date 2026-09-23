@@ -203,8 +203,10 @@ fn the_grid_is_fetched_once_and_drawn_under_tex() {
     let (mut grid, mut listed) = (None, None);
     let deadline = Instant::now() + REPLY;
     while (grid.is_none() || listed.is_none()) && Instant::now() < deadline {
+        // S47: a `loading` line comes first; the settled one follows.
         if let Some(value) = read(&mut both)
             && value["type"] == "obs"
+            && value["status"] != "loading"
         {
             match value["source"].as_str() {
                 Some("grid") => grid = Some(value),
@@ -221,6 +223,15 @@ fn the_grid_is_fetched_once_and_drawn_under_tex() {
         )
     });
     assert_eq!(grid["provider"]["status"], "ok", "{}", grid["provider"]);
+    assert_eq!(
+        (grid["status"].as_str(), grid["percent"].as_u64()),
+        (Some("ok"), Some(100))
+    );
+    assert!(
+        grid["ageSeconds"]
+            .as_i64()
+            .is_some_and(|age| (0..3600).contains(&age))
+    );
     assert_eq!(grid["attribution"], "MET Norway (CC BY 4.0)");
     let texture = grid["temperature"]["texture"].as_str().unwrap();
     assert!(texture.starts_with("tex/grid-temp-"));

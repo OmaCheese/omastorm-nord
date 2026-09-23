@@ -72,6 +72,133 @@ QtObject {
         layersLine = line;
         socket.write(line + "\n");
     }
+    // ---- S47: the weather layers' own loading, and Reset ----
+    /// A provider that let the stations down, in a few words ("DMI error
+    /// 503", "Frost: no client ID"), or "".
+    function providerProblem(p) {
+        if (!p) return "";
+        if (p.status === "skipped" && p.id === "frost") return "Frost: no client ID";
+        if (p.status === "skipped") return (p.name || p.id) + ": off";
+        if (p.status !== "failed") return "";
+        var m = /HTTP (\d{3})/.exec(p.note || "");
+        return (p.name || p.id) + (m ? " error " + m[1] : /timed out|timeout/i.test(p.note || "") ? " timed out" : " failed");
+    }
+    /// Each weather layer as the surfaces say it: {id, state (off, loading,
+    /// ok, error), percent, text, problems}. From the engine's `status`
+    /// and `percent` (S47); an older engine sends neither, and its layers
+    /// read `loading` until their first line and `ok` after it.
+    readonly property var stationsLayer: {
+        if (!stationsWanted) return {id: "stations", state: "off", percent: 0, text: "", problems: []};
+        var o = obs;
+        if (!o) return {id: "stations", state: "loading", percent: 0, text: "Fetching weather stations", problems: []};
+        var providers = Array.isArray(o.providers) ? o.providers : [];
+        var problems = providers.map(providerProblem).filter(x => x !== "");
+        var n = Array.isArray(o.stations) ? o.stations.length : 0;
+        if (o.status === "loading") {
+            var total = providers.length || 4, done = providers.filter(p => p.status !== "loading").length;
+            return {id: "stations", state: "loading", percent: Number(o.percent) || 0, problems: problems,
+                    text: "Fetching weather stations (" + done + " of " + total + " providers)"};
+        }
+        if (o.status === "error" || (n === 0 && problems.length > 0 && problems.length === providers.length))
+            return {id: "stations", state: "error", percent: 100, problems: problems,
+                    text: "Weather stations: " + (problems.length ? problems.join(", ") : "none")};
+        return {id: "stations", state: "ok", percent: 100, problems: problems, text: n + " stations"};
+    }
+    readonly property var gridLayer: {
+        var what = layers && layers.temp ? "the temperature grid" : "the wind grid";
+        if (!gridWanted) return {id: "grid", state: "off", percent: 0, text: "", problems: []};
+        var g = grid;
+        if (!g || g.status === "loading" || (g.provider && g.provider.status === "loading"))
+            return {id: "grid", state: "loading", percent: 0, text: "Fetching " + what, problems: []};
+        var p = g.provider || {};
+        var problem = p.status === "failed" ? providerProblem({status: "failed", name: "MET Nordic grid", note: p.note}) : "";
+        if (!g.time) return {id: "grid", state: "error", percent: 100, problems: problem ? [problem] : [],
+                             text: problem || ("MET Nordic grid: " + (p.note || "none"))};
+        return {id: "grid", state: "ok", percent: 100, problems: problem ? [problem + " (update)"] : [],
+                text: "Grid " + Qt.formatTime(new Date(g.time), Qt.locale().timeFormat(Locale.ShortFormat))};
+    }
+    readonly property var lightningLayer: {
+        if (!lightningWanted) return {id: "lightning", state: "off", percent: 0, text: "", problems: []};
+        if (state && !lightningInfo) return {id: "lightning", state: "error", percent: 100, text: "Lightning: engine too old", problems: ["engine too old"]};
+        var m = lightning;
+        if (!m) return {id: "lightning", state: "loading", percent: 0, text: "Fetching lightning", problems: []};
+        if (m.status === "failed") {
+            var problem = providerProblem({status: "failed", name: "FMI lightning", note: m.note});
+            return {id: "lightning", state: m.path ? "ok" : "error", percent: 100, text: problem, problems: [problem]};
+        }
+        return {id: "lightning", state: "ok", percent: 100, text: (Number(m.count) || 0) + " strikes", problems: []};
+    }
+    /// The layers still loading, for the loading bar and card.
+    readonly property var layerLoads: [stationsLayer, gridLayer, lightningLayer].filter(l => l.state === "loading")
+    readonly property var layerStates: [stationsLayer, gridLayer, lightningLayer].filter(l => l.state !== "off")
+    /// Review of the stations bug: a layer that is on and has had no line
+    /// for a while is asked for again (an S47 engine answers every
+    /// `set_layers`; an older one ignores the repeat).
+    property Timer layersWatch: Timer {
+        interval: 15000
+        repeat: true
+        running: !!engine.socket && engine.socket.connected && engine.layersSent && engine.reasked < 4
+            && ((engine.stationsWanted && !engine.obs) || (engine.gridWanted && !engine.grid) || (engine.lightningWanted && !engine.lightning && !!engine.lightningInfo))
+        // Review S3: all off, then the layers again: an engine older than
+        // S47 answers only a layer turning on, never the same ask twice.
+        onTriggered: {
+            engine.reasked++;
+            var off = {type: "set_layers", temp: false, wind: false};
+            if (engine.lightningSent) off.lightning = false;
+            engine.socket.write(JSON.stringify(off) + "\n");
+            engine.layersLine = "";
+            engine.sendLayers();
+        }
+    }
+    // Review N7: a new set of wanted layers starts the count again.
+    readonly property string wantedKey: [stationsWanted, gridWanted, lightningWanted].join()
+    onWantedKeyChanged: reasked = 0
+    /// Re-asks on this connection; an engine with no weather layers at all
+    /// (older than S42) is not asked for ever.
+    property int reasked: 0
+    /// S47: a Reset is under way: the connection is being replaced, and the
+    /// new one sends `reset` after `hello`.
+    property bool resetting: false
+    signal resetDone()
+    /// S47 (docs/protocol.md, Reset): drop everything this client holds
+    /// (state, frames, layer lines, the load's progress), reconnect, and
+    /// ask the engine to load the current choices afresh. The station, the
+    /// product, the layers and the view stay as they are.
+    function resetAll() {
+        // Review S2: one at a time (Shift+R autorepeat reconnected per key).
+        if (incompatible || resetting) return;
+        resetting = true;
+        resetTimeout.restart();
+        state = null;
+        obs = null;
+        grid = null;
+        lightning = null;
+        heldLoading = null;
+        lastLoading = null;
+        holdTimer.stop();
+        pendingId = "";
+        rejection = "";
+        error = "";
+        layersSent = false;
+        layersLine = "";
+        // Review S1: the old connection stays open until the new one's
+        // hello, so the engine never sees this client gone (a composite's
+        // product would go back to the composite).
+        if (retiring) retiring.destroy();
+        retiring = socket;
+        socket = socketFactory.createObject(engine);
+    }
+    property var retiring: null
+    /// End a Reset: `sent` when the new connection's hello came and the
+    /// `reset` went; otherwise (no hello within 5 s, or the new connection
+    /// failed) the engine is down, and it says so.
+    function endReset(sent) {
+        resetting = false;
+        resetTimeout.stop();
+        if (retiring) { retiring.destroy(); retiring = null; }
+        if (!sent && !state && !incompatible) error = disconnectedText;
+    }
+    property Timer resetTimeout: Timer { interval: 5000; onTriggered: engine.endReset(false) }
     /// Places answering this client's `search_places`; a reply, not state.
     signal placesReady(var message)
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-se/"
@@ -613,6 +740,14 @@ QtObject {
                 layersSent = false;
                 gridRefused = false;
                 lightningSent = false;
+                reasked = 0;
+                // S47: a Reset asks the engine before the layers go again,
+                // so they come back fetched afresh.
+                if (resetting) {
+                    socket.write(JSON.stringify({type: "reset"}) + "\n");
+                    endReset(true);
+                    resetDone();
+                }
                 sendLayers();
             }
             else if (message.type === "state") {
@@ -679,10 +814,14 @@ QtObject {
     property var socket: socketFactory.createObject(engine)
     property Component socketFactory: Component {
         Socket {
+            id: sock
             path: engine.runtime + "engine.sock"
             connected: true
-            parser: SplitParser { onRead: data => engine.receive(data) }
+            // S47: a connection a Reset replaced (kept open until the new
+            // one's hello, review S1) says nothing and is not listened to.
+            parser: SplitParser { onRead: data => { if (engine.socket === sock) engine.receive(data); } }
             onConnectedChanged: {
+                if (engine.socket !== sock) return;
                 if (!connected && !engine.incompatible) {
                     engine.state = null;
                     engine.obs = null;
@@ -692,7 +831,7 @@ QtObject {
                 }
             }
             onError: {
-                if (!engine.incompatible) engine.error = engine.unavailableText;
+                if (engine.socket === sock && !engine.incompatible) engine.error = engine.unavailableText;
             }
         }
     }
@@ -703,6 +842,9 @@ QtObject {
         // A failed initial connect leaves Quickshell's underlying socket
         // allocated; toggling connected cannot retry it. Replace the object.
         onTriggered: {
+            // S47 review S2: a Reset whose new connection did not come up
+            // is over (the engine is down): no stale `reset` later.
+            if (engine.resetting) engine.endReset(false);
             var previous = engine.socket;
             engine.socket = engine.socketFactory.createObject(engine);
             previous.destroy();

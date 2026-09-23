@@ -122,6 +122,7 @@ with cached frames kept. A healthy SMHI frame is already 5 to 10 minutes old.
 | `n` | Nearest site |
 | `Shift+L` | Lock the station |
 | `Shift+H` | Choose a location |
+| `Shift+R` | Reset: reload the radar and the weather layers (station, product, layers and view kept) |
 | `Space` | Loop the frames |
 | `[` `]` | Step a frame |
 | `Home` `End` | Oldest or newest frame |

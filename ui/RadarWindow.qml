@@ -374,6 +374,20 @@ Item {
                 : {type: "set_product", product: "CAPPI", heightM: app.pendingHeight})
     }
     Connections { target: engine; function onRejectionChanged() { if (engine.rejection) app.pendingHeight = 0; } }
+    /// S47 (docs/protocol.md, Reset): forget what is transient and load the
+    /// current choices afresh: this window's engine connection drops its
+    /// state, frames, layer lines and load and reconnects, and asks the
+    /// engine to abort its loads and fetch again. The station, product,
+    /// layers and view stay. S46's right-click menu calls this.
+    function resetAll() {
+        treatmentMenu.close();
+        productMenu.close();
+        if (layersPanel.opened) layersPanel.close();
+        pendingHeight = 0;
+        engine.resetAll();
+        notice = "RESET · RELOADING RADAR AND LAYERS";
+        noticeTimer.restart();
+    }
     function run(action) {
         switch (action) {
         case "search": treatmentMenu.close(); picker.show(""); break;
@@ -397,6 +411,7 @@ Item {
         case "relief": relief = !relief; break;
         case "help": treatmentMenu.close(); if (sheet.open) sheet.close(); else sheet.show(); break;
         case "layers": treatmentMenu.close(); productMenu.close(); if (layersPanel.opened) layersPanel.close(); else layersPanel.show(); break;
+        case "reset_all": resetAll(); break;
         case "close": dismiss(); break;
         }
     }
@@ -440,6 +455,14 @@ Item {
     IpcHandler {
         target: "layers"
         function set(name: string, on: bool): void { app.store.layers.set(name, on); }
+        // S47: Reset, and each layer's state as the panel says it.
+        function reset(): void { app.resetAll(); }
+        function states(): string {
+            return JSON.stringify({stations: engine.stationsLayer, grid: engine.gridLayer, lightning: engine.lightningLayer,
+                                   loads: engine.layerLoads.map(l => l.id), resetting: engine.resetting,
+                                   radar: engine.loading ? engine.loading.label : "", percent: engine.percent,
+                                   frame: engine.frame ? engine.frame.scanTime : "", timeline: engine.timeline.length});
+        }
         function panel(open: bool): void { if (open) layersPanel.show(); else layersPanel.close(); }
         // S43: stations, grid or both.
         function source(name: string): void { app.store.layers.setSource(name); }
@@ -1390,6 +1413,9 @@ Item {
                         LoadingBar {
                             id: loadingBar
                             loading: engine.loading
+                            // S47: the weather layers' fetches when the
+                            // radar has nothing loading.
+                            layers: engine.layerLoads
                             theme: app.theme
                             names: !win.compact
                             // S41: 4 px, not S31's 2 px rule.
@@ -1633,6 +1659,11 @@ Item {
             lightningInfo: engine.lightningInfo
             strikesShown: lightningLayer.shownCounts[0] + lightningLayer.shownCounts[1]
             keyText: (app.bindings.layers || []).map(KeyMap.pretty).join(" ")
+            // S47: each layer's loading or failure, and Reset.
+            stationsLayer: engine.stationsLayer
+            gridLayer: engine.gridLayer
+            lightningLayer: engine.lightningLayer
+            onResetRequested: app.resetAll()
           }
           Item {
             id: treatmentMenu
@@ -1858,6 +1889,13 @@ Item {
         Timer {
             interval: Number(Quickshell.env("OMASTORM_CAPTURE_DELAY")) || 2500; running: !app.session && !!Quickshell.env("OMASTORM_CAPTURE"); repeat: false
             onTriggered: surface.grabToImage(result => { result.saveToFile(Quickshell.env("OMASTORM_CAPTURE")); Qt.quit(); })
+        }
+        // S47: a capture in the middle of a run (a load, then Reset), for
+        // the captures that need several: quickshell ipc call capture save <png>.
+        IpcHandler {
+            target: "capture"
+            enabled: !app.session
+            function save(path: string): void { surface.grabToImage(result => result.saveToFile(path)); }
         }
     }
 }

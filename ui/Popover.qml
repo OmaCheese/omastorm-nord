@@ -313,6 +313,8 @@ FocusScope {
             Control { text: "‹"; Accessible.name: "Previous frame"; enabled: card.frames.length > 1; onClicked: card.step(-1) }
             Control { text: connection.playing ? "Ⅱ" : "▷"; Accessible.name: "Play or pause"; enabled: card.frames.filter(f => f.status === "complete").length > 1; onClicked: card.play() }
             Control { text: "›"; Accessible.name: "Next frame"; enabled: card.frames.length > 1; onClicked: card.step(1) }
+            // S47: Reset (docs/protocol.md): reload the radar and the layers.
+            Control { text: "↻"; Accessible.name: "Reset: reload radar and layers"; enabled: !connection.resetting; onClicked: connection.resetAll() }
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 3
@@ -327,6 +329,7 @@ FocusScope {
                     // running, as it did.
                     LoadingBar {
                         loading: connection.loading
+                        layers: connection.layerLoads
                         theme: card.theme
                         // S41: 3 px, readable, still under the ticks.
                         thickness: 3

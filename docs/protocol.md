@@ -343,7 +343,8 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
 {"type":"set_layers","temp":true,"wind":false}
 ```
 
-- `set_layers` (S42) turns the weather layers on or off for its sender;
+- `set_layers` (S42) turns the weather layers on or off for its sender,
+  from the stations, the MET Nordic grid (S43) or both (`source`);
   answered with `obs`. See [Weather layers](#weather-layers).
 - `set_mosaic` (S25) chooses My mosaic's radars and the combine rule (S37
   took the per-radar reach out). The rules are in [My mosaic](#my-mosaic).
@@ -1597,19 +1598,23 @@ others, and a client that never sends `set_layers` never receives `obs`
 {"type":"set_layers","temp":true,"wind":true}
 {"type":"set_layers","temp":false,"wind":false}
 {"type":"set_layers","temp":true,"wind":false,"source":"stations"}
+{"type":"set_layers","temp":true,"wind":true,"source":"both"}
 ```
 
 - `temp` and `wind` are optional booleans, `false` when absent. Both off
   (the state of every connection until it says otherwise) means the
   engine sends that client no `obs` and, when no client has a layer on,
   fetches nothing.
-- `source` is optional: `stations` (the default, S42). S43 adds `grid`
-  (the MET Nordic model analysis) under the same command; until it is
-  built, `grid` is answered with an `error` and the layers stay as they
-  were. Any other value is an `error`.
+- `source` is optional and applies to both layers: `stations` (the
+  default, S42), `grid` (S43: the MET Nordic analysis, see
+  [The MET Nordic grid](#the-met-nordic-grid)) or `both`. Any other value
+  is an `error` and the layers stay as they were. An S42 engine answers
+  `grid` and `both` with an `error`, so a client falls back to `stations`
+  by leaving `source` out.
 - The command is answered with `obs` to its sender at once when a layer is
   on and the engine holds observations; otherwise `obs` follows the first
-  fetch. Turning both layers off is not answered; the client drops what it
+  fetch. With `both`, the stations and the grid come as two `obs` lines,
+  told apart by their `source`; a client keeps one of each. Turning both layers off is not answered; the client drops what it
   drew.
 
 ```json
@@ -1669,6 +1674,71 @@ fetches nothing. Every fetch writes one `Obs` line to `engine.log`.
 | FMI (FI, Åland) | `opendata.fmi.fi/wfs` `fmi::observations::weather::multipointcoverage` | 10 min | ~189 |
 | DMI (DK) | `opendataapi.dmi.dk/v2/metObs` `period=latest-10-minutes`, no key | 10 min | 58 temp, 54 wind |
 | MET Norway (NO) | `frost.met.no` `sources` (WMO stations with air temperature, daily) and `observations` `referencetime=latest` in 2 chunks; client ID as basic auth | 10 min (some hourly) | ~248 listed, ~240 reporting |
+
+### The MET Nordic grid
+
+S43 adds MET Norway's **MET Nordic analysis** under the stations: the
+hourly 1 km model analysis over Norway, Sweden, Finland, Denmark and the
+Baltics (MEPS corrected by the stations; CC BY 4.0, credit "MET Norway").
+A client asks for it with `set_layers` `source` `grid` or `both`, and gets
+one more `obs` line, `source` `grid`, with only the layers it has on:
+
+```json
+{"type":"obs","v":2,"source":"grid","time":"2026-09-23T04:00:00Z",
+ "temperature":{"texture":"tex/grid-temp-20260923T04Z-5c1e0a9d.png",
+                "bounds":[-11.77,52.3,41.77,74.27],"width":1200,"height":1500,
+                "minC":-3.1,"maxC":18.8},
+ "wind":{"spacingKm":24,"points":[[52.3,1.92,6.4,231],[52.42,2.27,6.1,229]]},
+ "provider":{"id":"metnordic","name":"MET Norway","status":"ok"},
+ "attribution":"MET Norway (CC BY 4.0)"}
+```
+
+- `time` is the analysis' valid time, on the hour (UTC).
+- `temperature` (present when the client has `temp` on) is the 2 m air
+  temperature as one RGBA PNG under `tex/`, already coloured on the
+  stations' scale (−30 … 32 °C, the same stops as the station pills and
+  the legend) and opaque inside the grid, transparent outside it. The
+  image is in **Web Mercator**: `bounds` is `[west, south, east, north]`
+  in degrees, columns are linear in longitude and rows linear in Mercator
+  y, so a client places it by its four corners (MapLibre's `image` source,
+  or the Qt map's own Mercator units) and chooses its own opacity (the
+  field is drawn translucent, under the radar). `minC` and `maxC` are the
+  field's extremes. The file follows the texture rules: its name changes
+  with its content, and it stays published while it is the newest grid
+  (retired 30 s after a newer hour replaces it).
+- `wind` (present when the client has `wind` on) is the 10 m wind on a
+  regular grid every `spacingKm` km of the model's own grid (Lambert
+  conformal), as `[lat, lon, speed m/s, from-direction °]` rows: speed and
+  direction as in the station list (`windMs`, `windDirDeg`: where the wind
+  blows **from**, clockwise from true north). Every point of the grid is
+  sent (about 7 000); a client thins them by zoom as it thins stations.
+- `provider.status` is `ok`, or `failed` with a `note` (the last fetch
+  failed; the previous grid stays while it is under 3 hours old). With no
+  grid at all (the first fetch failed) the line has neither `temperature`
+  nor `wind`, and the note says why.
+- The line is sent to a client when it asks, and again to every client
+  with the grid on when a new hour arrives. Turning the grid off is not
+  answered; the client drops what it drew.
+
+**Fetching the grid.** Only while at least one client has a grid layer
+on, from `thredds.met.no`
+`metpplatest/met_analysis_1_0km_nordic_latest.nc` over OPeNDAP, never the
+whole file (114 MB): a probe of `time` alone (about 100 bytes), then, when
+the probe names a newer hour than the one cached, one subset of
+`x`, `y` and `air_temperature_2m` every 3 km with `wind_speed_10m` and
+`wind_direction_10m` every 24 km (about 2 MB). The analysis for HH:00 is
+written about HH:15, so after an hour is in the engine waits until
+20 minutes past the next hour, then probes every 10 minutes until the new
+hour is there: one download per hour at most. The subset is cached under
+`$XDG_CACHE_HOME/omastorm-se/obs/`, so a restart within the hour fetches
+nothing. Every fetch writes one `Grid metnordic` line to `engine.log`.
+
+| Grid | |
+|---|---|
+| Extent | 1796 × 2321 km, Lambert conformal conic (lat₀ = lat₁ = lat₂ = 63°, lon₀ = 15°, sphere R = 6371 km); corners 52.3° N 1.9° E, 52.3° N 28.1° E, 72.2° N 11.8° W, 72.2° N 41.8° E |
+| Resolution | 1 km at the source; 3 km (temperature) and 24 km (wind) as fetched |
+| Cadence, latency | hourly; the HH:00 analysis appears about HH:15 |
+| Size | about 2 MB per hour as fetched; the PNG about 0.5 MB |
 
 ## Configuration
 

@@ -84,9 +84,7 @@ impl Strike {
         )
     }
     fn valid(&self) -> bool {
-        (-90.0..=90.0).contains(&self.lat)
-            && (-180.0..=180.0).contains(&self.lon)
-            && self.ms > 0
+        (-90.0..=90.0).contains(&self.lat) && (-180.0..=180.0).contains(&self.lon) && self.ms > 0
     }
 }
 
@@ -169,7 +167,10 @@ pub fn parse_fmi(body: &[u8]) -> Result<Vec<Strike>, String> {
             tuple_rows.len()
         ));
     }
-    let number = |s: Option<&str>| s.and_then(|s| s.parse::<f64>().ok()).filter(|v| v.is_finite());
+    let number = |s: Option<&str>| {
+        s.and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+    };
     let mut out = Vec::with_capacity(position_rows.len());
     for (p, t) in position_rows.iter().zip(&tuple_rows) {
         let p: Vec<&str> = p.split_whitespace().collect();
@@ -237,8 +238,7 @@ pub fn parse_smhi(body: &[u8]) -> Result<Vec<Strike>, String> {
         let Some(date) = chrono::NaiveDate::from_ymd_opt(v.year, v.month, v.day) else {
             continue;
         };
-        let Some(time) = date.and_hms_nano_opt(v.hours, v.minutes, v.seconds, v.nanoseconds)
-        else {
+        let Some(time) = date.and_hms_nano_opt(v.hours, v.minutes, v.seconds, v.nanoseconds) else {
             continue;
         };
         let strike = Strike {
@@ -411,11 +411,23 @@ pub fn line(status: &Status) -> String {
         v: crate::protocol::VERSION,
         status: if status.failed { "failed" } else { "ok" },
         path: &status.path,
-        from: if status.from > 0 { iso(status.from) } else { String::new() },
-        to: if status.to > 0 { iso(status.to) } else { String::new() },
+        from: if status.from > 0 {
+            iso(status.from)
+        } else {
+            String::new()
+        },
+        to: if status.to > 0 {
+            iso(status.to)
+        } else {
+            String::new()
+        },
         count: status.count,
         cloud_to_ground: status.cloud_to_ground,
-        newest: if status.newest > 0 { iso(status.newest) } else { String::new() },
+        newest: if status.newest > 0 {
+            iso(status.newest)
+        } else {
+            String::new()
+        },
         source,
         attribution,
         trail_s: TRAIL.as_secs(),
@@ -756,8 +768,7 @@ async fn replay(dir: PathBuf, path: PathBuf) {
             hub.publish(text.clone(), &status.path);
         } else {
             // Keep the file referenced while nobody watches.
-            hub.inner.lock().unwrap().path =
-                (!status.path.is_empty()).then(|| status.path.clone());
+            hub.inner.lock().unwrap().path = (!status.path.is_empty()).then(|| status.path.clone());
         }
         hub.wake.notified().await;
     }
@@ -799,12 +810,19 @@ mod tests {
     #[test]
     fn an_exception_or_garbage_is_an_error() {
         let report = br#"<?xml version="1.0"?><ExceptionReport><Exception><ExceptionText>Invalid time interval!</ExceptionText></Exception></ExceptionReport>"#;
-        assert_eq!(parse_fmi(report).unwrap_err(), "FMI: Invalid time interval!");
+        assert_eq!(
+            parse_fmi(report).unwrap_err(),
+            "FMI: Invalid time interval!"
+        );
         assert!(parse_fmi(b"<html>busy</html>").is_err());
         let broken = String::from_utf8(fixture("fmi_lightning_20260923T0534Z.xml.gz"))
             .unwrap()
             .replacen("1 6 1 0.8\n", "", 1);
-        assert!(parse_fmi(broken.as_bytes()).unwrap_err().contains("positions but"));
+        assert!(
+            parse_fmi(broken.as_bytes())
+                .unwrap_err()
+                .contains("positions but")
+        );
     }
 
     #[test]
@@ -837,7 +855,10 @@ mod tests {
         let h = 3_600_000;
         let now = 100 * h;
         let mut ring = Ring::default();
-        assert_eq!(ring.merge(vec![s(now - 6 * h, 60.0), s(now - h, 60.0)], now), 2);
+        assert_eq!(
+            ring.merge(vec![s(now - 6 * h, 60.0), s(now - h, 60.0)], now),
+            2
+        );
         assert_eq!(ring.strikes().len(), 1, "older than five hours: dropped");
         // The overlap brings the same strike again: not new.
         assert_eq!(ring.merge(vec![s(now - h, 60.0), s(now, 61.0)], now), 1);
@@ -848,15 +869,23 @@ mod tests {
     fn windows_overlap_and_backoff_grows() {
         let now = 50 * 3_600_000;
         assert_eq!(window(None, now), (now - KEEP.as_millis() as i64, now));
-        assert_eq!(window(Some(now - 60_000), now), (now - 60_000 - 15 * 60_000, now));
+        assert_eq!(
+            window(Some(now - 60_000), now),
+            (now - 60_000 - 15 * 60_000, now)
+        );
         // A long pause asks for no more than the ring keeps.
-        assert_eq!(window(Some(now - 24 * 3_600_000), now).0, now - KEEP.as_millis() as i64);
+        assert_eq!(
+            window(Some(now - 24 * 3_600_000), now).0,
+            now - KEEP.as_millis() as i64
+        );
         assert_eq!(backoff(0), POLL);
         assert_eq!(backoff(1), POLL);
         assert_eq!(backoff(2), POLL * 2);
         assert_eq!(backoff(3), POLL * 4);
         assert_eq!(backoff(10), BACKOFF_MAX);
-        assert!(url(0, 60_000).contains("starttime=1970-01-01T00:00:00Z&endtime=1970-01-01T00:01:00Z"));
+        assert!(
+            url(0, 60_000).contains("starttime=1970-01-01T00:00:00Z&endtime=1970-01-01T00:01:00Z")
+        );
         assert!(url(0, 1).contains("bbox=3,53,33,71.5"));
     }
 

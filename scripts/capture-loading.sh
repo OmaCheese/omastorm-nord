@@ -30,8 +30,8 @@ capture() { # name, delay ms, env...
 scratch=$(mktemp -d /tmp/omastorm-loading.XXXXXX)
 mkdir -p "$scratch/runtime" "$scratch/cache"
 XDG_RUNTIME_DIR="$scratch/runtime" XDG_CACHE_HOME="$scratch/cache" OMASTORM_ARCHIVE='' target/debug/omastorm-engine serve > "$scratch/engine.log" 2>&1 &
-for _ in $(seq 100); do [[ -S "$scratch/runtime/omastorm-se/engine.sock" ]] && break; sleep .1; done
-[[ -S "$scratch/runtime/omastorm-se/engine.sock" ]] || { echo "Scratch daemon did not start" >&2; cat "$scratch/engine.log" >&2; exit 1; }
+for _ in $(seq 100); do [[ -S "$scratch/runtime/omastorm-nord/engine.sock" ]] && break; sleep .1; done
+[[ -S "$scratch/runtime/omastorm-nord/engine.sock" ]] || { echo "Scratch daemon did not start" >&2; cat "$scratch/engine.log" >&2; exit 1; }
 capture none 2500 XDG_RUNTIME_DIR="$scratch/runtime" XDG_CACHE_HOME="$scratch/cache" OMASTORM_CONFIG="$none"
 capture before 1500 XDG_RUNTIME_DIR="$scratch/runtime" XDG_CACHE_HOME="$scratch/cache" OMASTORM_CONFIG="$config"
 capture after 20000 XDG_RUNTIME_DIR="$scratch/runtime" XDG_CACHE_HOME="$scratch/cache" OMASTORM_CONFIG="$config"

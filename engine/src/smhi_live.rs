@@ -52,7 +52,7 @@ pub const API: &str = "https://opendata-download-radar.smhi.se/api/version/lates
 /// The quality-controlled polar volume (plan section 2).
 pub const PRODUCT: &str = "qcvol";
 const USER_AGENT: &str = concat!(
-    "omastorm-se/",
+    "omastorm-nord/",
     env!("CARGO_PKG_VERSION"),
     " (fork of https://omastorm.com; SMHI open data)"
 );

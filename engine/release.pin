@@ -1,10 +1,10 @@
 # Verify published assets with mise engine-pin before committing.
-# Omastorm SE has published no engine release yet, so this pin carries no
+# Omastorm Nord has published no engine release yet, so this pin carries no
 # assets and every checkout builds its own engine: bash scripts/cargo.sh
 # build. The tag is upstream's last, kept only so the shape is valid; its
-# binaries serve $XDG_RUNTIME_DIR/omastorm/, not omastorm-se/, and are never
+# binaries serve $XDG_RUNTIME_DIR/omastorm/, not omastorm-nord/, and are never
 # fetched. `repo` is what CI copies into the candidate pin and what the
 # release guards ask, so it names the fork from here on. P2 step 6 replaces
 # all of this with engine-26.9.0 and both architectures' sha256.
 tag=engine-0.1.5
-repo=OmaCheese/omastorm-se
+repo=OmaCheese/omastorm-nord

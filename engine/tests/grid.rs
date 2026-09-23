@@ -173,7 +173,7 @@ fn the_grid_is_fetched_once_and_drawn_under_tex() {
     let connect = || {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if let Ok(stream) = UnixStream::connect(root.join("omastorm-se/engine.sock")) {
+            if let Ok(stream) = UnixStream::connect(root.join("omastorm-nord/engine.sock")) {
                 stream
                     .set_read_timeout(Some(Duration::from_millis(250)))
                     .unwrap();
@@ -235,7 +235,7 @@ fn the_grid_is_fetched_once_and_drawn_under_tex() {
     assert_eq!(grid["attribution"], "MET Norway (CC BY 4.0)");
     let texture = grid["temperature"]["texture"].as_str().unwrap();
     assert!(texture.starts_with("tex/grid-temp-"));
-    let png = fs::read(root.join("omastorm-se").join(texture)).expect("the texture is written");
+    let png = fs::read(root.join("omastorm-nord").join(texture)).expect("the texture is written");
     assert!(png.starts_with(b"\x89PNG"));
     assert_eq!(grid["temperature"]["width"], 1200);
     let (lo, hi) = (

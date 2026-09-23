@@ -46,7 +46,7 @@ from PIL import Image
 
 ZOOM = 8
 URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
-UA = "omastorm-se/S30 terrain grid (fork of https://omastorm.com)"
+UA = "omastorm-nord/S30 terrain grid (fork of https://omastorm.com)"
 MERCATOR_R = 6_378_137.0
 PIXEL_M = 2000.0
 SPHERE_M = 6_371_000.0

@@ -38,7 +38,7 @@ site/take-poster.png
 # mise per-machine overrides
 mise.local.toml
 
-# omastorm-se: spike scratch and live coordination state (the logs ARE committed)
+# omastorm-nord: spike scratch and live coordination state (the logs ARE committed)
 spike/
 coord/.lock
 coord/.git.lock

@@ -50,7 +50,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// MB; the limit leaves room for a far worse storm, not for a runaway body.
 const MAX_BODY: usize = 32 << 20;
 const USER_AGENT: &str = concat!(
-    "omastorm-se/",
+    "omastorm-nord/",
     env!("CARGO_PKG_VERSION"),
     " (fork of https://omastorm.com; lightning)"
 );

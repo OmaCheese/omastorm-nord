@@ -2,8 +2,8 @@
 //! a client ID, sent as HTTP basic auth with the ID as the user name and an
 //! empty password (the client secret is for OAuth2 and not used). The ID
 //! comes from `FROST_CLIENT_ID`, else from `FROST_CLIENT_ID=` in
-//! `$XDG_CONFIG_HOME/omastorm-se/frost.env` (default
-//! `~/.config/omastorm-se/frost.env`); with neither, Norway is skipped and
+//! `$XDG_CONFIG_HOME/omastorm-nord/frost.env` (default
+//! `~/.config/omastorm-nord/frost.env`); with neither, Norway is skipped and
 //! says so in `obs.providers`. The ID never goes into a URL, a cache file or
 //! a log line.
 //!
@@ -45,7 +45,7 @@ pub fn client_id() -> Option<String> {
         Some(base) if Path::new(&base).is_absolute() => std::path::PathBuf::from(base),
         _ => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".config"),
     };
-    id_in(&std::fs::read_to_string(dir.join("omastorm-se/frost.env")).ok()?)
+    id_in(&std::fs::read_to_string(dir.join("omastorm-nord/frost.env")).ok()?)
 }
 
 /// `FROST_CLIENT_ID=…` in an env file (optionally quoted, `export` allowed).
@@ -64,7 +64,7 @@ fn id_in(text: &str) -> Option<String> {
 pub fn parts(dir: &Path) -> Result<Vec<Part>, String> {
     if client_id().is_none() {
         return Err(format!(
-            "no Frost client ID ({ENV} or ~/.config/omastorm-se/frost.env)"
+            "no Frost client ID ({ENV} or ~/.config/omastorm-nord/frost.env)"
         ));
     }
     let mut parts = vec![Part {

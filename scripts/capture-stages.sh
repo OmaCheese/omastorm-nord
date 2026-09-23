@@ -35,12 +35,12 @@ capture() { # name, delay ms, env...
   echo "captured $name"
 }
 
-cp -r "${XDG_CACHE_HOME:-$HOME/.cache}/omastorm-se" "$scratch/cache/"
+cp -r "${XDG_CACHE_HOME:-$HOME/.cache}/omastorm-nord" "$scratch/cache/"
 # No interfaces: the poller reaches nothing, so the sheet costs no request.
 XDG_RUNTIME_DIR="$scratch/rt" XDG_CACHE_HOME="$scratch/cache" \
   unshare -rn target/debug/omastorm-engine serve > "$scratch/rt/engine.log" 2>&1 &
-for _ in $(seq 100); do [[ -S "$scratch/rt/omastorm-se/engine.sock" ]] && break; sleep .1; done
-[[ -S "$scratch/rt/omastorm-se/engine.sock" ]] || { echo "Scratch daemon did not start" >&2; cat "$scratch/rt/engine.log" >&2; exit 1; }
+for _ in $(seq 100); do [[ -S "$scratch/rt/omastorm-nord/engine.sock" ]] && break; sleep .1; done
+[[ -S "$scratch/rt/omastorm-nord/engine.sock" ]] || { echo "Scratch daemon did not start" >&2; cat "$scratch/rt/engine.log" >&2; exit 1; }
 
 harness=$(bash scripts/capture-harness.sh)
 harness_dir=$(dirname "$harness")

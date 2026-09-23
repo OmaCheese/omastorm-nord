@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 
 die() { printf '%s\n' "$@" >&2; exit 1; }
 
-id=rb.omastorm-se
+id=omacheese.omastorm-nord
 root=$(readlink -f "$PWD")
 plugins=${XDG_CONFIG_HOME:-${HOME:?}/.config}/omarchy/plugins
 target=$plugins/$id
@@ -102,7 +102,7 @@ unlink() {
     mv -- "$backup" "$target" || die "Removed the link but could not restore $backup"
     printf 'Restored installed clone at %s\n' "$target"
   else
-    printf 'Unlinked %s. No clone to restore; omarchy plugin add https://github.com/OmaCheese/omastorm-se --enable\n' "$target"
+    printf 'Unlinked %s. No clone to restore; omarchy plugin add https://github.com/OmaCheese/omastorm-nord --enable\n' "$target"
   fi
   rescan
 }

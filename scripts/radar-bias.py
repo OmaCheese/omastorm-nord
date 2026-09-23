@@ -6,7 +6,7 @@ products").
 The composites' products take, per texel, one radar's value with no
 averaging, so a radar that reads a few dB hotter than its neighbour shows
 as a seam. This estimates each overlapping pair's offset from the volumes
-in the engine's tilt store (S27: `<cache>/omastorm-se/tilts`, `index.sqlite`
+in the engine's tilt store (S27: `<cache>/omastorm-nord/tilts`, `index.sqlite`
 and one `.u8z` file per tilt) and the station table
 (`engine/data/sites.json`):
 
@@ -27,7 +27,7 @@ Output: `<out>.md` (the report) and `<out>.json`. The engine applies no
 correction; the numbers are for the human to judge whether one is worth
 asking for. A few frames are not a day: read small counts as indicative.
 
-  python3 scripts/radar-bias.py --store ~/.cache/omastorm-se/tilts --out review/s24b/bias
+  python3 scripts/radar-bias.py --store ~/.cache/omastorm-nord/tilts --out review/s24b/bias
 """
 import argparse
 import datetime as dt
@@ -53,7 +53,7 @@ NAMED = [("vara", "nohur"), ("angelholm", "dkste"), ("angelholm", "dksin"), ("va
 def args():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    p.add_argument("--store", type=Path, default=cache / "omastorm-se" / "tilts")
+    p.add_argument("--store", type=Path, default=cache / "omastorm-nord" / "tilts")
     p.add_argument("--sites", type=Path, default=Path(__file__).resolve().parent.parent / "engine/data/sites.json")
     p.add_argument("--out", type=Path, default=Path("radar-bias"))
     p.add_argument("--min-dbz", type=float, default=20.0)

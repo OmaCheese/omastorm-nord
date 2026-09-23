@@ -50,7 +50,7 @@ def load(env, url):
         with open(path, "rb") as f:
             return json.load(f)
     requests += 1
-    req = urllib.request.Request(url, headers={"User-Agent": "omastorm-se fetch-reference-radars"})
+    req = urllib.request.Request(url, headers={"User-Agent": "omastorm-nord fetch-reference-radars"})
     with urllib.request.urlopen(req, timeout=60) as r:
         left = r.headers.get("X-RateLimit-Remaining")
         if left is not None:

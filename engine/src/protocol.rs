@@ -297,7 +297,7 @@ pub fn is_tile_path(path: &str) -> bool {
 }
 
 impl State {
-    /// Every file under `$XDG_RUNTIME_DIR/omastorm-se/` a client may currently be
+    /// Every file under `$XDG_RUNTIME_DIR/omastorm-nord/` a client may currently be
     /// reading. Texture cleanup retires a file 30 s after it leaves this set,
     /// so any new path field is added here. Every timeline entry's textures
     /// count (S19): a client may fetch any frame of the loop at any time.
@@ -432,7 +432,7 @@ pub struct Frame {
     pub scan_time: String,
     pub sweep_end: String,
     pub status: FrameStatus,
-    /// Paths relative to `$XDG_RUNTIME_DIR/omastorm-se/` and the sweep geometry
+    /// Paths relative to `$XDG_RUNTIME_DIR/omastorm-nord/` and the sweep geometry
     /// are decoded at startup, so the fixture file carries none of them.
     #[serde(default)]
     pub texture: String,

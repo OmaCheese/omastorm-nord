@@ -1,16 +1,16 @@
-# Omastorm SE
+# Omastorm Nord
 
-> **Omastorm SE** is a fork of [Omastorm](https://github.com/wesleygrimes/omastorm)
+> **Omastorm Nord** is a fork of [Omastorm](https://github.com/wesleygrimes/omastorm)
 > that shows Nordic weather radar instead of NOAA NEXRAD: 41 radars — the 12
 > [SMHI](https://www.smhi.se/) radars in Sweden, 12 in Norway, 12 in Finland
 > and 5 in Denmark — plus SMHI's national composite, EUMETNET OPERA's Nordic
 > composite, and a mosaic of the radars you choose. It
-> installs beside upstream under its own plugin id (`rb.omastorm-se`) and
-> directories (`omastorm-se`).
+> installs beside upstream under its own plugin id (`omacheese.omastorm-nord`) and
+> directories (`omastorm-nord`).
 
 Open-source, live weather radar for the Omarchy desktop. Beta.
 
-[![Omastorm window: live take with loop, search, keys, and treatments](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/omastorm-preview.gif)](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/omastorm-demo.mp4)
+[![Omastorm window: live take with loop, search, keys, and treatments](https://github.com/OmaCheese/omastorm-nord/releases/download/v26.9.0/omastorm-preview.gif)](https://github.com/OmaCheese/omastorm-nord/releases/download/v26.9.0/omastorm-demo.mp4)
 
 Live over Vara, in Västra Götaland. The media is made by
 `scripts/capture-readme.sh` and `scripts/capture-demo.sh`.
@@ -20,9 +20,9 @@ the actual scan time. Click the map (or press Enter) for the full window: every
 SMHI radar and the national composite, reflectivity at native resolution, a
 timeline you can scrub, all drawn in your Omarchy theme.
 
-![The Omastorm window, live](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/window-live.png)
+![The Omastorm window, live](https://github.com/OmaCheese/omastorm-nord/releases/download/v26.9.0/window-live.png)
 
-![The Omastorm popover, live](https://github.com/OmaCheese/omastorm-se/releases/download/v26.9.0/popover.png)
+![The Omastorm popover, live](https://github.com/OmaCheese/omastorm-nord/releases/download/v26.9.0/popover.png)
 
 A headless Rust engine fetches and decodes SMHI's ODIM HDF5 volumes and
 national composite and prepares GPU-ready radar textures. An Omarchy plugin built with Quickshell/QML is the
@@ -57,14 +57,14 @@ client: it displays those textures in the bar popover and full window.
 Omarchy 4 on x86_64 and aarch64.
 
 ```sh
-omarchy plugin add https://github.com/OmaCheese/omastorm-se.git --enable
+omarchy plugin add https://github.com/OmaCheese/omastorm-nord.git --enable
 ```
 
-This clones the plugin into `~/.config/omarchy/plugins/rb.omastorm-se` and
+This clones the plugin into `~/.config/omarchy/plugins/omacheese.omastorm-nord` and
 asks which bar section to use. The first time the popover opens it downloads
 the pinned engine binary from this repository's GitHub Releases, verifies its
 sha256 against `engine/release.pin`, and installs it under
-`~/.local/share/omastorm-se/bin`. Runtime files, cached data, remembered view state, and configuration stay
+`~/.local/share/omastorm-nord/bin`. Runtime files, cached data, remembered view state, and configuration stay
 inside Omastorm's own directories.
 
 From a checkout instead, to work on it: `mise setup`, then `mise plugin-link`
@@ -81,16 +81,16 @@ To open the window from the keyboard, add one line to
 `~/.config/hypr/bindings.lua`. Omastorm never writes that file.
 
 ```lua
-o.bind("SUPER + SHIFT + R", "Omastorm SE", "omarchy shell shell toggle rb.omastorm-se '{}'")
+o.bind("SUPER + SHIFT + R", "Omastorm Nord", "omarchy shell shell toggle omacheese.omastorm-nord '{}'")
 ```
 
 To list Omastorm in the app launcher:
 
 ```sh
-bash ~/.config/omarchy/plugins/rb.omastorm-se/scripts/write-desktop-entry.sh
+bash ~/.config/omarchy/plugins/omacheese.omastorm-nord/scripts/write-desktop-entry.sh
 ```
 
-Update with `omarchy plugin update rb.omastorm-se`.
+Update with `omarchy plugin update omacheese.omastorm-nord`.
 
 ## Use
 
@@ -182,10 +182,10 @@ reach of the product you are looking at, not the header number.
 
 ## Configuration
 
-`~/.config/omastorm-se/config.toml` holds deliberate preferences. The app saves
+`~/.config/omastorm-nord/config.toml` holds deliberate preferences. The app saves
 last map center, zoom, and UI radar lock separately in
-`$XDG_STATE_HOME/omastorm-se/state.json` (default
-`~/.local/state/omastorm-se/state.json`). Navigation never rewrites your config.
+`$XDG_STATE_HOME/omastorm-nord/state.json` (default
+`~/.local/state/omastorm-nord/state.json`). Navigation never rewrites your config.
 `Shift+H`, or LOCATION, opens the location picker; it writes state, not config.
 
 Explicit center coordinates win on every launch. Without them, Omastorm
@@ -220,7 +220,7 @@ omarchy restart shell
 ```
 
 The engine runs as one shared daemon per login. Its log is
-`$XDG_RUNTIME_DIR/omastorm-se/engine.log` (usually `/run/user/<uid>/omastorm-se/`).
+`$XDG_RUNTIME_DIR/omastorm-nord/engine.log` (usually `/run/user/<uid>/omastorm-nord/`).
 When SMHI's listing lags, the engine probes the next scan's dated file once a
 scan is overdue, and it backs off on errors, keeping cached frames available.
 Both are recorded in `engine.log`.
@@ -230,20 +230,20 @@ sha256 check failed; the reason is in `bootstrap.log` in the same directory,
 and opening the popover again retries. To restart the engine by hand:
 
 ```sh
-~/.local/share/omastorm-se/bin/omastorm-engine stop
+~/.local/share/omastorm-nord/bin/omastorm-engine stop
 ```
 
 The next popover or window starts it again. Please attach both logs to a
-[bug report](https://github.com/OmaCheese/omastorm-se/issues).
+[bug report](https://github.com/OmaCheese/omastorm-nord/issues).
 
 ## Remove
 
 ```sh
-omarchy plugin remove rb.omastorm-se
-~/.local/share/omastorm-se/bin/omastorm-engine stop
-rm -rf ~/.local/share/omastorm-se ~/.cache/omastorm-se ~/.local/state/omastorm-se
-rm -rf ~/.config/omastorm-se                            # your config.toml; keep it to reinstall later
-rm -f ~/.local/share/applications/omastorm-se.desktop   # if you added the launcher entry
+omarchy plugin remove omacheese.omastorm-nord
+~/.local/share/omastorm-nord/bin/omastorm-engine stop
+rm -rf ~/.local/share/omastorm-nord ~/.cache/omastorm-nord ~/.local/state/omastorm-nord
+rm -rf ~/.config/omastorm-nord                            # your config.toml; keep it to reinstall later
+rm -f ~/.local/share/applications/omastorm-nord.desktop   # if you added the launcher entry
 ```
 
 Then delete the `o.bind` line if you added one.
@@ -252,7 +252,7 @@ Then delete the `o.bind` line if you added one.
 
 This is a beta. Bugs, rough edges, and ideas about the radars, the map, or
 anything else this fork changed go to
-[its own issues](https://github.com/OmaCheese/omastorm-se/issues). Something that
+[its own issues](https://github.com/OmaCheese/omastorm-nord/issues). Something that
 upstream Omastorm has too belongs
 [upstream](https://github.com/wesleygrimes/omastorm/issues), where the fix helps
 both.

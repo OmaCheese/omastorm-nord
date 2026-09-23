@@ -21,7 +21,7 @@ QtObject {
         var state = Quickshell.env("OMASTORM_STATE");
         if (state) return state.slice(0, state.lastIndexOf("/") + 1) + "layers.json";
         if (Quickshell.env("OMASTORM_CONFIG")) return "";
-        return (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omastorm-se/layers.json";
+        return (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omastorm-nord/layers.json";
     }
     property bool radar: true
     property bool temp: false

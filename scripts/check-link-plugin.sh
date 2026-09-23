@@ -12,8 +12,8 @@ mkdir -p "$scratch"
 trap 'rm -rf "$scratch"' EXIT
 export XDG_CONFIG_HOME="$scratch/config"
 plugins=$XDG_CONFIG_HOME/omarchy/plugins
-target=$plugins/rb.omastorm-se
-backup=$plugins/.rb.omastorm-se.unlinked
+target=$plugins/omacheese.omastorm-nord
+backup=$plugins/.omacheese.omastorm-nord.unlinked
 root=$(readlink -f "$PWD")
 path=$(bash scripts/link-plugin.sh --print-path)
 [[ $path == "$target" ]] || fail "--print-path: $path"
@@ -47,8 +47,8 @@ cat > "$scratch/bin/omarchy-shell" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${OMASTORM_SHELL_LOG:?}"
 case $* in
-  'shell listPlugins') printf '[{"id":"rb.omastorm-se"}]\n' ;;
-  'shell enablePlugin rb.omastorm-se {}') printf 'ok\n' ;;
+  'shell listPlugins') printf '[{"id":"omacheese.omastorm-nord"}]\n' ;;
+  'shell enablePlugin omacheese.omastorm-nord {}') printf 'ok\n' ;;
   'shell ping') printf 'ok\n' ;;
 esac
 exit 0
@@ -73,7 +73,7 @@ bash scripts/link-plugin.sh
 [[ $(readlink -f "$target") == "$root" ]] || fail "link points at $(readlink -f "$target")"
 [[ ! -e $backup ]] || fail 'link without a clone wrote a backup'
 rg -q '^restart shell$' "$OMASTORM_OMARCHY_LOG" || fail 'link did not restart the shell'
-rg -q 'enablePlugin rb.omastorm-se \{\}' "$OMASTORM_SHELL_LOG" \
+rg -q 'enablePlugin omacheese.omastorm-nord \{\}' "$OMASTORM_SHELL_LOG" \
   || fail 'link did not enable the shell plugin'
 status=$(bash scripts/link-plugin.sh --status)
 [[ $status == 'this checkout (linked)' ]] || fail "linked --status: $status"
@@ -84,7 +84,7 @@ bash scripts/link-plugin.sh
 [[ -L $target ]] || fail 'second link dropped the symlink'
 [[ ! -e $backup ]] || fail 'second link invented a backup'
 rg -q '^restart shell$' "$OMASTORM_OMARCHY_LOG" || fail 'second link did not restart the shell'
-rg -q 'enablePlugin rb.omastorm-se \{\}' "$OMASTORM_SHELL_LOG" \
+rg -q 'enablePlugin omacheese.omastorm-nord \{\}' "$OMASTORM_SHELL_LOG" \
   || fail 'second link did not enable the shell plugin'
 
 : > "$OMASTORM_SHELL_LOG"
@@ -94,7 +94,7 @@ out=$(bash scripts/link-plugin.sh --unlink)
 if rg -q 'enablePlugin' "$OMASTORM_SHELL_LOG"; then
   fail 'unlink enabled the plugin'
 fi
-printf '%s\n' "$out" | rg -q 'omarchy plugin add https://github.com/OmaCheese/omastorm-se --enable' \
+printf '%s\n' "$out" | rg -q 'omarchy plugin add https://github.com/OmaCheese/omastorm-nord --enable' \
   || fail "unlink without clone should name plugin add: $out"
 
 if bash scripts/link-plugin.sh --unlink 2>"$scratch/unlink.err"; then

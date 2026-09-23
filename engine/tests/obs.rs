@@ -87,7 +87,7 @@ fn layers_are_per_client_and_answered_with_obs() {
     let connect = || {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if let Ok(stream) = UnixStream::connect(root.join("omastorm-se/engine.sock")) {
+            if let Ok(stream) = UnixStream::connect(root.join("omastorm-nord/engine.sock")) {
                 stream
                     .set_read_timeout(Some(Duration::from_millis(250)))
                     .unwrap();

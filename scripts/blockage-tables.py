@@ -42,7 +42,7 @@ from PIL import Image
 R = 6_371_000.0 * 4.0 / 3.0
 ZOOM = 8
 URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
-UA = "omastorm-se/S20 blockage tables (fork of https://omastorm.com)"
+UA = "omastorm-nord/S20 blockage tables (fork of https://omastorm.com)"
 MARGIN_DEG = 0.2
 NEAR_M, FAR_M, STEP_M = 2_000.0, 100_000.0, 250.0
 EARTH_M = 6_371_000.0  # for moving along the ground

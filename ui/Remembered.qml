@@ -3,7 +3,7 @@ import Quickshell
 import Quickshell.Io
 import "Location.js" as Location
 
-// ~/.local/state/omastorm-se/state.json (DESIGN.md, location and remembered
+// ~/.local/state/omastorm-nord/state.json (DESIGN.md, location and remembered
 // state): the last camera and the UI radar lock. Onboarding and navigation
 // write this file, never config.toml. OMASTORM_STATE names another file for
 // checks and captures; when OMASTORM_CONFIG is set the machine's own state
@@ -11,7 +11,7 @@ import "Location.js" as Location
 QtObject {
     id: root
     readonly property string path: Quickshell.env("OMASTORM_STATE")
-        || (Quickshell.env("OMASTORM_CONFIG") ? "" : (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omastorm-se/state.json")
+        || (Quickshell.env("OMASTORM_CONFIG") ? "" : (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omastorm-nord/state.json")
     property var parsed: Location.parseState("")
     readonly property bool ready: stateRead
     property bool stateRead: false

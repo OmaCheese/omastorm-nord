@@ -18,7 +18,7 @@
 //! names its source file; another file for the same station and time
 //! replaces everything kept for it, so tilts of two files never mix.
 //!
-//! **Where.** `$XDG_CACHE_HOME/omastorm-se/tilts/`: `index.sqlite` (its own
+//! **Where.** `$XDG_CACHE_HOME/omastorm-nord/tilts/`: `index.sqlite` (its own
 //! WAL database, next to `frames/catalog.sqlite`, which stays as it is), and
 //! `<station>/<YYYYMMDDTHHMMSSZ>-<tenths>-<dataset>.u8z` per tilt.
 //!

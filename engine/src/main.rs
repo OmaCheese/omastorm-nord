@@ -1850,14 +1850,14 @@ impl Shared {
     }
 }
 
-/// `$XDG_RUNTIME_DIR/omastorm-se`, without creating it.
+/// `$XDG_RUNTIME_DIR/omastorm-nord`, without creating it.
 fn runtime_path() -> io::Result<PathBuf> {
     let base = env::var_os("XDG_RUNTIME_DIR")
         .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is required"))?;
     if !Path::new(&base).is_absolute() {
         return Err(io::Error::other("XDG_RUNTIME_DIR must be absolute"));
     }
-    Ok(PathBuf::from(base).join("omastorm-se"))
+    Ok(PathBuf::from(base).join("omastorm-nord"))
 }
 fn runtime() -> io::Result<PathBuf> {
     let dir = runtime_path()?;

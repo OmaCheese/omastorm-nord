@@ -1,6 +1,6 @@
 //! The per-station frame ring buffer (DESIGN.md, frame storage): a SQLite
 //! catalog of station, time, elevation, product, and provenance under
-//! `$XDG_CACHE_HOME/omastorm-se/frames/`, with the sweep and lookup PNGs as
+//! `$XDG_CACHE_HOME/omastorm-nord/frames/`, with the sweep and lookup PNGs as
 //! files beside it. Storage is a catalog, not a transport: the UI never reads
 //! it directly. The engine writes each complete live frame here and keeps the
 //! newest `RING` per station; the timeline lists the ring, and each listed

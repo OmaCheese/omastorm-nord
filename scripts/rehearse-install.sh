@@ -3,14 +3,14 @@
 # the first popover do, in a throwaway HOME, against a LOCAL engine candidate.
 #
 #   1. git clone this repository into the throwaway HOME's plugins dir
-#      ($XDG_CONFIG_HOME/omarchy/plugins/rb.omastorm-se), as the plugin
+#      ($XDG_CONFIG_HOME/omarchy/plugins/omacheese.omastorm-nord), as the plugin
 #      manager does, and write the candidate pin into the clone's
 #      engine/release.pin, as P2's pin commit will;
 #   2. refuse a substituted asset (sha256 mismatch, nothing installed);
 #   3. run the plugin bootstrap exactly as ui/PluginSession.qml does
 #      (env -C $HOME OMASTORM_BOOTSTRAP_LOG=... bash run.sh --ensure), with
 #      OMASTORM_ENGINE_ASSET standing in for the GitHub download;
-#   4. read hello (protocol v2, the candidate's version, 43 stations) and
+#   4. read hello (protocol v2, the candidate's version, 44 stations) and
 #      require the installed binary to hash to the pin;
 #   5. stop the engine, remove everything as README "Remove" says, and list
 #      leftovers: in the throwaway dirs, as omastorm-engine processes, and as
@@ -49,7 +49,7 @@ branch=$(git branch --show-current)
 [[ -n $branch ]] || die 'Detached HEAD; check out a branch'
 version=$(awk -F'"' '/^version = /{print $2; exit}' engine/Cargo.toml)
 protocol=$(rg -o 'message\.v !== ([0-9]+)' -r '$1' ui/Engine.qml)
-want_sites=${REHEARSE_SITES:-43}
+want_sites=${REHEARSE_SITES:-44}
 source scripts/engine-pin.sh
 read_engine_pin "$pin"
 pin_sha=${hashes[$(engine_machine "$arch")]:-}
@@ -81,10 +81,10 @@ for v in "${!OMASTORM_@}"; do unset "$v"; done
 export HOME=$home XDG_CONFIG_HOME=$home/.config XDG_DATA_HOME=$home/.local/share
 export XDG_CACHE_HOME=$home/.cache XDG_STATE_HOME=$home/.local/state
 export XDG_RUNTIME_DIR=$rt TMPDIR=$rt/tmp
-plugin=$XDG_CONFIG_HOME/omarchy/plugins/rb.omastorm-se
-engine=$XDG_DATA_HOME/omastorm-se/bin/omastorm-engine
-sock=$XDG_RUNTIME_DIR/omastorm-se/engine.sock
-bootstrap_log=$XDG_RUNTIME_DIR/omastorm-se/bootstrap.log
+plugin=$XDG_CONFIG_HOME/omarchy/plugins/omacheese.omastorm-nord
+engine=$XDG_DATA_HOME/omastorm-nord/bin/omastorm-engine
+sock=$XDG_RUNTIME_DIR/omastorm-nord/engine.sock
+bootstrap_log=$XDG_RUNTIME_DIR/omastorm-nord/bootstrap.log
 stop_engine() { [[ -x $engine ]] && "$engine" stop >/dev/null 2>&1 || true; }
 trap stop_engine EXIT
 
@@ -136,9 +136,9 @@ for _ in {1..20}; do
   sleep .25
 done
 rm -rf -- "$plugin"
-rm -rf -- "$XDG_DATA_HOME/omastorm-se" "$XDG_CACHE_HOME/omastorm-se" "$XDG_STATE_HOME/omastorm-se"
-rm -rf -- "$XDG_CONFIG_HOME/omastorm-se"
-rm -f -- "$XDG_DATA_HOME/applications/omastorm-se.desktop"
+rm -rf -- "$XDG_DATA_HOME/omastorm-nord" "$XDG_CACHE_HOME/omastorm-nord" "$XDG_STATE_HOME/omastorm-nord"
+rm -rf -- "$XDG_CONFIG_HOME/omastorm-nord"
+rm -f -- "$XDG_DATA_HOME/applications/omastorm-nord.desktop"
 trap - EXIT
 
 step 'leftovers'

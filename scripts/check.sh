@@ -33,7 +33,7 @@ mkdir -p "$logs" "$scratch/tmp" "$scratch/cache"
 # The check scripts' mktemp calls and the engine installer's work dir land here.
 export TMPDIR=$scratch/tmp
 # Every daemon a check starts keeps its frame catalog and map tiles here, not
-# in the bar's ~/.cache/omastorm-se (S26: three archived KTLX frames and 48
+# in the bar's ~/.cache/omastorm-nord (S26: three archived KTLX frames and 48
 # vector tiles had leaked there from checks that set no cache of their own).
 export XDG_CACHE_HOME=$scratch/cache
 failed=0

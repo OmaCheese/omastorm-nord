@@ -805,8 +805,12 @@ pub async fn poll_with(cfg: Config, site: String, events: Sender<Event>, cached:
                         latest_listed = latest_listed.max(Some(latest.valid_ms));
                         let first = newest.is_none();
                         if covered(latest.valid_ms, &known) {
-                            if first && !send(&events, Event::Current { site: site.clone() }).await
-                            {
+                            // A composite's own poller fills its lowest scan.
+                            let current = Event::Current {
+                                site: site.clone(),
+                                variant: crate::products::Want::Lowest.variant(),
+                            };
+                            if first && !send(&events, current).await {
                                 return;
                             }
                             newest = Some(latest);

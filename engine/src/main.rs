@@ -1450,9 +1450,10 @@ impl Shared {
             }
             return Ok(());
         }
-        // S45: while the loading placeholder is on screen, the load's frame
-        // takes the screen whatever the timeline says, so no pin can leave
-        // the placeholder up after a frame of what it waits for is made.
+        // S45, belt and braces: no real flow pins the timeline while the
+        // loading placeholder is on screen (a switch starts it following),
+        // but should one, the load's frame still takes the screen rather
+        // than leave the placeholder up.
         if self.state.frame.scan_time.is_empty() {
             self.timeline.shown = None;
         }
@@ -2029,15 +2030,14 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
             // The newest volume is already catalogued: the feed is up, so a
             // station opened on its cached frame leaves `loading`. Any other
             // condition stays, as for a catalogued sweep in `arrived`.
-            providers::Event::Current { site } => {
+            providers::Event::Current { site, variant } => {
                 let mut shared = shared.lock().unwrap();
-                // S45: never over the loading placeholder. A station opened
-                // on its cached frame has one on screen; the placeholder
-                // means the word is an aborted poller's (the product or set
-                // before a switch), whose ring this is not.
+                // S45 review SF1: only for the ring shown, so an aborted
+                // poller's late word (the product or set before a switch)
+                // cannot end the new load.
                 if shared.state.site.id == site
                     && shared.state.source == Source::Live
-                    && !shared.state.frame.scan_time.is_empty()
+                    && shared.variant() == variant
                 {
                     // S31: its newest frame was on screen already.
                     shared.loading.shown(Instant::now());
@@ -3199,6 +3199,7 @@ mod tests {
     fn my_mosaics_rain_mass_takes_the_screen_after_a_quick_switch() {
         let (shared, runtime) = live_shared("s45-quick");
         let shared = Arc::new(Mutex::new(shared));
+        let handle = shared.clone();
         let guard = runtime.enter();
         let stop = |shared: &mut Shared| {
             if let Some(task) = shared.live.take() {
@@ -3275,6 +3276,7 @@ mod tests {
             sweep(&lowest, t + five),
             providers::Event::Current {
                 site: mosaic::STATION.into(),
+                variant: lowest.variant(),
             },
         ]);
         {
@@ -3336,6 +3338,35 @@ mod tests {
             .list_variant(mosaic::STATION, &variant)
             .unwrap();
         assert_eq!(listed.len(), 2);
+        drop(shared);
+        // Review SF1, the mirror: back to the set, whose ring is cached, so
+        // it opens on its newest frame, loading. The aborted Rain mass
+        // poller's late "caught up" is not the set's and leaves it loading;
+        // the set's own ends it.
+        {
+            let _guard = runtime.enter();
+            let mut shared = handle.lock().unwrap();
+            let (changed, refused) = shared.set_product(products::REF, 0, None, None);
+            assert!(changed && refused.is_none(), "{refused:?}");
+            stop(&mut shared);
+            assert!(shared.state.frame.id.ends_with(&lowest.variant()));
+            assert_eq!(shared.state.connection.status, ConnectionStatus::Loading);
+        }
+        let current = |variant: String| providers::Event::Current {
+            site: mosaic::STATION.into(),
+            variant,
+        };
+        run(vec![current(vil.variant())]);
+        assert_eq!(
+            handle.lock().unwrap().state.connection.status,
+            ConnectionStatus::Loading,
+            "Rain mass's word does not end the set's load"
+        );
+        run(vec![current(lowest.variant())]);
+        assert_eq!(
+            handle.lock().unwrap().state.connection.status,
+            ConnectionStatus::Ok
+        );
     }
     #[test]
     fn catalogued_frames_keep_stable_names_and_name_them_in_the_timeline() {

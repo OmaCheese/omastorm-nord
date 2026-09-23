@@ -3334,7 +3334,10 @@ async fn run(
     let mut reported_at: Option<Instant> = Some(Instant::now());
     if schedule.caught_up(now)
         && events
-            .send(Event::Current { site: site.clone() })
+            .send(Event::Current {
+                site: site.clone(),
+                variant: variant.clone(),
+            })
             .await
             .is_err()
     {

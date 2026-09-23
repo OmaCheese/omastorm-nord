@@ -250,8 +250,10 @@ pub enum Event {
     },
     /// The newest volume is already in the catalog. The feed is up, so a
     /// station opened on a cached frame can leave `loading` without paying
-    /// for the volume again.
-    Current { site: String },
+    /// for the volume again. `variant` is the ring the poller fills
+    /// (`Want::variant`, a mosaic's `Layout::variant`), so `main.rs` can drop
+    /// an aborted poller's late word after a switch (S45 review SF1).
+    Current { site: String, variant: String },
     /// SMHI could not be reached or read. The frame on screen stays.
     Offline { site: String, reason: String },
     /// SMHI answered, and the station has published nothing recent.
@@ -1235,6 +1237,7 @@ impl Live {
         let outcome = if covered(volume.valid_ms, &self.known) {
             Outcome::Handled(first.then(|| Event::Current {
                 site: site.to_owned(),
+                variant: cfg.want.variant(),
             }))
         } else if (cfg.now_ms)() - volume.valid_ms >= HORIZON_MS {
             Outcome::Handled(None)

@@ -95,6 +95,9 @@ const RETIRE_AFTER: Duration = Duration::from_secs(30);
 const QUEUE: usize = 128;
 /// S47: a second `reset` within this long of the last is a no-op.
 const RESET_EVERY: Duration = Duration::from_secs(10);
+/// S47 review S1: how long the engine must have had no client before a
+/// composite's product goes back to the composite.
+const UNWATCHED_GRACE: Duration = Duration::from_secs(3);
 /// The credit on an archived Level II frame (the checks' KTLX, DEC-10).
 const LEVEL_II_CREDIT: &str = "NOAA NEXRAD Level II";
 /// Playback advances one frame per tick and loops (DESIGN.md, timeline).
@@ -755,6 +758,8 @@ struct Shared {
     /// S47: when the last `reset` ran; another within `RESET_EVERY` is a
     /// no-op.
     last_reset: Option<Instant>,
+    /// S47 review S1: since when no client is connected.
+    unwatched_since: Option<Instant>,
 }
 impl Shared {
     fn snapshot(&mut self) -> String {
@@ -1225,8 +1230,16 @@ impl Shared {
     /// back to its composite (`REF`), its product frames stay catalogued and
     /// the choice stays aside for the next radar, so a closed tab does not
     /// fetch 41 radars' volumes all night. True when anything changed.
+    /// S47 review S1: only once no client has been connected for
+    /// `UNWATCHED_GRACE` (checked from the 1 s tick), so a client's
+    /// reconnect (a Reset, a page reload) does not cost the product.
     fn release_unwatched_product(&mut self) -> bool {
-        if !self.clients.is_empty() || self.state.source != Source::Live {
+        if !self.clients.is_empty() {
+            self.unwatched_since = None;
+            return false;
+        }
+        let since = *self.unwatched_since.get_or_insert_with(Instant::now);
+        if since.elapsed() < UNWATCHED_GRACE || self.state.source != Source::Live {
             return false;
         }
         let Some(station) = self
@@ -2542,7 +2555,8 @@ fn client(
             if sections.client_left(id, &mut state.section) {
                 shared.broadcast();
             }
-            // Review M1: the last client gone, a composite's product stops.
+            // Review M1: the last client gone, a composite's product stops
+            // (S47 review S1: after UNWATCHED_GRACE, from the 1 s tick).
             if shared.release_unwatched_product() {
                 shared.broadcast();
             }
@@ -2828,6 +2842,7 @@ fn serve(dir: PathBuf) -> io::Result<()> {
         loading: loading::Tracker::default(),
         kicks: HashMap::new(),
         last_reset: None,
+        unwatched_since: None,
     }));
     // My mosaic's set as the last live run left it (S25, review #11).
     if source == Source::Live {
@@ -3133,6 +3148,7 @@ mod tests {
             loading: loading::Tracker::default(),
             kicks: HashMap::new(),
             last_reset: None,
+            unwatched_since: None,
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3204,6 +3220,10 @@ mod tests {
         );
         assert_eq!(shared.state.product, cmax);
         shared.clients.clear();
+        // S47 review S1: not the moment the last client goes (a reconnect).
+        assert!(!shared.release_unwatched_product(), "within the grace");
+        assert_eq!(shared.state.product, cmax);
+        shared.unwatched_since = Some(Instant::now() - UNWATCHED_GRACE);
         assert!(shared.release_unwatched_product());
         assert_eq!(shared.state.product, products::Choice::default());
         assert_eq!(

@@ -1285,8 +1285,9 @@ reason).
 - `OMASTORM_GRID_BACKFILL` (1–12, the engine's environment) lowers both
   depths, for an engine with less to spend; it never raises them.
 - A product is polled only while its composite is selected and showing it,
-  and while some client is connected: when the engine's last client
-  disconnects while a composite shows a product, the engine goes back to
+  and while some client is connected: when the engine has had no client
+  for 3 seconds (S47: a reconnect, as a Reset or a page reload makes, is
+  not a departure) while a composite shows a product, the engine goes back to
   the composite (`state.product` `REF` index 0; the product's frames stay
   in the catalog, and the choice is kept for the next radar), so a closed
   tab polls no radar all night. The desktop plugin, whose bar keeps one

@@ -1752,6 +1752,10 @@ one more `obs` line, `source` `grid`, with only the layers it has on:
   line (which has no `ageSeconds`), `status` `loading` (then `percent` 0) until a grid is in, `ok`
   with one to show, `error` with none; `ageSeconds` is the shown hour's
   age. A refresh to a newer hour is not announced as `loading`.
+- Lightning (S44) has no loading line and no `status`/`percent` of this
+  kind: until its first `lightning` message a client says it is loading
+  (the Qt panel and the web page write "Fetching lightning"); that
+  message's own `status` (`ok` or `failed` with a `note`) says the rest.
 - The line is sent to a client when it asks (S47: every time it asks),
   and again to every client with the grid on when a new hour arrives; a
   line a full queue refused stays owed, as the stations' does. Turning the grid off is not

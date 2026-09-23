@@ -33,10 +33,21 @@ pub const KEEP: Duration = Duration::from_secs(5 * 60 * 60);
 /// Each fetch asks again for this much before the last one's end: strikes
 /// reach FMI's feed late.
 const OVERLAP: Duration = Duration::from_secs(15 * 60);
+/// The full ring (`path`) is rewritten at most this often (review SF4: a
+/// phone re-fetching five hours of a storm every minute is 25–37 MB/h).
+const FULL_EVERY: Duration = Duration::from_secs(5 * 60);
+/// `recent` holds the strikes this far back from the last fetch's end,
+/// rewritten each minute: the 30-minute trail, the full file's 5 minutes
+/// of lag and the fetch overlap all fit in it.
+pub const RECENT: Duration = Duration::from_secs(45 * 60);
 /// The longest wait after failures (1, 2, 4 … minutes).
 const BACKOFF_MAX: Duration = Duration::from_secs(15 * 60);
-const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-/// A busy 5-hour window is about 1.5 MB of GML.
+/// Review NIT8: a first fetch of a busy 5-hour window is a megabyte or two
+/// over a slow link.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+/// About 45 bytes of GML a strike: the first 5-hour window of a 5 July 2026
+/// afternoon (~25,000 strikes) is ~1.1 MB, a whole such day (~37,000) ~1.7
+/// MB; the limit leaves room for a far worse storm, not for a runaway body.
 const MAX_BODY: usize = 32 << 20;
 const USER_AGENT: &str = concat!(
     "omastorm-se/",
@@ -150,16 +161,15 @@ pub fn parse_fmi(body: &[u8]) -> Result<Vec<Strike>, String> {
         return Err("FMI: no peak_current or cloud_indicator field".into());
     };
     let multiplicity_at = column("multiplicity");
-    let position_rows: Vec<&str> = positions
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    let tuple_rows: Vec<&str> = tuples
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
+    // Review NIT7: whitespace-separated numbers, three per position and one
+    // per field per tuple, however the lines are broken.
+    let position_words: Vec<&str> = positions.split_whitespace().collect();
+    let tuple_words: Vec<&str> = tuples.split_whitespace().collect();
+    if !position_words.len().is_multiple_of(3) || !tuple_words.len().is_multiple_of(fields.len()) {
+        return Err("FMI: a positions or tuples list cut short".into());
+    }
+    let position_rows: Vec<&[&str]> = position_words.chunks(3).collect();
+    let tuple_rows: Vec<&[&str]> = tuple_words.chunks(fields.len()).collect();
     if position_rows.len() != tuple_rows.len() {
         return Err(format!(
             "FMI: {} positions but {} tuples",
@@ -173,8 +183,6 @@ pub fn parse_fmi(body: &[u8]) -> Result<Vec<Strike>, String> {
     };
     let mut out = Vec::with_capacity(position_rows.len());
     for (p, t) in position_rows.iter().zip(&tuple_rows) {
-        let p: Vec<&str> = p.split_whitespace().collect();
-        let t: Vec<&str> = t.split_whitespace().collect();
         let (Some(lat), Some(lon), Some(unix)) = (
             number(p.first().copied()),
             number(p.get(1).copied()),
@@ -357,6 +365,12 @@ impl Ring {
     pub fn strikes(&self) -> &[Strike] {
         &self.strikes
     }
+    /// Whether `strike` is held already (the ring is sorted by key).
+    fn holds(&self, strike: &Strike) -> bool {
+        self.strikes
+            .binary_search_by_key(&strike.key(), Strike::key)
+            .is_ok()
+    }
 }
 
 /// What the `lightning` line says, beside the file.
@@ -367,6 +381,9 @@ pub struct Status {
     pub from: i64,
     pub to: i64,
     pub path: String,
+    /// The strikes from `recent_from` on (review SF4).
+    pub recent: String,
+    pub recent_from: i64,
     pub count: usize,
     pub cloud_to_ground: usize,
     pub newest: i64,
@@ -387,6 +404,8 @@ struct Line<'a> {
     v: u32,
     status: &'static str,
     path: &'a str,
+    recent: &'a str,
+    recent_from: String,
     from: String,
     to: String,
     count: usize,
@@ -411,6 +430,12 @@ pub fn line(status: &Status) -> String {
         v: crate::protocol::VERSION,
         status: if status.failed { "failed" } else { "ok" },
         path: &status.path,
+        recent: &status.recent,
+        recent_from: if status.recent_from > 0 {
+            iso(status.recent_from)
+        } else {
+            String::new()
+        },
         from: if status.from > 0 {
             iso(status.from)
         } else {
@@ -474,7 +499,7 @@ pub struct Hub {
 struct HubInner {
     clients: HashMap<u64, Sender<String>>,
     last: Option<String>,
-    path: Option<String>,
+    paths: Vec<String>,
 }
 
 impl Hub {
@@ -499,13 +524,21 @@ impl Hub {
     pub fn wanted(&self) -> bool {
         !self.inner.lock().unwrap().clients.is_empty()
     }
-    /// The newest strikes file (`tex/…`), which texture cleanup keeps.
-    pub fn path(&self) -> Option<String> {
-        self.inner.lock().unwrap().path.clone()
+    /// The strikes files the newest line names (`tex/…`), which texture
+    /// cleanup keeps.
+    pub fn paths(&self) -> Vec<String> {
+        self.inner.lock().unwrap().paths.clone()
     }
-    fn publish(&self, line: String, path: &str) {
+    fn keep(&self, status: &Status) {
+        self.inner.lock().unwrap().paths = [&status.path, &status.recent]
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .cloned()
+            .collect();
+    }
+    fn publish(&self, line: String, status: &Status) {
+        self.keep(status);
         let mut inner = self.inner.lock().unwrap();
-        inner.path = (!path.is_empty()).then(|| path.to_owned());
         if inner.last.as_deref() == Some(line.as_str()) {
             return;
         }
@@ -568,16 +601,11 @@ pub fn shift(strikes: &mut [Strike], end: i64) {
     }
 }
 
-/// Write the ring as `tex/lightning-<hash>.bin` under `dir` (unless it is
-/// there already) and fill `status` from it.
-fn publish_file(dir: &Path, ring: &Ring, status: &mut Status) -> io::Result<()> {
-    let strikes = ring.strikes();
-    status.count = strikes.len();
-    status.cloud_to_ground = strikes.iter().filter(|s| !s.cloud).count();
-    status.newest = strikes.last().map_or(0, |s| s.ms);
+/// Write `strikes` as `tex/lightning-<hash>.bin` under `dir` (unless it is
+/// there already); its name, or `""` for none.
+fn write_strikes(dir: &Path, strikes: &[Strike]) -> io::Result<String> {
     if strikes.is_empty() {
-        status.path.clear();
-        return Ok(());
+        return Ok(String::new());
     }
     let bytes = pack(strikes);
     let name = format!("tex/lightning-{:016x}.bin", hash(&bytes));
@@ -587,7 +615,24 @@ fn publish_file(dir: &Path, ring: &Ring, status: &mut Status) -> io::Result<()> 
         fs::write(&tmp, &bytes)?;
         fs::rename(&tmp, &path)?;
     }
-    status.path = name;
+    Ok(name)
+}
+
+/// Fill `status` from the ring: `recent` (the strikes from `status.to -
+/// RECENT` on) every time, the whole ring as `path` only when `full` says so
+/// (review SF4). A client merges the two: `path`'s strikes before
+/// `recentFrom`, then all of `recent`.
+fn publish_file(dir: &Path, ring: &Ring, status: &mut Status, full: bool) -> io::Result<()> {
+    let strikes = ring.strikes();
+    status.count = strikes.len();
+    status.cloud_to_ground = strikes.iter().filter(|s| !s.cloud).count();
+    status.newest = strikes.last().map_or(0, |s| s.ms);
+    status.recent_from = status.to - RECENT.as_millis() as i64;
+    let cut = strikes.partition_point(|s| s.ms < status.recent_from);
+    status.recent = write_strikes(dir, &strikes[cut..])?;
+    if full {
+        status.path = write_strikes(dir, strikes)?;
+    }
     Ok(())
 }
 
@@ -665,6 +710,8 @@ pub async fn run(dir: PathBuf) {
     // The start of the first window fetched: what the ring covers.
     let mut covered_from: Option<i64> = None;
     let mut last_try: Option<tokio::time::Instant> = None;
+    // When `path` was last written (ms), and the start of the recent file then.
+    let mut full_at: Option<i64> = None;
     let mut failures = 0u32;
     loop {
         if !hub.wanted() {
@@ -692,6 +739,11 @@ pub async fn run(dir: PathBuf) {
             Ok((bytes, strikes)) => {
                 failures = 0;
                 let got = strikes.len();
+                // A strike older than the recent file reaches clients only
+                // through `path`, which is then rewritten at once (a gap
+                // re-fetched after a pause).
+                let recent_from = end - RECENT.as_millis() as i64;
+                let old_new = strikes.iter().any(|s| s.ms < recent_from && !ring.holds(s));
                 let new = ring.merge(strikes, end);
                 eprintln!(
                     "{} Lightning fmi: requests=1 bytes={bytes} strikes={got} new={new} held={}",
@@ -706,8 +758,13 @@ pub async fn run(dir: PathBuf) {
                 // the ring covers from its first window on.
                 let first = *covered_from.get_or_insert(start);
                 status.from = first.max(end - KEEP.as_millis() as i64);
-                if let Err(e) = publish_file(&dir, &ring, &mut status) {
-                    eprintln!("{} Lightning: writing the strikes file: {e}", stamp());
+                let full = old_new
+                    || status.path.is_empty() != ring.strikes().is_empty()
+                    || full_at.is_none_or(|t| end - t >= FULL_EVERY.as_millis() as i64);
+                match publish_file(&dir, &ring, &mut status, full) {
+                    Ok(()) if full => full_at = Some(end),
+                    Ok(()) => {}
+                    Err(e) => eprintln!("{} Lightning: writing the strikes file: {e}", stamp()),
                 }
             }
             Err(e) => {
@@ -721,7 +778,7 @@ pub async fn run(dir: PathBuf) {
                 status.note = e;
             }
         }
-        hub.publish(line(&status), &status.path);
+        hub.publish(line(&status), &status);
     }
 }
 
@@ -748,7 +805,7 @@ async fn replay(dir: PathBuf, path: PathBuf) {
             status.to = end;
             status.from = ring.strikes().first().map_or(end, |s| s.ms);
             status.replay = Some(who);
-            if let Err(e) = publish_file(&dir, &ring, &mut status) {
+            if let Err(e) = publish_file(&dir, &ring, &mut status, true) {
                 eprintln!("{} Lightning: writing the strikes file: {e}", stamp());
             }
         }
@@ -765,10 +822,10 @@ async fn replay(dir: PathBuf, path: PathBuf) {
     let text = line(&status);
     loop {
         if hub.wanted() {
-            hub.publish(text.clone(), &status.path);
+            hub.publish(text.clone(), &status);
         } else {
-            // Keep the file referenced while nobody watches.
-            hub.inner.lock().unwrap().path = (!status.path.is_empty()).then(|| status.path.clone());
+            // Keep the files referenced while nobody watches.
+            hub.keep(&status);
         }
         hub.wake.notified().await;
     }
@@ -908,11 +965,34 @@ mod tests {
             replay: Some(who),
             ..Status::default()
         };
-        publish_file(&dir, &ring, &mut status).unwrap();
+        publish_file(&dir, &ring, &mut status, true).unwrap();
         assert!(status.path.starts_with("tex/lightning-") && status.path.ends_with(".bin"));
         assert!(crate::protocol::is_texture_path(&status.path));
-        let bytes = fs::read(dir.join(&status.path)).unwrap();
-        assert_eq!(unpack(&bytes).unwrap().len(), 7759);
+        let full = unpack(&fs::read(dir.join(&status.path)).unwrap()).unwrap();
+        assert_eq!(full.len(), 7759);
+        // Review SF4: `recent` is the last 45 minutes, a suffix of the ring;
+        // path before recentFrom + recent is the whole ring again.
+        let recent = unpack(&fs::read(dir.join(&status.recent)).unwrap()).unwrap();
+        assert_eq!(status.recent_from, end - 45 * 60_000);
+        assert!(recent.iter().all(|s| s.ms >= status.recent_from));
+        let mut merged: Vec<Strike> = full
+            .iter()
+            .filter(|s| s.ms < status.recent_from)
+            .copied()
+            .collect();
+        merged.extend(&recent);
+        assert_eq!(merged, full);
+        assert!(
+            recent.len() > 4000 && recent.len() < 7759,
+            "{}",
+            recent.len()
+        );
+        // Without `full`, only `recent` is written again.
+        let old_path = status.path.clone();
+        status.to = end + 60_000;
+        publish_file(&dir, &ring, &mut status, false).unwrap();
+        assert_eq!(status.path, old_path);
+        assert_ne!(status.recent, "");
         let value: serde_json::Value = serde_json::from_str(&line(&status)).unwrap();
         assert_eq!(value["type"], "lightning");
         assert_eq!(value["v"], 2);
@@ -923,6 +1003,8 @@ mod tests {
         assert_eq!(value["attribution"], "SMHI lightning, CC BY 4.0 (replay)");
         assert_eq!(value["trailS"], 1800);
         assert_eq!(value["newest"], "2026-09-23T06:00:00Z");
+        assert_eq!(value["recentFrom"], "2026-09-23T05:16:00Z");
+        assert_eq!(value["recent"], status.recent.as_str());
         assert!(value.get("note").is_none());
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -935,12 +1017,17 @@ mod tests {
         hub.set(1, true, &tx1);
         hub.set(2, false, &tx2);
         assert!(hub.wanted());
-        hub.publish("a\n".into(), "tex/lightning-1.bin");
-        hub.publish("a\n".into(), "tex/lightning-1.bin");
+        let files = Status {
+            path: "tex/lightning-1.bin".into(),
+            recent: "tex/lightning-2.bin".into(),
+            ..Status::default()
+        };
+        hub.publish("a\n".into(), &files);
+        hub.publish("a\n".into(), &files);
         assert_eq!(rx1.try_recv().unwrap(), "a\n");
         assert!(rx1.try_recv().is_err(), "an unchanged line is not re-sent");
         assert!(rx2.try_recv().is_err());
-        assert_eq!(hub.path().as_deref(), Some("tex/lightning-1.bin"));
+        assert_eq!(hub.paths(), ["tex/lightning-1.bin", "tex/lightning-2.bin"]);
         hub.set(2, true, &tx2);
         assert_eq!(rx2.try_recv().unwrap(), "a\n");
         hub.set(1, false, &tx1);

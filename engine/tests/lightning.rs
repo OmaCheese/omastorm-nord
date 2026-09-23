@@ -226,6 +226,14 @@ fn lightning_is_per_client_and_fetched_only_while_on() {
     thread::sleep(Duration::from_secs(1));
     assert_eq!(requests.load(Ordering::SeqCst), 0);
 
+    // Review NIT9: an invalid command changes nothing, lightning included.
+    send(
+        &mut new,
+        json!({"type":"set_layers","lightning":true,"source":"model"}),
+    );
+    assert!(next_of(&mut new, "error", REPLY).is_some());
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
     send(&mut new, json!({"type":"set_layers","lightning":true}));
     let first = next_of(&mut new, "lightning", REPLY).expect("lightning after set_layers");
     assert_eq!(first["v"], 2);
@@ -240,6 +248,11 @@ fn lightning_is_per_client_and_fetched_only_while_on() {
         "{path}"
     );
     assert_eq!(count_of(&engine.file(path)), 190);
+    // Review SF4: `recent` is the last 45 minutes of the same strikes.
+    let recent = first["recent"].as_str().unwrap();
+    let n = count_of(&engine.file(recent));
+    assert!(n > 0 && n < 190, "{n}");
+    assert!(first["recentFrom"].as_str().unwrap().ends_with('Z'));
     assert_eq!(requests.load(Ordering::SeqCst), 1);
 
     // The client that never asked hears nothing.

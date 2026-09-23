@@ -328,7 +328,7 @@ Item {
         rows.push({kind: "sep"});
         rows.push({label: "LOCATION…", run: () => locationPicker.show("")});
         rows.push({label: "KEYS", run: () => sheet.show()});
-        // S47's universal reset, once it is merged; hidden before.
+        // S47's universal reset (guarded for a host without it).
         if (typeof app.resetAll === "function") {
             rows.push({kind: "sep"});
             rows.push({label: "RESET (RELOAD EVERYTHING)", run: () => app.resetAll()});
@@ -350,6 +350,9 @@ Item {
         target: "chrome"
         function menu(x: real, y: real): void { app.openMapMenu(x, y); }
         function closeMenu(): void { mapMenu.close(); }
+        // The recent radars, set for checks (a real visit selects a radar).
+        function recent(ids: string): void { app.recentSites = ids.split(",").filter(x => x); }
+        function shownRows(): string { return JSON.stringify(mapMenu.shownRows.map(r => r.kind || r.label)); }
         function legend(name: string): void { app.legendZoom = name; }
         function rect(name: string): string {
             var it = ({map: map, picker: picker.cardItem, chip: siteTitle, menu: mapMenu.cardItem, submenu: mapMenu.subItem,

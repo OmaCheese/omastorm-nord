@@ -36,7 +36,7 @@ dark=$run/theme-dark light=$run/theme-light
 mkdir -p "$dark" "$light"
 printf 'background = "#1a1b26"\nforeground = "#a9b1d6"\naccent = "#7aa2f7"\ncyan = "#7dcfff"\n' > "$dark/colors.toml"
 printf 'mode = "light"\nbackground = "#f5f1e8"\nforeground = "#343a48"\naccent = "#365ba8"\ncyan = "#1f7a8c"\n' > "$light/colors.toml"
-for base in 9 12 16; do printf '[font]\nbase-size = %s\n' "$base" > "$run/user-$base.toml"; done
+for base in 9 12 16 20; do printf '[font]\nbase-size = %s\n' "$base" > "$run/user-$base.toml"; done
 
 # The input harness (real events), plus a right button for this check.
 harness_qml=$(TMPDIR="$run" scripts/capture-harness.sh --input)
@@ -103,6 +103,22 @@ want sizes && for base in 9 12 16; do
   call layers panel true; sleep .3; grab "base-$base-layers"; call layers panel false
   call keys run help; sleep .3; grab "base-$base-keys"; call keys run help
   echo "base $base: $(call chrome status | jq -c '{base, size}')"
+  stop
+done
+# The menu fits at 16 and 20 with four recent radars and RESET: recents go
+# first (review S3); LOCATION, KEYS and RESET stay.
+want sizes && for base in 16 20; do
+  start dark "$base" radar
+  call chrome recent "hudiksvall,kiruna,lulea,ostersund"
+  call chrome menu 380 40; sleep .4
+  card=$(call chrome rect menu); rows=$(call chrome shownRows)
+  h=780   # start's window height
+  fits=$(jq --argjson h "$h" '.y >= 0 and (.y + .h) <= $h' <<< "$card")
+  keep=$(jq '(index("LOCATION…") != null) and (index("KEYS") != null) and (index("RESET (RELOAD EVERYTHING)") != null)' <<< "$rows")
+  echo "MENU at base $base: card $card, rows $(jq -c 'map(select(. != "sep" and . != "header"))' <<< "$rows")"
+  if [[ $fits == true && $keep == true ]]; then echo "MENU fits at base $base with RESET: PASS"; else echo "MENU at base $base: FAIL"; exit 1; fi
+  grab "base-$base-menu-recents"
+  call chrome closeMenu
   stop
 done
 # The popover card at each size, in its harness (PopoverHarness), offline.

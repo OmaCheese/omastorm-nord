@@ -283,7 +283,11 @@ Item {
                     MouseArea {
                         id: barArea
                         anchors.fill: parent
-                        anchors.margins: -4
+                        // Review N5: a hair wider than the bar, not over the rows' ends.
+                        anchors.leftMargin: -2
+                        anchors.rightMargin: -1
+                        anchors.topMargin: -1
+                        anchors.bottomMargin: -1
                         hoverEnabled: true
                         property real grabY: 0
                         onPressed: mouse => grabY = mouse.y

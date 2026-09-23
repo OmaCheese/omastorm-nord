@@ -15,3 +15,16 @@ parser tests in `engine/src/obs/` read them offline.
 
 Frost needs a client ID (basic auth); these are response bodies only, and
 were checked to hold neither the ID nor the secret.
+
+## MET Nordic grid (S43)
+
+Recorded 2026-09-23 05:03 UTC (the 04:00 UTC analysis), gzipped, one
+request each to
+`thredds.met.no/thredds/dodsC/metpplatest/met_analysis_1_0km_nordic_latest.nc.dods`;
+MET Norway, CC BY 4.0. The tests in `engine/src/obs/grid.rs` read them
+offline.
+
+| File | Query |
+|---|---|
+| `metnordic_20260923T04Z.dods.gz` | `time,x[0:60:1795],y[0:60:2320]`, `air_temperature_2m[0][0:60:2320][0:60:1795]`, `wind_speed_10m` and `wind_direction_10m` `[0][0:240:2320][0:240:1795]` (a small stride of the engine's 3/24 subset: 30 × 39 temperature, 8 × 10 wind) |
+| `metnordic_time_20260923T04Z.dods.gz` | `time` (the probe) |

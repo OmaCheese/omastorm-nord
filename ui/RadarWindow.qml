@@ -176,7 +176,7 @@ Item {
         onLoopRequested: site => app.store.loopSite = site
         // S42: the station layers this window shows, only while it is open
         // (the engine fetches nothing while no client shows one).
-        layers: ({temp: app.opened && app.store.layers.temp, wind: app.opened && app.store.layers.wind})
+        layers: ({temp: app.opened && app.store.layers.temp, wind: app.opened && app.store.layers.wind, source: app.store.layers.source})
     }
     // Deliberate preferences and remembered view (DESIGN.md, location).
     // PluginSession owns config.toml, state.json, and the camera; this
@@ -440,10 +440,14 @@ Item {
         target: "layers"
         function set(name: string, on: bool): void { app.store.layers.set(name, on); }
         function panel(open: bool): void { if (open) layersPanel.show(); else layersPanel.close(); }
+        // S43: stations, grid or both.
+        function source(name: string): void { app.store.layers.setSource(name); }
         function status(): string {
-            var l = app.store.layers, o = engine.obs;
-            return JSON.stringify({radar: l.radar, temp: l.temp, wind: l.wind, panel: layersPanel.opened,
+            var l = app.store.layers, o = engine.obs, g = engine.grid;
+            return JSON.stringify({radar: l.radar, temp: l.temp, wind: l.wind, source: l.source, panel: layersPanel.opened,
                                    stations: o ? o.stations.length : -1, shown: obsLayer.shown.length, thins: obsLayer.thinCount,
+                                   gridTime: g ? g.time : "", gridPoints: g && g.wind ? g.wind.points.length : -1,
+                                   underlay: map.underlay ? map.underlay.source : "",
                                    attribution: o ? o.attribution : "", status: layersPanel.status});
         }
         function hover(x: real, y: real): string { var s = obsLayer.stationAt(x, y); return s ? JSON.stringify(s) : ""; }
@@ -885,7 +889,9 @@ Item {
                     Layout.alignment: Qt.AlignTop
                     Layout.leftMargin: 4
                     readonly property var store: app.store.layers
+                    // S43: where they come from, when it is not the stations.
                     readonly property string extra: [store.temp ? "°C" : "", store.wind ? "WIND" : ""].filter(x => x).join(" + ")
+                        + ((store.temp || store.wind) && store.source !== "stations" ? " · " + store.source.toUpperCase() : "")
                     readonly property bool lit: layersPanel.opened || store.temp || store.wind || !store.radar
                     opacity: lit || hovered ? 1 : .8
                     onClicked: app.run("layers")
@@ -1016,6 +1022,8 @@ Item {
                     treatment: app.treatment
                     weakFloor: app.weakFloor
                     radarOpacity: !app.store.layers.radar ? 0 : app.condition === "unavailable" ? .6 : 1
+                    // S43: the MET Nordic temperature field under the radar.
+                    underlay: obsLayer.underlay
                     labelSize: win.compact ? 10 : 12
                     locked: app.locked
                     product: app.state ? app.state.product : null
@@ -1055,6 +1063,9 @@ Item {
                     anchors.fill: parent
                     map: map
                     obs: engine.obs
+                    grid: engine.grid
+                    source: app.store.layers.source
+                    runtime: engine.runtime
                     temp: app.store.layers.temp
                     wind: app.store.layers.wind
                     theme: app.theme
@@ -1579,6 +1590,7 @@ Item {
             store: app.store.layers
             chip: layersChip
             obs: engine.obs
+            grid: engine.grid
             keyText: (app.bindings.layers || []).map(KeyMap.pretty).join(" ")
           }
           Item {

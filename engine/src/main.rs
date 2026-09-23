@@ -2211,11 +2211,13 @@ fn cleanup(dir: &Path, shared: &Mutex<Shared>, retirement: &mut Retirement) -> i
     // again at any moment (the station reselected), and must not be
     // deleted after that.
     let shared = shared.lock().unwrap();
-    let referenced: HashSet<PathBuf> = shared
+    let mut referenced: HashSet<PathBuf> = shared
         .state
         .referenced_files()
         .map(|path| dir.join(path))
         .collect();
+    // S43: the grid's newest temperature texture, which no `state` names.
+    referenced.extend(obs::grid::HUB.texture().map(|path| dir.join(path)));
     for path in retirement.sweep(present, &referenced, Instant::now()) {
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -2298,14 +2300,24 @@ fn receive(
             let mut shared = shared.lock().unwrap();
             return shared.sections.ask(client, reply.clone(), lat, lon);
         }
-        // S42: layers are per client and answered with `obs` (obs.rs).
-        Ok(Command::SetLayers { temp, wind, source }) => match source.as_deref() {
-            None | Some("stations") => {
-                return obs::HUB.set(client, obs::Layers { temp, wind }, reply);
+        // S42: layers are per client and answered with `obs` (obs.rs); S43:
+        // from the stations, the MET Nordic grid (obs/grid.rs) or both.
+        Ok(Command::SetLayers { temp, wind, source }) => {
+            let (stations, grid) = match source.as_deref() {
+                None | Some("stations") => (true, false),
+                Some("grid") => (false, true),
+                Some("both") => (true, true),
+                Some(_) => (false, false),
+            };
+            if !stations && !grid {
+                "set_layers source must be stations, grid or both.".into()
+            } else {
+                let off = obs::Layers::default();
+                let on = obs::Layers { temp, wind };
+                obs::HUB.set(client, if stations { on } else { off }, reply);
+                return obs::grid::HUB.set(client, if grid { on } else { off }, reply);
             }
-            Some("grid") => "set_layers source grid is not built yet (S43).".into(),
-            Some(_) => "set_layers source must be stations or grid.".into(),
-        },
+        }
         Ok(Command::Profile { .. }) => {
             "profile needs lat in [-90, 90] and lon in [-180, 180].".into()
         }
@@ -2380,6 +2392,7 @@ fn client(
             let mut shared = shared.lock().unwrap();
             shared.clients.retain(|(client_id, _)| *client_id != id);
             obs::HUB.remove(id);
+            obs::grid::HUB.remove(id);
             // S24c: a section goes with the client that set it.
             let Shared {
                 sections, state, ..
@@ -2692,6 +2705,8 @@ fn serve(dir: PathBuf) -> io::Result<()> {
     runtime.spawn(netstats::report(netstats::period()));
     // S42: the weather layers' fetcher, idle until a client wants one.
     runtime.spawn(obs::run());
+    // S43: the MET Nordic grid's, idem; its textures go under `tex/`.
+    runtime.spawn(obs::grid::run(dir.clone()));
     shared.lock().unwrap().keep_warm();
     let cleanup_shared = shared.clone();
     runtime.spawn(async move {

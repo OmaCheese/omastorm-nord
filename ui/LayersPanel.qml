@@ -6,7 +6,10 @@ import QtQuick.Layouts
 // the weather stations. Each is on or off on its own and remembered
 // (LayersStore); radar and the station layers show together. A click
 // outside, Escape or the layers key closes it; Up, Down (or j, k) move,
-// Space or Return flips the row, 1 2 3 flip a row directly.
+// Space or Return flips the row, 1 2 3 flip a row directly. S43: a fourth
+// row chooses where temperature and wind come from, STATIONS, GRID (the MET
+// Nordic analysis) or BOTH; Left and Right (h, l) or Space move along it, 5
+// steps it (review S4).
 Item {
     id: panel
     property var theme
@@ -14,15 +17,20 @@ Item {
     property Item chip              // the card sits below this chip
     property string keyText: ""     // the layers key as the sheet writes it
     property var obs: null          // the engine's obs, for the status line
+    property var grid: null         // the engine's grid obs (S43)
     property bool opened: false
     property int cursor: 0
     visible: opened
     focus: opened
+    readonly property string source: store ? store.source : "stations"
+    readonly property string fromWord: source === "grid" ? "MET Nordic grid" : source === "both" ? "grid + stations" : "stations"
     readonly property var rows: [
         { id: "radar", label: "RADAR", note: "precipitation" },
-        { id: "temp", label: "TEMPERATURE", note: "stations, °C" },
-        { id: "wind", label: "WIND", note: "stations, arrows" }
+        { id: "temp", label: "TEMPERATURE", note: fromWord + ", °C" },
+        { id: "wind", label: "WIND", note: fromWord + ", arrows" }
     ]
+    readonly property var sourceNames: [["stations", "STATIONS"], ["grid", "GRID"], ["both", "BOTH"]]
+    readonly property int sourceRow: rows.length
     function show() { cursor = 0; opened = true; forceActiveFocus(); }
     function close() { opened = false; }
     function flip(index) { if (store && index >= 0 && index < rows.length) store.toggle(rows[index].id); }
@@ -31,15 +39,17 @@ Item {
         event.accepted = true;
         if (event.key === Qt.Key_Escape || (event.key === Qt.Key_L && (event.modifiers & Qt.ControlModifier))) close();
         else if (event.key === Qt.Key_Up || event.key === Qt.Key_K) cursor = Math.max(0, cursor - 1);
-        else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) cursor = Math.min(rows.length - 1, cursor + 1);
-        else if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) flip(cursor);
+        else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) cursor = Math.min(sourceRow, cursor + 1);
+        else if (cursor === sourceRow && (event.key === Qt.Key_Left || event.key === Qt.Key_H)) store.cycleSource(-1);
+        else if (cursor === sourceRow && (event.key === Qt.Key_Right || event.key === Qt.Key_L)) store.cycleSource(1);
+        else if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { if (cursor === sourceRow) store.cycleSource(1); else flip(cursor); }
         else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_3) { cursor = event.key - Qt.Key_1; flip(cursor); }
+        else if (event.key === Qt.Key_5) { cursor = sourceRow; store.cycleSource(1); }
         else event.accepted = false;
     }
     // Norway's Frost needs a client ID; the panel says why there is no
     // Norwegian station rather than leaving a hole unexplained.
-    readonly property string status: {
-        if (!store || !(store.temp || store.wind)) return "";
+    readonly property string stationStatus: {
         if (!obs) return "STATIONS LOADING…";
         var out = [];
         for (var p of obs.providers || []) {
@@ -48,6 +58,21 @@ Item {
         }
         var n = (obs.stations || []).length;
         return n + " STATIONS" + (out.length ? " · " + out.join(" · ") : "");
+    }
+    // S43: the grid's hour in local time, or why there is none.
+    readonly property string gridStatus: {
+        if (!grid) return "GRID LOADING…";
+        var failed = grid.provider && grid.provider.status === "failed";
+        if (!grid.time) return "GRID: " + (failed ? "FAILED" : "NONE");
+        var d = new Date(grid.time);
+        return "GRID " + Qt.formatTime(d, Qt.locale().timeFormat(Locale.ShortFormat)) + (failed ? " · UPDATE FAILED" : "");
+    }
+    readonly property string status: {
+        if (!store || !(store.temp || store.wind)) return "";
+        var out = [];
+        if (source !== "grid") out.push(stationStatus);
+        if (source !== "stations") out.push(gridStatus);
+        return out.join(" · ");
     }
     component Word: Text {
         color: panel.theme ? panel.theme.foreground : "#a9b1d6"
@@ -129,6 +154,50 @@ Item {
                         hoverEnabled: true
                         onClicked: { panel.cursor = row.index; panel.flip(row.index); }
                     }
+                }
+            }
+            // S43: where temperature and wind come from.
+            Rectangle {
+                id: sourceRowItem
+                readonly property bool hot: sourceArea.containsMouse || panel.cursor === panel.sourceRow
+                Layout.fillWidth: true
+                implicitHeight: 36
+                color: hot ? Qt.alpha(panel.theme ? panel.theme.foreground : "#a9b1d6", .08) : "transparent"
+                MouseArea { id: sourceArea; anchors.fill: parent; hoverEnabled: true; onClicked: panel.cursor = panel.sourceRow }
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 4
+                    Word { text: "FROM"; font.pixelSize: 10; opacity: .6; Layout.preferredWidth: 38 }
+                    Repeater {
+                        model: panel.sourceNames
+                        Rectangle {
+                            id: seg
+                            required property var modelData
+                            readonly property bool on: panel.source === modelData[0]
+                            readonly property color accent: panel.theme ? panel.theme.accent : "#7aa2f7"
+                            Layout.fillWidth: true
+                            implicitHeight: 20
+                            radius: 3
+                            color: on ? accent : segArea.containsMouse ? Qt.alpha(accent, .18) : "transparent"
+                            border.width: 1
+                            border.color: on ? accent : Qt.alpha(panel.theme ? panel.theme.foreground : "#a9b1d6", .35)
+                            Word {
+                                anchors.centerIn: parent
+                                text: seg.modelData[1]
+                                font.pixelSize: 9
+                                color: seg.on ? (panel.theme ? panel.theme.background : "#1a1b26") : (panel.theme ? panel.theme.foreground : "#a9b1d6")
+                            }
+                            MouseArea {
+                                id: segArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: { panel.cursor = panel.sourceRow; panel.store.setSource(seg.modelData[0]); }
+                            }
+                        }
+                    }
+                    Word { text: "5"; font.pixelSize: 10; opacity: .45; Layout.leftMargin: 4 }
                 }
             }
             Word {

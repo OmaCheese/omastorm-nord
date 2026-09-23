@@ -28,18 +28,34 @@ QtObject {
     // S42: the weather layers this connection shows, {temp, wind}; sent as
     // set_layers on every connect once a layer has been on (an older
     // engine just logs the command), and the engine's `obs` for them.
-    property var layers: ({temp: false, wind: false})
+    // S43: `source` (stations, grid or both) says where they come from;
+    // `grid` is the engine's `obs` with source grid (the MET Nordic
+    // analysis), held apart from the stations' `obs`.
+    property var layers: ({temp: false, wind: false, source: "stations"})
     property bool layersSent: false
     property string layersLine: ""
     property var obs: null
+    property var grid: null
+    /// Review S5: an S42 engine answered `source` with an error; the layers
+    /// go again without it, and the grid says why it is missing.
+    property bool gridRefused: false
+    readonly property var refusedGrid: ({time: "", provider: {id: "metnordic", status: "failed", note: "grid needs a newer engine"}, attribution: ""})
+    readonly property string layerSource: layers && (layers.source === "grid" || layers.source === "both") ? layers.source : "stations"
+    readonly property bool stationsWanted: !!(layers && (layers.temp || layers.wind)) && layerSource !== "grid"
+    readonly property bool gridWanted: !!(layers && (layers.temp || layers.wind)) && layerSource !== "stations"
     onLayersChanged: sendLayers()
     function sendLayers() {
         var on = !!(layers && (layers.temp || layers.wind));
-        if (!on) obs = null;
+        if (!stationsWanted) obs = null;
+        if (!gridWanted) grid = null;
         if (!on && !layersSent) return;
         if (!socket || !socket.connected) return;
         // Review N7: the same layers again (a store reload) are not re-sent.
-        var line = JSON.stringify({type: "set_layers", temp: !!layers.temp, wind: !!layers.wind});
+        var command = {type: "set_layers", temp: !!layers.temp, wind: !!layers.wind};
+        // An S42 engine knows only stations; `source` goes out when it is not
+        // and the engine has not refused it (review S5).
+        if (layerSource !== "stations" && !gridRefused) command.source = layerSource;
+        var line = JSON.stringify(command);
         if (layersSent && line === layersLine) return;
         layersSent = true;
         layersLine = line;
@@ -583,6 +599,7 @@ QtObject {
                 products = message.products || [];
                 mosaic = message.mosaic && Array.isArray(message.mosaic.rules) ? message.mosaic : null;
                 layersSent = false;
+                gridRefused = false;
                 sendLayers();
             }
             else if (message.type === "state") {
@@ -614,6 +631,11 @@ QtObject {
                 if (pendingId !== "" && (frame.id === pendingId || !(message.timeline || []).some(t => t.id === pendingId))) pendingId = "";
                 // A loop belongs to its station; another station ends it.
                 if (loopSite !== "" && message.site.id !== loopSite) requestLoop("");
+            } else if (message.type === "error" && message.command === "set_layers" && layerSource !== "stations" && !gridRefused) {
+                gridRefused = true;
+                layersLine = "";
+                sendLayers();
+                grid = gridWanted ? refusedGrid : null;
             } else if (message.type === "error") {
                 rejection = message.message;
                 if (message.command === "seek") pendingId = "";
@@ -624,8 +646,12 @@ QtObject {
                 tileReady(message);
             } else if (message.type === "places") {
                 placesReady(message);
+            } else if (message.type === "obs" && message.source === "grid") {
+                if (message.temperature && !validTexturePath(message.temperature.texture))
+                    throw new Error("Invalid grid texture path: " + JSON.stringify(message.temperature.texture));
+                grid = gridWanted ? message : null;
             } else if (message.type === "obs") {
-                obs = layers && (layers.temp || layers.wind) && Array.isArray(message.stations) ? message : null;
+                obs = stationsWanted && Array.isArray(message.stations) ? message : null;
             }
         } catch (e) { state = null; error = "Invalid engine message: " + e; }
     }
@@ -643,6 +669,7 @@ QtObject {
                 if (!connected && !engine.incompatible) {
                     engine.state = null;
                     engine.obs = null;
+                    engine.grid = null;
                     engine.error = engine.disconnectedText;
                 }
             }

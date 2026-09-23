@@ -86,8 +86,12 @@ fn layers_are_per_client_and_answered_with_obs() {
         &mut new,
         json!({"type":"set_layers","temp":true,"source":"grid"}),
     );
-    let error = next_of(&mut new, "error", REPLY).expect("grid is refused until S43");
-    assert_eq!(error["command"], "set_layers");
+    // S43: the grid is its own `obs` line; with the port closed it says
+    // the fetch failed, and holds no layer.
+    let grid = next_of(&mut new, "obs", REPLY).expect("obs source grid");
+    assert_eq!(grid["source"], "grid");
+    assert_eq!(grid["provider"]["status"], "failed");
+    assert!(grid.get("temperature").is_none());
     send(
         &mut new,
         json!({"type":"set_layers","temp":true,"source":"model"}),

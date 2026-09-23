@@ -331,6 +331,8 @@ Item {
     function openMapMenu(mx, my) {
         treatmentMenu.close();
         productMenu.close();
+        // Review M1: never over an open overlay (it keeps the keyboard).
+        if (mapCovered) return;
         var p = map.mapToItem(mapMenu, mx, my);
         mapMenu.show(p.x, p.y);
     }

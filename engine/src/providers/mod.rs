@@ -128,6 +128,37 @@ pub async fn poll(
     }
 }
 
+/// How far back `poll` builds `station`'s `want` (S49): the frames its
+/// backfill fetches, counting the live one, and the station's cadence,
+/// by each provider's own rule (`smhi_live`'s, `ord`'s per-angle sets,
+/// `opera`'s). The timeline drops catalogued frames older than that once
+/// the load brings a frame of its own. My mosaic's is `mosaic::depth`.
+pub fn build_back(station: &Station, want: crate::products::Want) -> (usize, Duration) {
+    match station.provider {
+        ProviderId::Smhi => (
+            want.backfill(
+                crate::smhi_live::BACKFILL,
+                crate::smhi_live::PRODUCT_BACKFILL,
+            ),
+            smhi::SPEC.cadence,
+        ),
+        ProviderId::Ord => {
+            let sets = ord::per_angle(&station.source) && !want.is_lowest();
+            let product = if sets {
+                ord::SET_BACKFILL
+            } else {
+                ord::PRODUCT_BACKFILL
+            };
+            (
+                want.backfill(ord::BACKFILL, product),
+                ord::cadence_for(station),
+            )
+        }
+        ProviderId::Opera => (opera::BACKFILL, opera::SPEC.cadence),
+        ProviderId::Mosaic => (crate::mosaic::BACKFILL, crate::mosaic::SPEC.cadence),
+    }
+}
+
 /// One radar of My mosaic (S25): its provider's poller, through the tilt
 /// store, `depth` volumes deep, reporting to the mosaic. `want` is the
 /// lowest scan (S25), or every scan for a height set (S30: `Want::ColMax`

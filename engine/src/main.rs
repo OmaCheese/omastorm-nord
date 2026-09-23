@@ -185,6 +185,10 @@ struct Timeline {
     stored: Vec<Entry>,
     partial: Option<Entry>,
     shown: Option<String>,
+    /// S49: the build-back window of the load that opened this timeline
+    /// (`Shared::window_ms`), until the load's first frame of its own
+    /// (`own_frame`) drops the catalogued frames older than it.
+    window_ms: Option<i64>,
 }
 impl Timeline {
     fn new(stored: Vec<Entry>) -> Self {
@@ -192,7 +196,34 @@ impl Timeline {
             stored,
             partial: None,
             shown: None,
+            window_ms: None,
         }
+    }
+    /// A catalogued ring opened for a load that builds back `window_ms`
+    /// (S49): every frame shows until the load brings one of its own.
+    fn opened(stored: Vec<Entry>, window_ms: i64) -> Self {
+        Timeline {
+            window_ms: Some(window_ms),
+            ..Timeline::new(stored)
+        }
+    }
+    /// S49: the load brought a frame of its own starting at `start_ms`
+    /// (not yet in the timeline). Once per load, the catalogued frames
+    /// older than its window before the newest frame leave, so a morning's
+    /// frames left from an earlier load are not spliced onto this one's.
+    /// Until then (a source that brings nothing: offline, silent) they all
+    /// stay. True when the pinned frame left; the pin moves to the oldest,
+    /// and the caller shows it.
+    fn own_frame(&mut self, start_ms: i64) -> bool {
+        let Some(window) = self.window_ms.take() else {
+            return false;
+        };
+        let newest = self
+            .stored
+            .last()
+            .map_or(start_ms, |e| e.start_ms.max(start_ms));
+        self.stored.retain(|e| e.start_ms >= newest - window);
+        self.repin()
     }
     fn len(&self) -> usize {
         self.stored.len() + usize::from(self.partial.is_some())
@@ -289,6 +320,11 @@ impl Timeline {
         self.stored.insert(at, entry);
         let excess = self.stored.len().saturating_sub(catalog::RING);
         self.stored.drain(..excess);
+        self.repin()
+    }
+    /// A pin to a frame no longer in the timeline moves to the oldest. True
+    /// when it moved.
+    fn repin(&mut self) -> bool {
         match &self.shown {
             Some(id) if self.index_of(id).is_none() => {
                 self.shown = self.stored.first().map(|e| e.id.clone());
@@ -1074,10 +1110,28 @@ impl Shared {
                 return Err(format!("Could not publish a frame for {}.", station.id));
             }
         };
-        self.timeline = Timeline::new(listed);
+        self.timeline = Timeline::opened(listed, self.window_ms(station, want));
         self.pending = None;
         self.state.playing = false;
         Ok(())
+    }
+    /// S49: how far before its newest frame the load `restart_live` starts
+    /// for `station`'s `want` builds back, in ms: its depth in frame times
+    /// (`providers::build_back` for a provider's poller, `mosaic::depth` for
+    /// My mosaic and a composite's products) at its cadence, plus two
+    /// cadences of slack. A catalogued frame older than that is not this
+    /// load's and leaves the timeline once the load brings a frame.
+    fn window_ms(&self, station: &Station, want: Want) -> i64 {
+        let mine = station.provider == providers::ProviderId::Mosaic;
+        let made = !want.is_lowest() && (mine || station.kind == SiteKind::Grid);
+        let (depth, cadence) = if mine || made {
+            let depth = mosaic::depth(&self.state.mosaic, want, &self.sites, made);
+            (depth, mosaic::CADENCE_MS)
+        } else {
+            let (depth, cadence) = providers::build_back(station, want);
+            (depth, cadence.as_millis() as i64)
+        };
+        (depth as i64 + 2) * cadence
     }
     /// `set_product` (S20, `docs/protocol.md`, products): refused, changing
     /// nothing, for an unknown id, no radar selected, or one that cannot make
@@ -1484,6 +1538,8 @@ impl Shared {
         if self.state.frame.scan_time.is_empty() {
             self.timeline.shown = None;
         }
+        // S49: the load's own frame: stale catalogued frames leave.
+        let stale_pin = self.timeline.own_frame(start_ms);
         let following = self.timeline.following();
         self.state.connection.status = ConnectionStatus::Ok;
         // S31: the load's first frame is on screen. S35: whether or not the
@@ -1496,7 +1552,7 @@ impl Shared {
             self.frame_ms = Some(start_ms);
             self.pending = None;
             self.link(&entry);
-            let dropped = self.timeline.complete(entry.clone());
+            let dropped = self.timeline.complete(entry.clone()) || stale_pin;
             if following && entry.record.is_some() {
                 self.show_entry(&entry)
             } else if following {
@@ -1516,6 +1572,8 @@ impl Shared {
             });
             if following {
                 self.show_position(self.timeline.len() - 1)
+            } else if stale_pin {
+                self.show_position(0)
             } else {
                 Ok(())
             }
@@ -1536,10 +1594,19 @@ impl Shared {
         // A frame built again (My mosaic's late rebuild, S25) that is on
         // screen shows its new files.
         let on_screen = self.state.frame.id == entry.id;
-        let shown = if self.timeline.insert(entry.clone()) {
+        // S49: the load's own frame: stale catalogued frames leave. The
+        // newest catalogued frame shown while loading may be one of them;
+        // the timeline's newest then takes its place.
+        let stale_pin = self.timeline.own_frame(entry.start_ms);
+        let pin_dropped = self.timeline.insert(entry.clone()) || stale_pin;
+        let left = !self.state.frame.scan_time.is_empty()
+            && self.timeline.index_of(&self.state.frame.id).is_none();
+        let shown = if pin_dropped {
             self.show_position(0)
         } else if on_screen {
             self.show_entry(&entry)
+        } else if left && self.timeline.following() {
+            self.show_position(self.timeline.len() - 1)
         } else {
             Ok(())
         };

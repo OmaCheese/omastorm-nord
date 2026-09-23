@@ -121,6 +121,33 @@ pub fn grid_backfill(want: Want) -> usize {
     cap.map_or(base, |n| base.min(n))
 }
 
+/// A set's own depth (`Layout::backfill`): `HEIGHT_BACKFILL` for a height
+/// set with a radar whose whole volume costs more than one request, else
+/// `BACKFILL`.
+fn set_backfill<'a>(set: &Set, mut radars: impl Iterator<Item = &'a Station>) -> usize {
+    if set.rule == Rule::Height && radars.any(|s| volume_requests(s) > 1) {
+        HEIGHT_BACKFILL
+    } else {
+        BACKFILL
+    }
+}
+
+/// Frame times a load of My mosaic (`set`) or of a composite's product
+/// builds back (S49), without placing its radars: `Layout::backfill` of
+/// the layout `poll`, `poll_grid` or `poll_mine_grid` would place. `grid`
+/// is a made product (`Layout::grid`, `Layout::mine_grid`), else the set's
+/// own frames (`Layout::new`).
+pub fn depth(set: &Set, want: Want, sites: &[Station], grid: bool) -> usize {
+    if grid {
+        return grid_backfill(want);
+    }
+    let radars = set
+        .sites
+        .iter()
+        .filter_map(|r| sites.iter().find(|s| s.id == r.id));
+    set_backfill(set, radars)
+}
+
 /// SMHI's composite's box, the lon/lat extent of its stereographic grid
 /// (`golden/sweden-20260913`): `sweden`'s products are drawn over it.
 pub const SWEDEN_BOX: LonLatBox = LonLatBox {
@@ -1072,14 +1099,9 @@ impl Layout {
     /// radar's file per angle (S24a review #2). A one-file ORD volume is 1.
     /// A composite's product: `grid_backfill` (S24b).
     pub fn backfill(&self) -> usize {
-        if let Job::Grid { want, .. } = &self.job {
-            return grid_backfill(*want);
-        }
-        let costly = self.radars.iter().any(|r| volume_requests(&r.station) > 1);
-        if self.set.rule == Rule::Height && costly {
-            HEIGHT_BACKFILL
-        } else {
-            BACKFILL
+        match &self.job {
+            Job::Grid { want, .. } => grid_backfill(*want),
+            Job::Mine => set_backfill(&self.set, self.radars.iter().map(|r| &r.station)),
         }
     }
 

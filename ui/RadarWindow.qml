@@ -292,7 +292,6 @@ Item {
         if (!s || s.kind === "grid" || s.provider === "mosaic") return;
         recentSites = [siteId].concat(recentSites.filter(id => id !== siteId)).slice(0, 4);
     }
-    function keyNote(action) { return (bindings[action] || []).map(KeyMap.pretty).join(" "); }
     // Review S1: what the menu reads from the engine's state, as strings
     // and numbers that change only when their value does, so the stream of
     // state messages does not rebuild the rows (and move the submenu).
@@ -312,7 +311,7 @@ Item {
             // Review S3: these go first when the card would not fit.
             if (r) rows.push({label: (r.name || r.id).toUpperCase(), note: r.country || "", current: r.id === siteId, droppable: true, run: () => app.choose(r)});
         }
-        rows.push({label: "MORE…", key: keyNote("search"), run: () => picker.show("")});
+        rows.push({label: "MORE…", run: () => picker.show("")});
         rows.push({kind: "sep"});
         var products = JSON.parse(productRowsKey);
         rows.push({label: "PRODUCT · " + (productLabel || "—"), enabled: products.length > 0,
@@ -327,8 +326,8 @@ Item {
                    sub: [["stations", "STATIONS"], ["grid", "GRID"], ["both", "BOTH"]].map(row => ({
                        label: row[1], radio: true, checked: l.source === row[0], run: () => app.store.layers.setSource(row[0])}))});
         rows.push({kind: "sep"});
-        rows.push({label: "LOCATION…", key: keyNote("home"), run: () => locationPicker.show("")});
-        rows.push({label: "KEYS", key: keyNote("help"), run: () => sheet.show()});
+        rows.push({label: "LOCATION…", run: () => locationPicker.show("")});
+        rows.push({label: "KEYS", run: () => sheet.show()});
         // S47's universal reset, once it is merged; hidden before.
         if (typeof app.resetAll === "function") {
             rows.push({kind: "sep"});

@@ -139,8 +139,20 @@ QtObject {
         repeat: true
         running: !!engine.socket && engine.socket.connected && engine.layersSent && engine.reasked < 4
             && ((engine.stationsWanted && !engine.obs) || (engine.gridWanted && !engine.grid) || (engine.lightningWanted && !engine.lightning && !!engine.lightningInfo))
-        onTriggered: { engine.reasked++; engine.layersLine = ""; engine.sendLayers(); }
+        // Review S3: all off, then the layers again: an engine older than
+        // S47 answers only a layer turning on, never the same ask twice.
+        onTriggered: {
+            engine.reasked++;
+            var off = {type: "set_layers", temp: false, wind: false};
+            if (engine.lightningSent) off.lightning = false;
+            engine.socket.write(JSON.stringify(off) + "\n");
+            engine.layersLine = "";
+            engine.sendLayers();
+        }
     }
+    // Review N7: a new set of wanted layers starts the count again.
+    readonly property string wantedKey: [stationsWanted, gridWanted, lightningWanted].join()
+    onWantedKeyChanged: reasked = 0
     /// Re-asks on this connection; an engine with no weather layers at all
     /// (older than S42) is not asked for ever.
     property int reasked: 0

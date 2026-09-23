@@ -10,7 +10,7 @@
 #   3. run the plugin bootstrap exactly as ui/PluginSession.qml does
 #      (env -C $HOME OMASTORM_BOOTSTRAP_LOG=... bash run.sh --ensure), with
 #      OMASTORM_ENGINE_ASSET standing in for the GitHub download;
-#   4. read hello (protocol v2, the candidate's version, 43 stations) and
+#   4. read hello (protocol v2, the candidate's version, 44 stations) and
 #      require the installed binary to hash to the pin;
 #   5. stop the engine, remove everything as README "Remove" says, and list
 #      leftovers: in the throwaway dirs, as omastorm-engine processes, and as
@@ -49,7 +49,7 @@ branch=$(git branch --show-current)
 [[ -n $branch ]] || die 'Detached HEAD; check out a branch'
 version=$(awk -F'"' '/^version = /{print $2; exit}' engine/Cargo.toml)
 protocol=$(rg -o 'message\.v !== ([0-9]+)' -r '$1' ui/Engine.qml)
-want_sites=${REHEARSE_SITES:-43}
+want_sites=${REHEARSE_SITES:-44}
 source scripts/engine-pin.sh
 read_engine_pin "$pin"
 pin_sha=${hashes[$(engine_machine "$arch")]:-}

@@ -191,6 +191,8 @@ picker_run() {
   done
   s1=$(span); y1=$(pview | jq .contentY)
   check48 "$tag wheel over the list scrolls it ($y0 -> $y1 of $maxy), span $s0 -> $s1" "$([[ $s0 == "$s1" && $y1 -gt $y0 ]] && echo true || echo false)" ""
+  # Review SF1: the selection comes along, into the rows shown whole.
+  check48 "$tag wheel keeps the selection in view" "$(pview | jq '.selectedVisible')" "$(pview)"
   grab48 "$tag-scrolled"
   call input wheel "$lx" "$ly" 120; sleep .15
   check48 "$tag wheel up scrolls back" "$(pview | jq --argjson y "$y1" '.contentY < $y')" "$(pview)"

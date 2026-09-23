@@ -192,6 +192,16 @@ Item {
                     readonly property real rowsHeight: picker.rows.length * picker.rowHeight
                     readonly property bool overflows: rowsHeight > height + .5
                     function scrollBy(dy) { contentY = Math.max(0, Math.min(Math.max(0, rowsHeight - height), contentY + dy)); }
+                    // Review SF1: a wheel or scrollbar move takes the selection
+                    // along, into the rows shown whole, so the highlight stays
+                    // on screen and Enter never picks a hidden row.
+                    function scrollByHand(dy) {
+                        scrollBy(dy);
+                        if (!picker.rows.length) return;
+                        var first = Math.ceil(contentY / picker.rowHeight);
+                        var last = Math.max(first, Math.floor((contentY + height) / picker.rowHeight) - 1);
+                        picker.selected = Math.max(first, Math.min(last, picker.rows.length - 1, picker.selected));
+                    }
                     // A taller window (or fewer rows) never leaves it scrolled past the end.
                     onHeightChanged: scrollBy(0)
                     onRowsHeightChanged: scrollBy(0)
@@ -236,7 +246,7 @@ Item {
                     acceptedButtons: Qt.NoButton
                     onWheel: wheel => {
                         var dy = wheel.pixelDelta.y !== 0 ? -wheel.pixelDelta.y : -wheel.angleDelta.y / 120 * 3 * picker.rowHeight;
-                        list.scrollBy(dy);
+                        list.scrollByHand(dy);
                         wheel.accepted = true;
                     }
                 }
@@ -263,7 +273,7 @@ Item {
                         onPositionChanged: mouse => {
                             if (!pressed) return;
                             var span = scrollBar.track - scrollBar.height;
-                            if (span > 0) list.scrollBy((mouse.y - grabY) / span * (list.rowsHeight - list.height));
+                            if (span > 0) list.scrollByHand((mouse.y - grabY) / span * (list.rowsHeight - list.height));
                         }
                     }
                 }

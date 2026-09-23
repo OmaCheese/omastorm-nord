@@ -128,6 +128,46 @@ pub async fn poll(
     }
 }
 
+/// How far back `poll` builds `station`'s `want` (S49), in ms, and the
+/// station's cadence, in ms: the frames its backfill fetches, counting
+/// the live one, by each provider's own rule (`smhi_live`'s, `ord`'s
+/// per-angle sets, `opera`'s), at most as far as its listing reaches
+/// (ORD's `LISTING_MS`, S49 review S2). The timeline's window
+/// (`Shared::window_ms`) is built on it.
+pub fn build_back(station: &Station, want: crate::products::Want) -> (i64, i64) {
+    let span = |depth: usize, cadence: Duration| {
+        let cadence = cadence.as_millis() as i64;
+        (depth as i64 * cadence, cadence)
+    };
+    match station.provider {
+        ProviderId::Smhi => span(
+            want.backfill(
+                crate::smhi_live::BACKFILL,
+                crate::smhi_live::PRODUCT_BACKFILL,
+            ),
+            smhi::SPEC.cadence,
+        ),
+        ProviderId::Ord => {
+            let sets = ord::per_angle(&station.source) && !want.is_lowest();
+            let product = if sets {
+                ord::SET_BACKFILL
+            } else {
+                ord::PRODUCT_BACKFILL
+            };
+            let (depth_ms, cadence) = span(
+                want.backfill(ord::BACKFILL, product),
+                ord::cadence_for(station),
+            );
+            (depth_ms.min(ord::LISTING_MS), cadence)
+        }
+        ProviderId::Opera => span(opera::BACKFILL, opera::SPEC.cadence),
+        // Not reached from `Shared::window_ms` (review N3): My mosaic's
+        // loads are `mosaic::poll*`, whose depth is `mosaic::depth`. Its
+        // set's own depth, for completeness.
+        ProviderId::Mosaic => span(crate::mosaic::BACKFILL, crate::mosaic::SPEC.cadence),
+    }
+}
+
 /// One radar of My mosaic (S25): its provider's poller, through the tilt
 /// store, `depth` volumes deep, reporting to the mosaic. `want` is the
 /// lowest scan (S25), or every scan for a height set (S30: `Want::ColMax`

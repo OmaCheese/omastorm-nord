@@ -69,6 +69,11 @@ pub const BACKFILL: usize = 60;
 /// clients buffer. A file is one request (`plan_for`), so deeper than
 /// SMHI's `PRODUCT_BACKFILL` (S26).
 pub const PRODUCT_BACKFILL: usize = 24;
+/// How far back the poller lists, in ms (S49 review S2): `BACKFILL` of
+/// the 5-minute cadence and two more, whatever the station's own cadence,
+/// so a 10-minute AEMET radar's history reaches back this far, not
+/// `BACKFILL` of its own cadence.
+pub const LISTING_MS: i64 = (BACKFILL as i64 + 2) * CADENCE_MS;
 /// The same for a per-angle station (S24a, FMI): five files a volume, so an
 /// hour, like SMHI's `PRODUCT_BACKFILL`.
 pub const SET_BACKFILL: usize = 12;
@@ -1070,7 +1075,7 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
             return;
         }
     };
-    let window_ms = (BACKFILL as i64 + 2) * CADENCE_MS;
+    let window_ms = LISTING_MS;
     let mut known = cached;
     // The newest file dealt with: fetched, catalogued, too old, or given up on.
     let mut newest: Option<Listed> = None;

@@ -14,7 +14,7 @@
 #   - a right press and drag opens the menu and never pans.
 # RUN names the directory for the runtime, cache, state and harness
 # (default ~/Projects/omastorm-S46-run/chrome); the PNGs go to review/s46/.
-# ONLY="themes sizes popover live picker wheel" picks sections (default: all).
+# ONLY="themes sizes popover live picker ipc wheel" picks sections (default: all).
 # S48 adds the picker section: its PNGs go to review/s48/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -237,6 +237,35 @@ if want picker; then
   picker_run dark 16 1100 480
   if (( pfail )); then echo "S48 picker checks: FAIL" >&2; exit 1; fi
   echo "S48 picker checks: PASS"
+fi
+
+# ---- S48: the plugin's load leaves the `theme` IPC target alone -----------------
+# The Omarchy shell also hosts upstream Omastorm, whose Theme registers
+# `theme` first; our session (PluginSession's Theme) and the panel's window
+# must not register it again, nor leave an enabled handler without a target.
+if want ipc; then
+  sim=$(mktemp -d "$run/plugin-sim.XXXXXX")
+  cp ui/*.qml ui/*.js ui/qmldir "$sim/"
+  ln -sfn "$PWD/ui/shaders" "$sim/shaders"
+  cat > "$sim/sim.qml" <<'QML'
+import QtQuick
+import Quickshell
+import Quickshell.Io
+ShellRoot {
+    // Upstream Omastorm's Theme, loaded first in the real shell.
+    IpcHandler { target: "theme"; function reload(): void {} }
+    property var session: PluginSession
+    Panel {}
+    IpcHandler { target: "sim"; function base(): string { return String(PluginSession.theme.snapshot.baseSize); } }
+}
+QML
+  OMASTORM_ROOT="$PWD" OMASTORM_THEME_DIR="$dark" OMASTORM_USER_SHELL="$run/user-12.toml" quickshell -p "$sim/sim.qml" > "$run/plugin-sim.log" 2>&1 &
+  pid=$!
+  for _ in {1..100}; do call sim base > /dev/null 2>&1 && break; sleep .1; done
+  b=$(call sim base || true); sleep 1.5
+  kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; pid=
+  if [[ $b == 12 ]] && ! grep -q 'IpcHandler' "$run/plugin-sim.log"; then echo "IPC plugin load (upstream 'theme' first, session + panel): no IpcHandler warning: PASS"
+  else echo "IPC plugin load: base=$b, $(grep IpcHandler "$run/plugin-sim.log" | head -2): FAIL"; exit 1; fi
 fi
 
 # ---- the wheel over every overlay ----------------------------------------------

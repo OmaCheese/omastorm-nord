@@ -14,6 +14,7 @@
 #   - a right press and drag opens the menu and never pans.
 # RUN names the directory for the runtime, cache, state and harness
 # (default ~/Projects/omastorm-S46-run/chrome); the PNGs go to review/s46/.
+# ONLY="themes sizes popover live wheel" picks sections (default: all).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 run=${RUN:-$HOME/Projects/omastorm-S46-run/chrome}
@@ -64,9 +65,10 @@ stop() { call keys run close > /dev/null 2>&1 || true; kill "$pid" 2>/dev/null |
 grab() { rm -f "$out/$1.png"; call input grab "$out/$1.png"; for _ in {1..50}; do [[ -s $out/$1.png ]] && break; sleep .1; done; [[ -s $out/$1.png ]] || { echo "no capture $1" >&2; exit 1; }; echo "captured review/s46/$1.png"; }
 centre() { local r; r=$(call chrome rect "$1"); jq -r '"\(.x + (.w / 2 | floor)) \(.y + (.h / 2 | floor))"' <<< "$r"; }
 span() { call chrome status | field .span; }
+want() { [[ -z ${ONLY:-} || " $ONLY " == *" $1 "* ]]; }
 
 # ---- captures, dark and light ------------------------------------------------
-for theme in dark light; do
+want themes && for theme in dark light; do
   start "$theme" 12 radar,temp,wind,lightning
   call picker open ""; sleep .4
   echo "picker card $(call chrome rect picker) under chip $(call chrome rect chip)"
@@ -93,7 +95,7 @@ for theme in dark light; do
 done
 
 # ---- text sizes ----------------------------------------------------------------
-for base in 9 12 16; do
+want sizes && for base in 9 12 16; do
   start dark "$base" radar,temp,wind
   grab "base-$base"
   call picker open ""; sleep .4; grab "base-$base-picker"; call picker close
@@ -104,7 +106,7 @@ for base in 9 12 16; do
   stop
 done
 # The popover card at each size, in its harness (PopoverHarness), offline.
-for base in 9 12 16; do
+want popover && for base in 9 12 16; do
   cp "$run/user-$base.toml" "$run/user.toml"
   OMASTORM_THEME_DIR="$dark" OMASTORM_USER_SHELL="$run/user.toml" quickshell -p ui/PopoverHarness.qml > "$run/popover-$base.log" 2>&1 &
   pid=$!
@@ -120,6 +122,7 @@ for base in 9 12 16; do
 done
 
 # ---- a live text-size change ---------------------------------------------------
+if want live; then
 start dark 12 radar
 before=$(call chrome status | field .base)
 tmp=$(mktemp "$run/user.XXXXXX"); printf '[font]\nbase-size = 16\n' > "$tmp"; mv "$tmp" "$run/user.toml"
@@ -129,9 +132,11 @@ echo "LIVE text size: $before -> $after (file replaced, window kept open)"
 [[ $after == 16 ]] || { echo "the window did not follow base-size" >&2; exit 1; }
 grab live-16
 stop
+fi
 
 # ---- the wheel over every overlay ----------------------------------------------
 fail=0
+want wheel || exit 0
 # wheel <label> <x> <y>: one notch; the span must not move.
 wheel_over() {
   local label=$1 x=$2 y=$3 a b
@@ -183,4 +188,5 @@ if [[ $before != "$after" || $menu != true ]]; then echo "RIGHT press: FAIL" >&2
 call input key Escape; sleep .2
 echo "menu after Escape: $(call chrome status | field .menu)"
 stop
-(( fail == 0 )) && echo "S46 chrome checks: PASS" || { echo "S46 chrome checks: FAIL" >&2; exit 1; }
+if (( fail )); then echo "S46 chrome checks: FAIL" >&2; exit 1; fi
+echo "S46 chrome checks: PASS"

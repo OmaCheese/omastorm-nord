@@ -481,7 +481,7 @@ Item {
             Item {
                 visible: stationLayer.temp && stationLayer.showLegend
                 // S46: wide and tall enough for the ticks at any text size.
-                width: Math.round(170 * Math.max(1, stationLayer.sizes.k)); height: 13 + Math.ceil(stationLayer.sizes.small * 1.3)
+                width: Math.round(200 * Math.max(1, stationLayer.sizes.k)); height: 13 + Math.ceil(stationLayer.sizes.small * 1.3)
                 // Review S3: with the grid's field on, the ramp is drawn as
                 // the field is, at its opacity over the theme's background.
                 Rectangle {

@@ -48,7 +48,7 @@ Item {
     }
     Rectangle {
         id: card
-        width: Math.min(660, sheet.width - 40)
+        width: Math.min(Math.round(660 * Math.max(1, sheet.theme.size.k)), sheet.width - 40)
         x: Math.round((sheet.width - width) / 2)
         y: Math.round(Math.max(20, Math.min(sheet.cardTop + 20, sheet.height - height - 20)))
         height: column.implicitHeight + 36
@@ -90,8 +90,8 @@ Item {
                                 Layout.preferredHeight: 26
                                 spacing: 8
                                 Row {
-                                    Layout.preferredWidth: 124
-                                    Layout.minimumWidth: 124
+                                    Layout.preferredWidth: Math.round(124 * Math.max(1, sheet.theme.size.k))
+                                    Layout.minimumWidth: Math.round(124 * Math.max(1, sheet.theme.size.k))
                                     spacing: 4
                                     Repeater {
                                         model: row.modelData.caps

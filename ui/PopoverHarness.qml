@@ -15,10 +15,13 @@ ShellRoot {
         color: "#181414"
         Item {
             id: picture
-            anchors.fill: parent
+            // S46: sized by the card (it grows with Omarchy's text size), not
+            // the window, which keeps the size it opened at.
+            width: popover.implicitWidth + 72
+            height: popover.implicitHeight + 128
             Rectangle {
                 x: 0; y: 0; width: parent.width; height: 32; color: theme.snapshot.background
-                RadarMark { x: 294; y: 8; ink: theme.snapshot.foreground }
+                RadarMark { x: popover.implicitWidth - 14; y: 8; ink: theme.snapshot.foreground }
             }
             Rectangle {
                 x: 22; y: 42; width: popover.implicitWidth + 28; height: popover.implicitHeight + 28

@@ -3303,8 +3303,15 @@ mod tests {
         } else {
             shared.backfilled(entry.clone()).unwrap();
         }
-        assert_eq!(s49_times(&shared), ["14:25"], "{name}: no 10:10 → 14:25 splice");
-        assert_eq!(shared.state.frame.id, entry.id, "{name}: the load's frame shows");
+        assert_eq!(
+            s49_times(&shared),
+            ["14:25"],
+            "{name}: no 10:10 → 14:25 splice"
+        );
+        assert_eq!(
+            shared.state.frame.id, entry.id,
+            "{name}: the load's frame shows"
+        );
     }
     #[test]
     fn stale_frames_leave_a_single_radars_product() {
@@ -3321,7 +3328,11 @@ mod tests {
     #[test]
     fn stale_frames_leave_a_grid_composite() {
         // Nordic's own composite (OPERA): its backfill's two hours.
-        s49_log_case("s49-grid", |shared| assert!(shared.select_site("nordic").0), true);
+        s49_log_case(
+            "s49-grid",
+            |shared| assert!(shared.select_site("nordic").0),
+            true,
+        );
     }
     #[test]
     fn stale_frames_leave_a_grid_product() {
@@ -3370,7 +3381,9 @@ mod tests {
         shared.backfilled(entry).unwrap();
         assert_eq!(
             s49_times(&shared),
-            ["13:45", "13:50", "13:55", "14:00", "14:05", "14:10", "14:15", "14:20", "14:25"]
+            [
+                "13:45", "13:50", "13:55", "14:00", "14:05", "14:10", "14:15", "14:20", "14:25"
+            ]
         );
         // Once per load: the next frame drops nothing (the ring prunes by
         // count, as before).
@@ -3430,9 +3443,8 @@ mod tests {
     fn each_load_has_its_own_window() {
         let (mut shared, runtime) = live_shared("s49-windows");
         let _guard = runtime.enter();
-        let station = |shared: &Shared, id: &str| {
-            shared.sites.iter().find(|s| s.id == id).cloned().unwrap()
-        };
+        let station =
+            |shared: &Shared, id: &str| shared.sites.iter().find(|s| s.id == id).cloned().unwrap();
         let five = 5 * 60_000;
         let vara = station(&shared, "vara");
         let nordic = station(&shared, "nordic");

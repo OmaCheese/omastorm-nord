@@ -1103,12 +1103,15 @@ impl Shared {
                 eprintln!("Frame catalog: {e}");
                 Vec::new()
             });
-        // The whole ring is published under stable names, so a client can
-        // fetch any frame of the loop without a seek.
-        for entry in &listed {
+        // S49: cut at a splice on disk (`Timeline::opened`).
+        let timeline = Timeline::opened(listed, self.window_ms(station, want));
+        // The whole timeline is published under stable names, so a client
+        // can fetch any frame of the loop without a seek; a frame cut at a
+        // splice is not in it (review N1).
+        for entry in &timeline.stored {
             self.link(entry);
         }
-        let shown = match listed.iter().rev().find(|e| e.record.is_some()) {
+        let shown = match timeline.stored.iter().rev().find(|e| e.record.is_some()) {
             Some(newest) => self.show_entry(newest).map(|()| Some(newest.start_ms)),
             None => {
                 let mut frame = empty_frame(&self.template, station);
@@ -1136,7 +1139,7 @@ impl Shared {
                 return Err(format!("Could not publish a frame for {}.", station.id));
             }
         };
-        self.timeline = Timeline::opened(listed, self.window_ms(station, want));
+        self.timeline = timeline;
         self.pending = None;
         self.state.playing = false;
         Ok(())

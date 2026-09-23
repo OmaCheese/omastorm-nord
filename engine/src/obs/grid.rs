@@ -931,6 +931,7 @@ pub async fn run(runtime: PathBuf) {
     loop {
         if hub.take_reset() {
             eprintln!("{} Grid metnordic: reset", stamp());
+            super::drain(&hub.abort);
             let _ = fs::remove_file(fetcher.cache.join(CACHE_NAME));
             fetcher.field_time = None;
             fetcher.probed = None;

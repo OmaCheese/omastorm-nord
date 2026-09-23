@@ -72,6 +72,102 @@ QtObject {
         layersLine = line;
         socket.write(line + "\n");
     }
+    // ---- S47: the weather layers' own loading, and Reset ----
+    /// A provider that let the stations down, in a few words ("DMI error
+    /// 503", "Frost: no client ID"), or "".
+    function providerProblem(p) {
+        if (!p) return "";
+        if (p.status === "skipped" && p.id === "frost") return "Frost: no client ID";
+        if (p.status === "skipped") return (p.name || p.id) + ": off";
+        if (p.status !== "failed") return "";
+        var m = /HTTP (\d{3})/.exec(p.note || "");
+        return (p.name || p.id) + (m ? " error " + m[1] : /timed out|timeout/i.test(p.note || "") ? " timed out" : " failed");
+    }
+    /// Each weather layer as the surfaces say it: {id, state (off, loading,
+    /// ok, error), percent, text, problems}. From the engine's `status`
+    /// and `percent` (S47); an older engine sends neither, and its layers
+    /// read `loading` until their first line and `ok` after it.
+    readonly property var stationsLayer: {
+        if (!stationsWanted) return {id: "stations", state: "off", percent: 0, text: "", problems: []};
+        var o = obs;
+        if (!o) return {id: "stations", state: "loading", percent: 0, text: "Fetching weather stations", problems: []};
+        var providers = Array.isArray(o.providers) ? o.providers : [];
+        var problems = providers.map(providerProblem).filter(x => x !== "");
+        var n = Array.isArray(o.stations) ? o.stations.length : 0;
+        if (o.status === "loading") {
+            var total = providers.length || 4, done = providers.filter(p => p.status !== "loading").length;
+            return {id: "stations", state: "loading", percent: Number(o.percent) || 0, problems: problems,
+                    text: "Fetching weather stations (" + done + " of " + total + " providers)"};
+        }
+        if (o.status === "error" || (n === 0 && problems.length > 0 && problems.length === providers.length))
+            return {id: "stations", state: "error", percent: 100, problems: problems,
+                    text: "Weather stations: " + (problems.length ? problems.join(", ") : "none")};
+        return {id: "stations", state: "ok", percent: 100, problems: problems, text: n + " stations"};
+    }
+    readonly property var gridLayer: {
+        var what = layers && layers.temp ? "the temperature grid" : "the wind grid";
+        if (!gridWanted) return {id: "grid", state: "off", percent: 0, text: "", problems: []};
+        var g = grid;
+        if (!g || g.status === "loading" || (g.provider && g.provider.status === "loading"))
+            return {id: "grid", state: "loading", percent: 0, text: "Fetching " + what, problems: []};
+        var p = g.provider || {};
+        var problem = p.status === "failed" ? providerProblem({status: "failed", name: "MET Nordic grid", note: p.note}) : "";
+        if (!g.time) return {id: "grid", state: "error", percent: 100, problems: problem ? [problem] : [],
+                             text: problem || ("MET Nordic grid: " + (p.note || "none"))};
+        return {id: "grid", state: "ok", percent: 100, problems: problem ? [problem + " (update)"] : [],
+                text: "Grid " + Qt.formatTime(new Date(g.time), Qt.locale().timeFormat(Locale.ShortFormat))};
+    }
+    readonly property var lightningLayer: {
+        if (!lightningWanted) return {id: "lightning", state: "off", percent: 0, text: "", problems: []};
+        if (state && !lightningInfo) return {id: "lightning", state: "error", percent: 100, text: "Lightning: engine too old", problems: ["engine too old"]};
+        var m = lightning;
+        if (!m) return {id: "lightning", state: "loading", percent: 0, text: "Fetching lightning", problems: []};
+        if (m.status === "failed") {
+            var problem = providerProblem({status: "failed", name: "FMI lightning", note: m.note});
+            return {id: "lightning", state: m.path ? "ok" : "error", percent: 100, text: problem, problems: [problem]};
+        }
+        return {id: "lightning", state: "ok", percent: 100, text: (Number(m.count) || 0) + " strikes", problems: []};
+    }
+    /// The layers still loading, for the loading bar and card.
+    readonly property var layerLoads: [stationsLayer, gridLayer, lightningLayer].filter(l => l.state === "loading")
+    readonly property var layerStates: [stationsLayer, gridLayer, lightningLayer].filter(l => l.state !== "off")
+    /// Review of the stations bug: a layer that is on and has had no line
+    /// for a while is asked for again (an S47 engine answers every
+    /// `set_layers`; an older one ignores the repeat).
+    property Timer layersWatch: Timer {
+        interval: 15000
+        repeat: true
+        running: !!engine.socket && engine.socket.connected && engine.layersSent
+            && ((engine.stationsWanted && !engine.obs) || (engine.gridWanted && !engine.grid) || (engine.lightningWanted && !engine.lightning && !!engine.lightningInfo))
+        onTriggered: { engine.layersLine = ""; engine.sendLayers(); }
+    }
+    /// S47: a Reset is under way: the connection is being replaced, and the
+    /// new one sends `reset` after `hello`.
+    property bool resetting: false
+    signal resetDone()
+    /// S47 (docs/protocol.md, Reset): drop everything this client holds
+    /// (state, frames, layer lines, the load's progress), reconnect, and
+    /// ask the engine to load the current choices afresh. The station, the
+    /// product, the layers and the view stay as they are.
+    function resetAll() {
+        if (incompatible) return;
+        resetting = true;
+        state = null;
+        obs = null;
+        grid = null;
+        lightning = null;
+        heldLoading = null;
+        lastLoading = null;
+        holdTimer.stop();
+        pendingId = "";
+        rejection = "";
+        error = "";
+        layersSent = false;
+        layersLine = "";
+        var previous = socket;
+        socket = socketFactory.createObject(engine);
+        if (previous) previous.destroy();
+    }
     /// Places answering this client's `search_places`; a reply, not state.
     signal placesReady(var message)
     readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-se/"
@@ -613,6 +709,13 @@ QtObject {
                 layersSent = false;
                 gridRefused = false;
                 lightningSent = false;
+                // S47: a Reset asks the engine before the layers go again,
+                // so they come back fetched afresh.
+                if (resetting) {
+                    resetting = false;
+                    socket.write(JSON.stringify({type: "reset"}) + "\n");
+                    resetDone();
+                }
                 sendLayers();
             }
             else if (message.type === "state") {
@@ -683,7 +786,8 @@ QtObject {
             connected: true
             parser: SplitParser { onRead: data => engine.receive(data) }
             onConnectedChanged: {
-                if (!connected && !engine.incompatible) {
+                // S47: the connection a Reset replaced says nothing.
+                if (!connected && !engine.incompatible && !engine.resetting) {
                     engine.state = null;
                     engine.obs = null;
                     engine.grid = null;

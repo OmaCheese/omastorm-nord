@@ -14,8 +14,9 @@ stride, as engine/tests/grid.rs builds it), valid on the current hour.
 PORTFILE receives the port once the server listens. --fail answers a
 provider with HTTP 503; --slow holds its answers that many seconds. Every
 request is appended to --log as "<provider> <status>", so a check can count
-requests per provider. SIGUSR1 re-reads FAILFILE (PORTFILE + ".fail", one
-provider list like --fail) so a run can make a provider recover or fail.
+requests per provider. SIGUSR1 re-reads PORTFILE + ".fail" (a provider
+list like --fail) and PORTFILE + ".slow" (like --slow), so a run can make
+a provider fail, hang or recover.
 """
 import gzip
 import json
@@ -198,6 +199,11 @@ def main():
                 State.fail = parse_list(f.read())
         except OSError:
             State.fail = set()
+        try:
+            with open(portfile + ".slow") as f:
+                State.slow = {k: float(v) for k, v in (x.split("=") for x in parse_list(f.read()))}
+        except OSError:
+            State.slow = {}
 
     signal.signal(signal.SIGUSR1, reread)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)

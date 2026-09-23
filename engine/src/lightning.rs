@@ -755,6 +755,7 @@ pub async fn run(dir: PathBuf) {
     loop {
         if hub.take_reset() {
             eprintln!("{} Lightning: reset", stamp());
+            crate::obs::drain(&hub.abort);
             ring = Ring::default();
             status = Status::default();
             last_to = None;

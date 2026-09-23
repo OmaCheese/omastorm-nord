@@ -11,6 +11,11 @@ import QtQuick.Layouts
 // Nordic analysis) or BOTH; Left and Right (h, l) or Space move along it, 5
 // steps it (review S4). S44: a fourth
 // switch, LIGHTNING (NORDLIS strikes), key 4; FROM is the fifth row.
+// S47: a layer that is on says under its name how its data is coming
+// ("Fetching weather stations (2 of 4 providers)") or what failed ("DMI
+// error 503", "Frost: no client ID"), instead of drawing nothing without
+// a word; a last row, RESET (key r or 6), reloads the radar and the layers
+// with the current choices (Engine.resetAll, docs/protocol.md Reset).
 Item {
     id: panel
     property var theme
@@ -22,6 +27,12 @@ Item {
     property var lightning: null    // the engine's lightning message (S44)
     property var lightningInfo: null // hello.lightning; null: the engine has none
     property int strikesShown: -1   // strikes in the trail on the map now
+    /// S47: the engine's layer states (Engine.stationsLayer, gridLayer,
+    /// lightningLayer); null from a host that has none.
+    property var stationsLayer: null
+    property var gridLayer: null
+    property var lightningLayer: null
+    signal resetRequested()
     property bool opened: false
     property int cursor: 0
     visible: opened
@@ -36,6 +47,25 @@ Item {
     ]
     readonly property var sourceNames: [["stations", "STATIONS"], ["grid", "GRID"], ["both", "BOTH"]]
     readonly property int sourceRow: rows.length
+    readonly property int resetRow: rows.length + 1
+    /// S47: what a switched-on row says under its name while its data is
+    /// loading or has failed, or "" (the row's usual note then).
+    function live(ids) {
+        var states = ids.map(id => id === "stations" ? stationsLayer : id === "grid" ? gridLayer : lightningLayer)
+            .filter(l => !!l && l.state !== "off");
+        var loading = states.find(l => l.state === "loading");
+        if (loading) return {state: "loading", text: loading.text};
+        var failed = states.find(l => l.state === "error");
+        if (failed) return {state: "error", text: failed.text};
+        var problems = [].concat.apply([], states.map(l => l.problems || []));
+        return problems.length ? {state: "warn", text: problems.join(" · ")} : null;
+    }
+    function rowLive(id) {
+        if (!store || !store[id]) return null;
+        if (id === "lightning") return live(["lightning"]);
+        if (id === "temp" || id === "wind") return live(source === "grid" ? ["grid"] : source === "stations" ? ["stations"] : ["stations", "grid"]);
+        return null;
+    }
     function show() { cursor = 0; opened = true; forceActiveFocus(); }
     function close() { opened = false; }
     function flip(index) { if (store && index >= 0 && index < rows.length) store.toggle(rows[index].id); }
@@ -44,7 +74,8 @@ Item {
         event.accepted = true;
         if (event.key === Qt.Key_Escape || (event.key === Qt.Key_L && (event.modifiers & Qt.ControlModifier))) close();
         else if (event.key === Qt.Key_Up || event.key === Qt.Key_K) cursor = Math.max(0, cursor - 1);
-        else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) cursor = Math.min(sourceRow, cursor + 1);
+        else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) cursor = Math.min(resetRow, cursor + 1);
+        else if (event.key === Qt.Key_R || event.key === Qt.Key_6 || (cursor === resetRow && (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter))) { cursor = resetRow; resetRequested(); }
         else if (cursor === sourceRow && (event.key === Qt.Key_Left || event.key === Qt.Key_H)) store.cycleSource(-1);
         else if (cursor === sourceRow && (event.key === Qt.Key_Right || event.key === Qt.Key_L)) store.cycleSource(1);
         else if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { if (cursor === sourceRow) store.cycleSource(1); else flip(cursor); }
@@ -67,6 +98,10 @@ Item {
         return words;
     }
     readonly property string stationStatus: {
+        // S47: the engine's own words when it has them.
+        if (stationsLayer && stationsLayer.state !== "off")
+            return [stationsLayer.state === "ok" ? stationsLayer.text : ""].concat(stationsLayer.state === "error" ? [stationsLayer.text] : stationsLayer.state === "loading" ? [stationsLayer.text] : stationsLayer.problems)
+                .filter(x => x).join(" · ").toUpperCase();
         if (!obs) return "STATIONS LOADING…";
         var out = [];
         for (var p of obs.providers || []) {
@@ -146,8 +181,17 @@ Item {
                         ColumnLayout {
                             spacing: 0
                             Layout.fillWidth: true
+                            // S47: loading or failed, said under the name.
+                            readonly property var status: panel.rowLive(row.modelData.id)
                             Word { text: row.modelData.label; color: row.ink; Layout.fillWidth: true }
-                            Word { text: row.modelData.note; font.pixelSize: 9; opacity: .55; Layout.fillWidth: true }
+                            Word {
+                                text: parent.status ? (parent.status.state === "loading" ? "● " : parent.status.state === "error" ? "✗ " : "! ") + parent.status.text : row.modelData.note
+                                font.pixelSize: 9
+                                opacity: parent.status ? .95 : .55
+                                color: parent.status && parent.status.state === "loading" ? row.accent
+                                    : parent.status ? (panel.theme && panel.theme.red ? panel.theme.red : "#e0787b") : row.ink
+                                Layout.fillWidth: true
+                            }
                         }
                         Word { text: String(row.index + 1); font.pixelSize: 10; opacity: .45 }
                         // The switch: a track with a knob, accent when on.
@@ -217,6 +261,34 @@ Item {
                         }
                     }
                     Word { text: "5"; font.pixelSize: 10; opacity: .45; Layout.leftMargin: 4 }
+                }
+            }
+            // S47: Reset, the cure for anything stuck.
+            Rectangle {
+                id: resetRowItem
+                readonly property bool hot: resetArea.containsMouse || panel.cursor === panel.resetRow
+                readonly property color accent: panel.theme ? panel.theme.accent : "#7aa2f7"
+                Layout.fillWidth: true
+                implicitHeight: 36
+                color: hot ? Qt.alpha(panel.theme ? panel.theme.foreground : "#a9b1d6", .08) : "transparent"
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 8
+                    ColumnLayout {
+                        spacing: 0
+                        Layout.fillWidth: true
+                        Word { text: "↻ RESET"; color: resetRowItem.hot ? resetRowItem.accent : (panel.theme ? panel.theme.foreground : "#a9b1d6"); Layout.fillWidth: true }
+                        Word { text: "reload radar and layers · shift+r"; font.pixelSize: 9; opacity: .55; Layout.fillWidth: true }
+                    }
+                    Word { text: "r"; font.pixelSize: 10; opacity: .45 }
+                }
+                MouseArea {
+                    id: resetArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: { panel.cursor = panel.resetRow; panel.resetRequested(); }
                 }
             }
             Word {

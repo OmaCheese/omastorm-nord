@@ -85,6 +85,27 @@ Rectangle {
             gap: 3
         }
 
+        // S47: the weather layers that are on, loading (●), in (✓) or
+        // failed (✗), with what failed.
+        Column {
+            width: parent.width
+            spacing: 2
+            visible: card.engine && card.engine.layerStates && card.engine.layerStates.length > 0
+            Repeater {
+                model: card.engine ? card.engine.layerStates : []
+                Text {
+                    required property var modelData
+                    width: parent.width
+                    text: (modelData.state === "loading" ? "● " : modelData.state === "error" ? "✗ " : "✓ ") + modelData.text
+                    elide: Text.ElideRight
+                    font.family: card.theme.font
+                    font.pixelSize: card.compact ? 10 : 11
+                    color: modelData.state === "loading" ? card.theme.accent : modelData.state === "error" && card.theme.red ? card.theme.red : card.theme.foreground
+                    opacity: modelData.state === "ok" ? 0.7 : 1
+                }
+            }
+        }
+
         Column {
             width: parent.width
             spacing: card.compact ? 3 : 5

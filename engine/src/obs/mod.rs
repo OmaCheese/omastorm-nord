@@ -717,6 +717,15 @@ pub async fn or_abort<F: std::future::Future>(work: F, abort: &Notify) -> Option
     .await
 }
 
+/// S47: consume a stored `abort` permit (a reset notified while nothing
+/// waited on it), once that reset has been applied, so it does not abort
+/// the next fetch as well.
+pub fn drain(abort: &Notify) {
+    let mut stale = std::pin::pin!(abort.notified());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    let _ = stale.as_mut().poll(&mut context);
+}
+
 /// The fetcher's task: while a client has a layer on, keep every provider
 /// fresh and publish the list when it changes; otherwise sleep until one
 /// turns a layer on. S47: while a provider has not answered (the first
@@ -744,6 +753,7 @@ pub async fn run() {
     loop {
         if hub.take_reset() {
             eprintln!("{} Obs: reset", stamp());
+            drain(&hub.abort);
             fetcher.reset();
             first = true;
         }

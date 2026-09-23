@@ -5,10 +5,10 @@ import "Toml.js" as Toml
 
 QtObject {
     id: root
-    /// Whether this Theme answers `theme reload`. Off unless asked for: the
-    /// standalone window asks (RadarWindow's themeInputs, when it has no
-    /// plugin session); the plugin session's Theme never does (S48).
-    property bool registerIpc: false
+    /// Whether this Theme answers `theme reload` (scripts/hooks/omastorm).
+    /// The standalone window's does; the plugin session's never does (S48:
+    /// PluginSession turns it off), nor the panel's window (RadarWindow).
+    property bool registerIpc: true
     readonly property string themePath: Quickshell.env("OMASTORM_THEME_DIR") || (Quickshell.env("HOME") + "/.local/state/omarchy/current/theme")
     readonly property string userPath: Quickshell.env("OMASTORM_USER_SHELL") || (Quickshell.env("HOME") + "/.config/omarchy/shell.toml")
     property var colors: ({})

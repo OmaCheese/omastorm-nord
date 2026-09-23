@@ -18,7 +18,10 @@ QtObject {
     /// The weather layers' switches (S42), shared by the window and popover.
     property LayersStore layers: LayersStore {}
     property bool mosaicResent: false
-    property Theme theme: Theme {}
+    // S48: no `theme` IPC target from the plugin: the Omarchy shell hosts
+    // other plugins that register it (upstream Omastorm), and the hook only
+    // ever calls the standalone window's (Theme.qml).
+    property Theme theme: Theme { registerIpc: false }
     property bool windowOpen: false
     // The station whose loop this process's surfaces play from their own
     // buffers (Engine.qml, loop buffer), "" for none: play in the popover

@@ -34,6 +34,8 @@ Item {
     property var lightningLayer: null
     signal resetRequested()
     property bool opened: false
+    /// S46: the card, for the host's checks and captures.
+    readonly property Item cardItem: card
     property int cursor: 0
     /// S46: the theme's type scale (a fallback for a bare host).
     readonly property var sizes: theme && theme.size ? theme.size : ({small: 10, caption: 11, body: 12, label: 13, title: 14, k: 1})

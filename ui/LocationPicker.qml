@@ -19,6 +19,8 @@ Item {
     property bool compact: false
     property real cardTop: 20
     property bool open: false
+    /// S46: the card, for the host's checks and captures.
+    readonly property Item cardItem: card
     property bool closeOnScrim: true
     property alias query: field.text
     property alias latText: latField.text

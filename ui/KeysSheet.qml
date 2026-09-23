@@ -14,6 +14,8 @@ Item {
     property bool compact: false
     property real cardTop: 20         // the map's top edge; the card sits below it
     property bool open: false
+    /// S46: the card, for the host's checks and captures.
+    readonly property Item cardItem: card
     readonly property var columns: KeyMap.sheet(bindings)
     // What MosaicPicker.qml's keys do; not rebindable.
     readonly property var mosaicKeys: [

@@ -106,8 +106,8 @@ old client that sends no `set_layers` gets none of them)
   a minute while a client has it on (off by default). The first fetch
   brings the last 5 hours, the live loop's span; the strikes go to clients
   as a packed file (16 bytes a strike), not a JSON array on the socket.
-- Each layer reports its own `status` (`loading`, `ok`, `error`) and a
-  failing provider by name.
+- Each layer reports whether it is loading, ready or failed, and names a
+  failing provider.
 
 **Plugin** (the Omarchy bar mark, popover and window; released separately
 from the engine as the plugin's `v*` tags)

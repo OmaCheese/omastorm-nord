@@ -49,7 +49,9 @@ OMASTORM_ARCHIVE=data/raw/radar_vara_qcvol_202609131055.h5 mise start
 ```
 
 `mise check` itself runs on the Level II KTLX scan on purpose: KTLX is not an
-SMHI station, so selecting it never polls SMHI (DEC-10 in `coord/DECISIONS.md`).
+SMHI station, so selecting it never polls SMHI. No check needs a network or a
+Frost client ID; the weather layers and lightning are tested on vendored
+fixtures (`data/fixtures/obs/`, `data/fixtures/lightning/`).
 
 The daemon is shared and outlives windows. Launch replaces a stale build and
 open clients reconnect. Use `mise stop` to end it, never `kill`. Close only

@@ -3134,6 +3134,48 @@ mod tests {
             .unwrap();
         (shared, runtime)
     }
+    /// S47: a client `broadcast` drops for a full queue is kicked (its
+    /// writer stops and the connection closes), not left open without
+    /// states.
+    #[test]
+    fn a_client_dropped_for_a_full_queue_is_kicked() {
+        let (mut shared, runtime) = live_shared("kick");
+        let (full, _rx) = mpsc::channel::<String>(1);
+        full.try_send(String::new()).unwrap();
+        let (fine, mut fine_rx) = mpsc::channel::<String>(4);
+        let kick = Arc::new(Notify::new());
+        shared.clients.push((7, full));
+        shared.clients.push((8, fine));
+        shared.kicks.insert(7, kick.clone());
+        shared.kicks.insert(8, Arc::new(Notify::new()));
+        shared.broadcast();
+        assert_eq!(shared.clients.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [8]);
+        assert!(!shared.kicks.contains_key(&7) && shared.kicks.contains_key(&8));
+        assert!(fine_rx.try_recv().is_ok());
+        runtime
+            .block_on(async { timeout(Duration::from_millis(100), kick.notified()).await })
+            .expect("the dropped client's writer is kicked");
+    }
+
+    /// S47: `reset` loads the current station afresh with the tracker from
+    /// 0, and a second within `RESET_EVERY` changes nothing.
+    #[test]
+    fn a_reset_starts_the_load_again_and_a_second_is_ignored() {
+        let (mut shared, runtime) = live_shared("reset");
+        let _guard = runtime.enter();
+        assert!(shared.select_site("vara").0);
+        // The load's first frame came in: nothing is loading any more.
+        shared.loading.reset();
+        assert!(shared.loading.wire(Instant::now()).is_none());
+        let before = shared.live.as_ref().map(|t| t.id());
+        assert!(shared.reset());
+        let loading = shared.loading.wire(Instant::now()).expect("loading again");
+        assert_eq!((loading.percent, loading.done), (0, 0));
+        assert_ne!(shared.live.as_ref().map(|t| t.id()), before, "a new poller");
+        assert_eq!(shared.state.site.id, "vara");
+        assert!(!shared.reset(), "within 10 s: a no-op");
+    }
+
     /// Review M1: a composite's product stops, back to the composite, when
     /// the engine's last client has gone; a radar's product and My mosaic
     /// are left alone.

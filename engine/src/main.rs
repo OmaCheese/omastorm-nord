@@ -3222,6 +3222,229 @@ mod tests {
             .unwrap();
         (shared, runtime)
     }
+    // S49: the log case of 2026-09-23. A morning load catalogued 09:00 to
+    // 10:10Z; the engine restarted and the station was loaded again at
+    // 14:33Z. The timeline must not splice the morning onto the new load.
+    const S49_DAY: i64 = 1_790_121_600_000; // 2026-09-23T00:00:00Z
+    fn s49_at(h: i64, m: i64) -> i64 {
+        S49_DAY + (h * 60 + m) * 60_000
+    }
+    /// A frame of the selected station's ring at `start_ms`, catalogued.
+    fn s49_store(shared: &Shared, start_ms: i64) -> Entry {
+        let site = shared.state.site.id.clone();
+        let mut frame = fixture_frame();
+        frame.id = format!("{site}-{}-{}", compact(start_ms), shared.variant());
+        frame.scan_time = iso(start_ms);
+        let bytes = start_ms.to_le_bytes();
+        shared
+            .catalog
+            .store(&site, &frame, start_ms, &bytes, b"lut", "s49")
+            .unwrap()
+    }
+    /// Select a station with `choose`, catalog `times` for it (as an
+    /// earlier load did), and open its catalog as a (re)select does.
+    fn s49_opened(name: &str, choose: impl FnOnce(&mut Shared), times: &[i64]) -> Shared {
+        let (mut shared, runtime) = live_shared(name);
+        {
+            let _guard = runtime.enter();
+            choose(&mut shared);
+            if let Some(task) = shared.live.take() {
+                task.abort();
+            }
+            for &t in times {
+                s49_store(&shared, t);
+            }
+            let station = shared
+                .sites
+                .iter()
+                .find(|s| s.id == shared.state.site.id)
+                .cloned()
+                .unwrap();
+            let want = shared.want();
+            shared.open_catalog(&station, want).unwrap();
+        }
+        drop(runtime);
+        shared
+    }
+    fn s49_morning() -> Vec<i64> {
+        (0..15).map(|i| s49_at(9, 5 * i)).collect()
+    }
+    fn s49_times(shared: &Shared) -> Vec<String> {
+        shared
+            .timeline
+            .stored
+            .iter()
+            .map(|e| e.scan_time[11..16].to_owned())
+            .collect()
+    }
+    /// The log case for one kind: the stale morning opens at once (its
+    /// newest frame on screen), and leaves when the load's first frame of
+    /// its own comes, by `arrived` (a live frame) or `backfilled`.
+    fn s49_log_case(name: &str, choose: impl FnOnce(&mut Shared), live: bool) {
+        let mut shared = s49_opened(name, choose, &s49_morning());
+        assert_eq!(shared.timeline.stored.len(), 15, "{name}: the ring opens");
+        assert_eq!(
+            shared.state.frame.scan_time,
+            iso(s49_at(10, 10)),
+            "{name}: the newest catalogued frame shows at once"
+        );
+        let entry = s49_store(&shared, s49_at(14, 25));
+        if live {
+            let record = entry.record.clone().unwrap();
+            let arrival = Arrival {
+                frame: record.frame.clone(),
+                texture: b"sweep".to_vec(),
+                lut: b"lut".to_vec(),
+                start_ms: entry.start_ms,
+                end_ms: entry.start_ms + 60_000,
+                stored: Some(entry.clone()),
+            };
+            shared.arrived(arrival, true).unwrap();
+        } else {
+            shared.backfilled(entry.clone()).unwrap();
+        }
+        assert_eq!(s49_times(&shared), ["14:25"], "{name}: no 10:10 → 14:25 splice");
+        assert_eq!(shared.state.frame.id, entry.id, "{name}: the load's frame shows");
+    }
+    #[test]
+    fn stale_frames_leave_a_single_radars_product() {
+        // A radar's product builds back PRODUCT_BACKFILL (an hour).
+        s49_log_case(
+            "s49-radar",
+            |shared| {
+                assert!(shared.select_site("vara").0);
+                assert!(shared.set_product(products::CMAX, 0, None, None).0);
+            },
+            true,
+        );
+    }
+    #[test]
+    fn stale_frames_leave_a_grid_composite() {
+        // Nordic's own composite (OPERA): its backfill's two hours.
+        s49_log_case("s49-grid", |shared| assert!(shared.select_site("nordic").0), true);
+    }
+    #[test]
+    fn stale_frames_leave_a_grid_product() {
+        // The reported case: Nordic Lowest beam builds back 6.
+        s49_log_case(
+            "s49-lowb",
+            |shared| {
+                assert!(shared.select_site("nordic").0);
+                assert!(shared.set_product(products::LOWB, 0, None, None).0);
+            },
+            false,
+        );
+    }
+    fn s49_mosaic(shared: &mut Shared, rule: &str, height_m: Option<u32>) {
+        let args = ["vara", "leksand", "hemse"].map(|id| mosaic::SiteArg::Id(id.into()));
+        let above = height_m.map(|_| "sea");
+        shared.state.mosaic =
+            mosaic::choose_with(&shared.sites, &args, Some(rule), height_m, above).unwrap();
+        assert!(shared.select_site(mosaic::STATION).0);
+    }
+    #[test]
+    fn stale_frames_leave_my_mosaic() {
+        s49_log_case("s49-mine", |s| s49_mosaic(s, "lowest", None), false);
+    }
+    #[test]
+    fn stale_frames_leave_a_height_set() {
+        s49_log_case("s49-height", |s| s49_mosaic(s, "height", Some(2000)), true);
+    }
+    /// Catalogued frames inside the load's window stay (they are not built
+    /// again); only the older ones leave. Nordic Lowest beam's window is
+    /// its 6 frame times and two of slack: 13:45 on from 14:25.
+    #[test]
+    fn frames_inside_the_window_stay() {
+        let mut times = s49_morning();
+        times.extend((0..11).map(|i| s49_at(13, 30 + 5 * i)));
+        let mut shared = s49_opened(
+            "s49-inside",
+            |shared| {
+                assert!(shared.select_site("nordic").0);
+                assert!(shared.set_product(products::LOWB, 0, None, None).0);
+            },
+            &times,
+        );
+        assert_eq!(shared.timeline.stored.len(), 26);
+        let entry = s49_store(&shared, s49_at(14, 25));
+        shared.backfilled(entry).unwrap();
+        assert_eq!(
+            s49_times(&shared),
+            ["13:45", "13:50", "13:55", "14:00", "14:05", "14:10", "14:15", "14:20", "14:25"]
+        );
+        // Once per load: the next frame drops nothing (the ring prunes by
+        // count, as before).
+        let next = s49_store(&shared, s49_at(14, 30));
+        shared.backfilled(next).unwrap();
+        assert_eq!(shared.timeline.stored.len(), 10);
+    }
+    /// A source that brings nothing new (offline, silent, no network)
+    /// keeps its stale frames: a replay of a catalogued frame is not the
+    /// load's own.
+    #[test]
+    fn an_offline_load_keeps_its_stale_frames() {
+        let mut shared = s49_opened(
+            "s49-offline",
+            |shared| {
+                assert!(shared.select_site("nordic").0);
+                assert!(shared.set_product(products::LOWB, 0, None, None).0);
+            },
+            &s49_morning(),
+        );
+        let replay = shared.timeline.stored.last().cloned().unwrap();
+        let arrival = Arrival {
+            frame: replay.record.clone().unwrap().frame,
+            texture: b"sweep".to_vec(),
+            lut: b"lut".to_vec(),
+            start_ms: replay.start_ms,
+            end_ms: replay.start_ms + 60_000,
+            stored: Some(replay),
+        };
+        shared.arrived(arrival, true).unwrap();
+        assert_eq!(shared.timeline.stored.len(), 15, "never an empty screen");
+        assert_eq!(shared.state.frame.scan_time, iso(s49_at(10, 10)));
+    }
+    /// A viewer pinned to a stale frame while loading: the pin moves to the
+    /// oldest frame left, which shows.
+    #[test]
+    fn a_pin_on_a_stale_frame_moves_to_the_oldest_left() {
+        let mut times = s49_morning();
+        times.push(s49_at(14, 20));
+        let mut shared = s49_opened(
+            "s49-pin",
+            |shared| {
+                assert!(shared.select_site("nordic").0);
+                assert!(shared.set_product(products::LOWB, 0, None, None).0);
+            },
+            &times,
+        );
+        let (ok, _) = shared.navigate(|t| Ok(t.step(-3)));
+        assert!(ok && !shared.timeline.following());
+        let entry = s49_store(&shared, s49_at(14, 25));
+        shared.backfilled(entry).unwrap();
+        assert_eq!(s49_times(&shared), ["14:20", "14:25"]);
+        assert_eq!(shared.state.frame.scan_time, iso(s49_at(14, 20)));
+    }
+    /// The window follows each kind's own depth and cadence.
+    #[test]
+    fn each_load_has_its_own_window() {
+        let (mut shared, runtime) = live_shared("s49-windows");
+        let _guard = runtime.enter();
+        let station = |shared: &Shared, id: &str| {
+            shared.sites.iter().find(|s| s.id == id).cloned().unwrap()
+        };
+        let five = 5 * 60_000;
+        let vara = station(&shared, "vara");
+        let nordic = station(&shared, "nordic");
+        let mine = station(&shared, mosaic::STATION);
+        assert_eq!(shared.window_ms(&vara, Want::Lowest), 62 * five);
+        assert_eq!(shared.window_ms(&vara, Want::ColMax), 14 * five);
+        assert_eq!(shared.window_ms(&nordic, Want::Lowest), 26 * five);
+        assert_eq!(shared.window_ms(&nordic, Want::LowestBeam), 8 * five);
+        assert_eq!(shared.window_ms(&mine, Want::Lowest), 14 * five);
+        s49_mosaic(&mut shared, "height", Some(2000));
+        assert_eq!(shared.window_ms(&mine, Want::Lowest), 8 * five);
+    }
     /// S47: a client `broadcast` drops for a full queue is kicked (its
     /// writer stops and the connection closes), not left open without
     /// states.

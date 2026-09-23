@@ -899,6 +899,9 @@ Item {
             id: layout
             anchors.fill: parent
             anchors.margins: win.compact ? 12 : 20
+            // Review S2: room for the loading bar's names, which hang below
+            // the tick strip and grow with the text.
+            anchors.bottomMargin: Math.max(win.compact ? 12 : 20, loadingBar.implicitHeight + 2)
             spacing: 10
             // Chrome names (use these when tweaking):
             //   brand row     — mark, OMASTORM, status light, LIVE/ARCHIVED

@@ -493,28 +493,50 @@ pub static HUB: LazyLock<Hub> = LazyLock::new(Hub::default);
 pub struct Hub {
     inner: Mutex<HubInner>,
     wake: Notify,
+    /// S47: a reset aborts the fetch in flight.
+    abort: Notify,
 }
 
 #[derive(Default)]
 struct HubInner {
-    clients: HashMap<u64, Sender<String>>,
+    /// Each client's queue and the `generation` it last had (S47: see
+    /// `obs::Hub`: a line a full queue refused stays owed).
+    clients: HashMap<u64, (Sender<String>, u64)>,
     last: Option<String>,
+    generation: u64,
     paths: Vec<String>,
+    reset: bool,
+}
+
+impl HubInner {
+    fn deliver(&mut self) -> bool {
+        let Some(last) = &self.last else { return false };
+        let mut owed = false;
+        for (tx, delivered) in self.clients.values_mut() {
+            if *delivered == self.generation {
+                continue;
+            }
+            match tx.try_send(last.clone()) {
+                Ok(()) => *delivered = self.generation,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => owed = true,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        owed
+    }
 }
 
 impl Hub {
-    /// `set_layers` from `client`. Turning it on gets the newest line at
-    /// once, and wakes the poller.
+    /// `set_layers` from `client`. S47: every `set_layers` with lightning
+    /// on is answered with the newest line; the first one wakes the poller.
     pub fn set(&self, client: u64, on: bool, reply: &Sender<String>) {
         let mut inner = self.inner.lock().unwrap();
         if !on {
             inner.clients.remove(&client);
             return;
         }
-        if inner.clients.insert(client, reply.clone()).is_none() {
-            if let Some(last) = &inner.last {
-                let _ = reply.try_send(last.clone());
-            }
+        let first = inner.clients.insert(client, (reply.clone(), 0)).is_none();
+        if inner.deliver() || first {
             self.wake.notify_one();
         }
     }
@@ -536,16 +558,33 @@ impl Hub {
             .cloned()
             .collect();
     }
-    fn publish(&self, line: String, status: &Status) {
+    /// True while a client is still owed the line.
+    fn publish(&self, line: String, status: &Status) -> bool {
         self.keep(status);
         let mut inner = self.inner.lock().unwrap();
-        if inner.last.as_deref() == Some(line.as_str()) {
-            return;
+        if inner.last.as_deref() != Some(line.as_str()) {
+            inner.last = Some(line);
+            inner.generation += 1;
         }
-        for tx in inner.clients.values() {
-            let _ = tx.try_send(line.clone());
-        }
-        inner.last = Some(line);
+        inner.deliver()
+    }
+    /// Offer the newest line again to whoever has not had it.
+    fn redeliver(&self) -> bool {
+        self.inner.lock().unwrap().deliver()
+    }
+    /// S47 (`reset`): forget the strikes; the poller starts again with an
+    /// empty ring (the files already published stay until replaced).
+    pub fn reset(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.last = None;
+        inner.generation += 1;
+        inner.reset = true;
+        drop(inner);
+        self.abort.notify_one();
+        self.wake.notify_one();
+    }
+    fn take_reset(&self) -> bool {
+        std::mem::take(&mut self.inner.lock().unwrap().reset)
     }
 }
 
@@ -714,6 +753,16 @@ pub async fn run(dir: PathBuf) {
     let mut full_at: Option<i64> = None;
     let mut failures = 0u32;
     loop {
+        if hub.take_reset() {
+            eprintln!("{} Lightning: reset", stamp());
+            ring = Ring::default();
+            status = Status::default();
+            last_to = None;
+            covered_from = None;
+            last_try = None;
+            full_at = None;
+            failures = 0;
+        }
         if !hub.wanted() {
             hub.wake.notified().await;
             continue;
@@ -723,8 +772,11 @@ pub async fn run(dir: PathBuf) {
             let due = at + wait;
             if tokio::time::Instant::now() < due {
                 // Sleep until due; a newly switched-on client gets the held
-                // line from `set` meanwhile.
-                let _ = tokio::time::timeout_at(due, hub.wake.notified()).await;
+                // line from `set` meanwhile. S47: one still owed the line
+                // is offered it again every second.
+                let soon = tokio::time::Instant::now() + crate::obs::RETRY;
+                let until = if hub.redeliver() { due.min(soon) } else { due };
+                let _ = tokio::time::timeout_at(until, hub.wake.notified()).await;
                 continue;
             }
         }
@@ -732,7 +784,10 @@ pub async fn run(dir: PathBuf) {
         let now = now_ms();
         let (start, end) = window(last_to, now);
         let url = url(start, end);
-        match fetch(&client, &url).await.and_then(|body| {
+        let Some(fetched) = crate::obs::or_abort(fetch(&client, &url), &hub.abort).await else {
+            continue;
+        };
+        match fetched.and_then(|body| {
             let strikes = parse_fmi(&body)?;
             Ok((body.len(), strikes))
         }) {
@@ -821,8 +876,13 @@ async fn replay(dir: PathBuf, path: PathBuf) {
     }
     let text = line(&status);
     loop {
+        // S47: a reset in a replay just offers the same strikes again.
+        hub.take_reset();
         if hub.wanted() {
-            hub.publish(text.clone(), &status);
+            if hub.publish(text.clone(), &status) {
+                let _ = tokio::time::timeout(crate::obs::RETRY, hub.wake.notified()).await;
+                continue;
+            }
         } else {
             // Keep the files referenced while nobody watches.
             hub.keep(&status);

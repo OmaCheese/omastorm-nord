@@ -451,6 +451,32 @@ impl Catalog {
         Ok(entries)
     }
 
+    /// S47 (`reset`): drop the rows of one product's ring whose frame no
+    /// longer reads or whose texture (and a polar frame's lookup) is gone
+    /// or empty, so the poller builds them again instead of the timeline
+    /// naming files a client cannot load. Returns how many went.
+    pub fn revalidate(&self, site: &str, variant: &str) -> io::Result<usize> {
+        let broken: Vec<String> = self
+            .list_variant(site, variant)?
+            .into_iter()
+            .filter(|entry| match &entry.record {
+                None => true,
+                Some(record) => {
+                    let readable = |path: &Path| fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0);
+                    !readable(&record.texture)
+                        || (record.frame.kind != FrameKind::Grid && !readable(&record.azimuth_lut))
+                }
+            })
+            .map(|entry| entry.id)
+            .collect();
+        let conn = self.conn.lock().unwrap();
+        for id in &broken {
+            conn.execute("DELETE FROM frames WHERE id = ?1", params![id])
+                .map_err(sql)?;
+        }
+        Ok(broken.len())
+    }
+
     /// The stored frame `id` with its textures, if the ring still has it.
     #[cfg(test)]
     pub fn load(&self, id: &str) -> io::Result<Option<Stored>> {

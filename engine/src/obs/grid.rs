@@ -527,7 +527,8 @@ pub fn draw(field: &Field) -> io::Result<Drawn> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Held {
     pub drawn: Option<Arc<Drawn>>,
-    /// `ok` or `failed`.
+    /// `ok` or `failed`; S47: `loading` while the first grid since the
+    /// start (or a reset) is being fetched.
     pub status: &'static str,
     pub note: String,
 }
@@ -557,16 +558,27 @@ pub fn line(held: &Held, layers: Layers) -> String {
     if !held.note.is_empty() {
         provider["note"] = held.note.clone().into();
     }
+    // S47: the layer's own status: `loading` until the first grid is in,
+    // `error` with none to show, else `ok`; and how old the hour is.
+    let status = match (held.status, &held.drawn) {
+        ("loading", _) => "loading",
+        (_, None) => "error",
+        _ => "ok",
+    };
     let _ = write!(
         out,
-        ",\"provider\":{provider},\"attribution\":\"{}\"}}",
+        ",\"provider\":{provider},\"attribution\":\"{}\",\"status\":\"{status}\",\"percent\":{}",
         if held.drawn.is_some() {
             "MET Norway (CC BY 4.0)"
         } else {
             ""
-        }
+        },
+        if status == "loading" { 0 } else { 100 }
     );
-    out.push('\n');
+    if let Some(drawn) = &held.drawn {
+        let _ = write!(out, ",\"ageSeconds\":{}", ((now_ms() - drawn.time_ms) / 1000).max(0));
+    }
+    out.push_str("}\n");
     out
 }
 
@@ -578,36 +590,70 @@ pub static HUB: LazyLock<Hub> = LazyLock::new(Hub::default);
 pub struct Hub {
     inner: Mutex<HubInner>,
     wake: Notify,
+    /// S47: a reset aborts the fetch in flight.
+    abort: Notify,
+}
+
+/// A client with a grid layer on, and which grid it has had.
+struct Watcher {
+    layers: Layers,
+    tx: Sender<String>,
+    /// The `generation` last delivered (S47: see `obs::Hub`).
+    delivered: u64,
 }
 
 #[derive(Default)]
 struct HubInner {
-    clients: HashMap<u64, (Layers, Sender<String>)>,
+    clients: HashMap<u64, Watcher>,
     held: Option<Held>,
+    generation: u64,
+    reset: bool,
+}
+
+impl HubInner {
+    /// S47: the held grid to every watcher that has not had it; true while
+    /// one is still owed (its queue was full).
+    fn deliver(&mut self) -> bool {
+        let Some(held) = &self.held else { return false };
+        let mut owed = false;
+        for watcher in self.clients.values_mut() {
+            if watcher.delivered == self.generation {
+                continue;
+            }
+            match watcher.tx.try_send(line(held, watcher.layers)) {
+                Ok(()) => watcher.delivered = self.generation,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => owed = true,
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        owed
+    }
 }
 
 impl Hub {
-    /// A client's grid layers (both off: it shows no grid). A change is
-    /// answered at once with what the grid holds; the first client wakes
-    /// the fetcher.
+    /// A client's grid layers (both off: it shows no grid). S47: every
+    /// `set_layers` with a grid layer on is answered with what the grid
+    /// holds; the first client wakes the fetcher.
     pub fn set(&self, client: u64, layers: Layers, reply: &Sender<String>) {
         let mut inner = self.inner.lock().unwrap();
         let before = inner
             .clients
             .get(&client)
-            .map(|(l, _)| *l)
+            .map(|w| w.layers)
             .unwrap_or_default();
         if !layers.any() {
             inner.clients.remove(&client);
             return;
         }
-        inner.clients.insert(client, (layers, reply.clone()));
-        if before != layers
-            && let Some(held) = &inner.held
-        {
-            let _ = reply.try_send(line(held, layers));
-        }
-        if !before.any() {
+        inner.clients.insert(
+            client,
+            Watcher {
+                layers,
+                tx: reply.clone(),
+                delivered: 0,
+            },
+        );
+        if inner.deliver() || !before.any() {
             self.wake.notify_one();
         }
     }
@@ -628,10 +674,11 @@ impl Hub {
             .map(|d| d.texture.clone())
     }
     /// Send `held` to every client with a grid layer on when it changed.
-    fn publish(&self, held: Held) {
+    /// True while a client is still owed it.
+    fn publish(&self, held: Held) -> bool {
         let mut inner = self.inner.lock().unwrap();
         if inner.held.as_ref() == Some(&held) {
-            return;
+            return inner.deliver();
         }
         // Review S2: the same hour with only its status or note changed is
         // kept, not sent again (the line is about 190 kB).
@@ -641,12 +688,25 @@ impl Hub {
             .is_some_and(|h| h.drawn.is_some() && h.drawn == held.drawn)
         {
             inner.held = Some(held);
-            return;
-        }
-        for (layers, tx) in inner.clients.values() {
-            let _ = tx.try_send(line(&held, *layers));
+            return inner.deliver();
         }
         inner.held = Some(held);
+        inner.generation += 1;
+        inner.deliver()
+    }
+    /// S47 (`reset`): forget the grid; the fetcher drops its hour and its
+    /// cached subset and fetches again.
+    pub fn reset(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.held = None;
+        inner.generation += 1;
+        inner.reset = true;
+        drop(inner);
+        self.abort.notify_one();
+        self.wake.notify_one();
+    }
+    fn take_reset(&self) -> bool {
+        std::mem::take(&mut self.inner.lock().unwrap().reset)
     }
 }
 
@@ -869,6 +929,15 @@ pub async fn run(runtime: PathBuf) {
     };
     let mut first = true;
     loop {
+        if hub.take_reset() {
+            eprintln!("{} Grid metnordic: reset", stamp());
+            let _ = fs::remove_file(fetcher.cache.join(CACHE_NAME));
+            fetcher.field_time = None;
+            fetcher.probed = None;
+            fetcher.held = Held::default();
+            fetcher.due = 0;
+            first = true;
+        }
         if !hub.wanted() {
             hub.wake.notified().await;
             continue;
@@ -879,7 +948,15 @@ pub async fn run(runtime: PathBuf) {
             fetcher.load_cached(now).await;
         }
         if now >= fetcher.due {
-            fetcher.update(now).await;
+            // S47: with no grid yet the clients hear that it is loading.
+            if fetcher.held.drawn.is_none() {
+                fetcher.held.status = "loading";
+                fetcher.held.note = "loading".into();
+                hub.publish(fetcher.held.clone());
+            }
+            if super::or_abort(fetcher.update(now), &hub.abort).await.is_none() {
+                continue;
+            }
         }
         // An hour past its use is dropped, not shown.
         if fetcher.field_time.is_some_and(|t| now_ms() - t >= STALE_MS) {
@@ -890,8 +967,8 @@ pub async fn run(runtime: PathBuf) {
                 fetcher.held.status = "failed";
             }
         }
-        hub.publish(fetcher.held.clone());
-        let _ = tokio::time::timeout(TICK, hub.wake.notified()).await;
+        let owed = hub.publish(fetcher.held.clone());
+        let _ = tokio::time::timeout(if owed { super::RETRY } else { TICK }, hub.wake.notified()).await;
     }
 }
 
@@ -1089,8 +1166,21 @@ mod tests {
         hub.publish(held);
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_err(), "an unchanged grid is not re-sent");
+        // S47: the same layers again are answered too: a client that lost
+        // the line asks again (the clients never repeat an unchanged ask).
         hub.set(1, on, &tx);
-        assert!(rx.try_recv().is_err(), "the same layers again: nothing");
+        assert!(rx.try_recv().is_ok(), "the same layers again: the grid again");
+        // A full queue keeps it owed until it is delivered.
+        for _ in 0..4 {
+            tx.try_send(String::new()).unwrap();
+        }
+        hub.set(1, on, &tx);
+        for _ in 0..4 {
+            assert_eq!(rx.try_recv().unwrap(), "");
+        }
+        assert!(rx.try_recv().is_err());
+        assert!(!hub.publish(Held { drawn: None, status: "failed", note: "x".into() }));
+        assert!(rx.try_recv().is_ok(), "owed, then delivered");
         hub.set(
             1,
             Layers {

@@ -61,7 +61,7 @@ Item {
     Rectangle {
         anchors.fill: parent
         color: Qt.alpha(picker.theme.background, .5)
-        MouseArea { anchors.fill: parent; onClicked: picker.close() }
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onClicked: picker.close() }
     }
     Rectangle {
         id: card
@@ -78,7 +78,7 @@ Item {
         color: Qt.alpha(picker.theme.background, .95)
         border.width: 1
         border.color: picker.theme.foreground
-        MouseArea { anchors.fill: parent } // a click on the card stays on the card
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons } // any click on the card stays on the card
         ColumnLayout {
             id: column
             anchors.fill: parent

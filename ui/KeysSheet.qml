@@ -44,7 +44,7 @@ Item {
     Rectangle {
         anchors.fill: parent
         color: Qt.alpha(sheet.theme.background, .5)
-        MouseArea { anchors.fill: parent; onClicked: sheet.close() }
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onClicked: sheet.close() }
     }
     Rectangle {
         id: card
@@ -55,7 +55,7 @@ Item {
         color: Qt.alpha(sheet.theme.background, .97)
         border.width: 1
         border.color: sheet.theme.foreground
-        MouseArea { anchors.fill: parent } // a click on the card stays on the card
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons } // any click on the card stays on the card
         ColumnLayout {
             id: column
             anchors.fill: parent

@@ -136,7 +136,7 @@ Item {
         font.pixelSize: panel.sizes.body
         elide: Text.ElideRight
     }
-    MouseArea { anchors.fill: parent; onClicked: panel.close() }
+    MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onClicked: panel.close() }
     Rectangle {
         id: card
         // Below the chip, its left edge on the chip's (the chip sits in the
@@ -149,7 +149,7 @@ Item {
         color: Qt.alpha(panel.theme ? panel.theme.background : "#1a1b26", .95)
         border.width: 1
         border.color: panel.theme ? panel.theme.foreground : "#a9b1d6"
-        MouseArea { anchors.fill: parent } // a click on the card stays on the card
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons } // any click on the card stays on the card
         ColumnLayout {
             id: column
             anchors.fill: parent

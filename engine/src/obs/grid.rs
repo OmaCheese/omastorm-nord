@@ -958,8 +958,9 @@ pub async fn run(runtime: PathBuf) {
             fetcher.load_cached(now).await;
         }
         if now >= fetcher.due {
-            // S47: with no grid yet the clients hear that it is loading.
-            if fetcher.held.drawn.is_none() {
+            // S47: with no grid yet the clients hear that it is loading;
+            // review N5: not before a retry, where the failure note stands.
+            if fetcher.held.drawn.is_none() && fetcher.held.status != "failed" {
                 fetcher.held.status = "loading";
                 fetcher.held.note = "loading".into();
                 hub.publish(fetcher.held.clone());

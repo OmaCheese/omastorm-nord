@@ -200,12 +200,24 @@ impl Timeline {
         }
     }
     /// A catalogued ring opened for a load that builds back `window_ms`
-    /// (S49): every frame shows until the load brings one of its own.
+    /// (S49). A ring already spliced on disk (a gap longer than the window
+    /// between two of its frames) opens from after its newest splice: no
+    /// load keeps the part before it. The rest, the newest frame on
+    /// screen, stays until the load brings a frame of its own
+    /// (`own_frame`), and for good if it brings none (offline).
     fn opened(stored: Vec<Entry>, window_ms: i64) -> Self {
-        Timeline {
+        let mut timeline = Timeline {
             window_ms: Some(window_ms),
             ..Timeline::new(stored)
+        };
+        let splice = timeline
+            .stored
+            .windows(2)
+            .rposition(|w| w[1].start_ms - w[0].start_ms > window_ms);
+        if let Some(before) = splice {
+            timeline.stored.drain(..=before);
         }
+        timeline
     }
     /// S49: the load brought a frame of its own starting at `start_ms`
     /// (not yet in the timeline). Once per load, the catalogued frames
@@ -3366,8 +3378,8 @@ mod tests {
     /// its 6 frame times and two of slack: 13:45 on from 14:25.
     #[test]
     fn frames_inside_the_window_stay() {
-        let mut times = s49_morning();
-        times.extend((0..11).map(|i| s49_at(13, 30 + 5 * i)));
+        // 12:30 to 14:20, contiguous: the ring keeps it all while loading.
+        let times: Vec<i64> = (0..23).map(|i| s49_at(12, 30 + 5 * i)).collect();
         let mut shared = s49_opened(
             "s49-inside",
             |shared| {
@@ -3376,7 +3388,7 @@ mod tests {
             },
             &times,
         );
-        assert_eq!(shared.timeline.stored.len(), 26);
+        assert_eq!(shared.timeline.stored.len(), 23);
         let entry = s49_store(&shared, s49_at(14, 25));
         shared.backfilled(entry).unwrap();
         assert_eq!(
@@ -3390,6 +3402,21 @@ mod tests {
         let next = s49_store(&shared, s49_at(14, 30));
         shared.backfilled(next).unwrap();
         assert_eq!(shared.timeline.stored.len(), 10);
+    }
+    /// A ring already spliced on disk (a morning, then the last load's
+    /// frames, more than the window apart) opens without the morning, so
+    /// no splice shows even while loading.
+    #[test]
+    fn a_spliced_ring_opens_without_its_old_part() {
+        let mut times = s49_morning();
+        times.extend((0..4).map(|i| s49_at(14, 5 + 5 * i)));
+        let shared = s49_opened(
+            "s49-spliced",
+            |shared| assert!(shared.select_site("nordic").0),
+            &times,
+        );
+        assert_eq!(s49_times(&shared), ["14:05", "14:10", "14:15", "14:20"]);
+        assert_eq!(shared.state.frame.scan_time, iso(s49_at(14, 20)));
     }
     /// A source that brings nothing new (offline, silent, no network)
     /// keeps its stale frames: a replay of a catalogued frame is not the
@@ -3421,8 +3448,7 @@ mod tests {
     /// oldest frame left, which shows.
     #[test]
     fn a_pin_on_a_stale_frame_moves_to_the_oldest_left() {
-        let mut times = s49_morning();
-        times.push(s49_at(14, 20));
+        let times: Vec<i64> = (0..23).map(|i| s49_at(12, 30 + 5 * i)).collect();
         let mut shared = s49_opened(
             "s49-pin",
             |shared| {
@@ -3431,12 +3457,13 @@ mod tests {
             },
             &times,
         );
-        let (ok, _) = shared.navigate(|t| Ok(t.step(-3)));
+        let (ok, _) = shared.navigate(|t| Ok(t.pin(1)));
         assert!(ok && !shared.timeline.following());
+        assert_eq!(shared.state.frame.scan_time, iso(s49_at(12, 35)));
         let entry = s49_store(&shared, s49_at(14, 25));
         shared.backfilled(entry).unwrap();
-        assert_eq!(s49_times(&shared), ["14:20", "14:25"]);
-        assert_eq!(shared.state.frame.scan_time, iso(s49_at(14, 20)));
+        assert_eq!(s49_times(&shared)[0], "13:45");
+        assert_eq!(shared.state.frame.scan_time, iso(s49_at(13, 45)));
     }
     /// The window follows each kind's own depth and cadence.
     #[test]

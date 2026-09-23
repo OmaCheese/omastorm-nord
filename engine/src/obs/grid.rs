@@ -289,6 +289,11 @@ impl Field {
         if temp_c.nx != x.values.len() || temp_c.ny != y.values.len() {
             return Err("temperature and x/y differ in size".into());
         }
+        // Review S1: a field with no usable value (fill values, or a packed
+        // variable read raw) is a failure, not an empty map.
+        if !temp_c.values.iter().any(|v| v.is_finite()) {
+            return Err("no values (packed?)".into());
+        }
         Ok(Field {
             time_ms,
             temp_c,
@@ -432,8 +437,8 @@ pub fn wind_points(field: &Field, lcc: &Lcc) -> String {
             if ms.is_finite() && deg.is_finite() {
                 let _ = write!(
                     out,
-                    "[{lat:.2},{lon:.2},{ms:.1},{:.0}]",
-                    deg.rem_euclid(360.0)
+                    "[{lat:.2},{lon:.2},{ms:.1},{}]",
+                    (deg.round() as i64).rem_euclid(360)
                 );
             } else {
                 let _ = write!(out, "[{lat:.2},{lon:.2},null,null]");
@@ -455,7 +460,7 @@ fn tag(bytes: &[u8]) -> String {
 }
 
 /// A drawn hour: what goes on the wire, and the texture it names.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Drawn {
     pub time_ms: i64,
     /// `tex/grid-temp-<hour>-<tag>.png`.
@@ -463,6 +468,14 @@ pub struct Drawn {
     pub temperature: String,
     pub wind: String,
     pub png: Vec<u8>,
+}
+
+/// Review N8: one hour drawn is the same when its time and texture name
+/// (which follows the PNG's content) are, without comparing the PNG.
+impl PartialEq for Drawn {
+    fn eq(&self, other: &Self) -> bool {
+        self.time_ms == other.time_ms && self.texture == other.texture
+    }
 }
 
 /// Draw `field`: the PNG's bytes and name, the `temperature` and `wind`
@@ -620,6 +633,16 @@ impl Hub {
         if inner.held.as_ref() == Some(&held) {
             return;
         }
+        // Review S2: the same hour with only its status or note changed is
+        // kept, not sent again (the line is about 190 kB).
+        if inner
+            .held
+            .as_ref()
+            .is_some_and(|h| h.drawn.is_some() && h.drawn == held.drawn)
+        {
+            inner.held = Some(held);
+            return;
+        }
         for (layers, tx) in inner.clients.values() {
             let _ = tx.try_send(line(&held, *layers));
         }
@@ -643,8 +666,27 @@ struct Fetcher {
     cache: PathBuf,
     runtime: PathBuf,
     field_time: Option<i64>,
+    /// The newest hour the probe named whose subset was asked for (or that
+    /// was too old to ask for): never asked again, whatever came of it, and
+    /// never cleared by the stale drop (review M1).
+    probed: Option<i64>,
     held: Held,
     due: i64,
+}
+
+/// Whether the probe's hour `time` is worth the subset at `now`: `Ok(false)`
+/// when that hour was already asked for, an error when it is too old to show.
+pub fn worth_fetching(probed: Option<i64>, time: i64, now: i64) -> Result<bool, String> {
+    if probed.is_some_and(|p| p >= time) {
+        return Ok(false);
+    }
+    if now - time >= STALE_MS {
+        return Err(format!(
+            "the newest analysis ({}) is over 3 hours old",
+            iso(time)
+        ));
+    }
+    Ok(true)
 }
 
 impl Fetcher {
@@ -661,6 +703,12 @@ impl Fetcher {
             .map_err(|e| format!("{e}"))?;
         if !response.status().is_success() {
             return Err(format!("HTTP {}", response.status()));
+        }
+        if response
+            .content_length()
+            .is_some_and(|n| n > MAX_BODY as u64)
+        {
+            return Err("body over the size limit".into());
         }
         let body = response.bytes().await.map_err(|e| format!("{e}"))?;
         if body.len() > MAX_BODY {
@@ -709,8 +757,18 @@ impl Fetcher {
             if self.field_time.is_some_and(|t| t >= time) {
                 return Ok(false);
             }
+            let fetch = worth_fetching(self.probed, time, now);
+            if fetch.is_err() {
+                self.probed = Some(time);
+            }
+            if !fetch? {
+                return Ok(false);
+            }
             requests += 1;
-            let body = self.get(&subset_url()).await?;
+            let body = self.get(&subset_url()).await;
+            // Asked once: an hour that does not decode is not asked again.
+            self.probed = Some(time);
+            let body = body?;
             bytes += body.len();
             self.take(body.clone()).await?;
             if let Err(e) = write_atomic(&self.cache.join(CACHE_NAME), &body) {
@@ -721,8 +779,12 @@ impl Fetcher {
         .await;
         match result {
             Ok(new) => {
-                self.held.status = "ok";
-                self.held.note.clear();
+                // Unchanged after a failure (an hour already asked for):
+                // the failure stands until a new hour reads.
+                if new || self.held.status != "failed" {
+                    self.held.status = "ok";
+                    self.held.note.clear();
+                }
                 self.due = if new {
                     next_probe(self.field_time, now)
                 } else {
@@ -801,6 +863,7 @@ pub async fn run(runtime: PathBuf) {
         cache,
         runtime,
         field_time: None,
+        probed: None,
         held: Held::default(),
         due: 0,
     };
@@ -1065,6 +1128,58 @@ mod tests {
             drawn.wind.len(),
             drawn.temperature
         );
+    }
+
+    #[test]
+    fn a_status_change_alone_does_not_resend_the_hour() {
+        let field = Field::from_dods(&fixture(FIXTURE), 60, 240).unwrap();
+        let drawn = Arc::new(draw(&field).unwrap());
+        let hub = Hub::default();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        hub.set(
+            1,
+            Layers {
+                temp: true,
+                wind: true,
+            },
+            &tx,
+        );
+        let ok = Held {
+            drawn: Some(drawn.clone()),
+            status: "ok",
+            note: String::new(),
+        };
+        hub.publish(ok);
+        assert!(rx.try_recv().is_ok());
+        hub.publish(Held {
+            drawn: Some(drawn),
+            status: "failed",
+            note: "HTTP 503".into(),
+        });
+        assert!(rx.try_recv().is_err(), "same hour, new status: not resent");
+        // A field with no value is a failure (review S1): every temperature
+        // of the fixture (after x, y and time) made NaN.
+        let mut bytes = fixture(FIXTURE);
+        let data = bytes.windows(7).position(|w| w == b"\nData:\n").unwrap() + 7;
+        let temp = data + (8 + 30 * 4) + (8 + 39 * 4) + (8 + 8) + 8;
+        for i in 0..30 * 39 {
+            bytes[temp + 4 * i..temp + 4 * i + 4].copy_from_slice(&f32::NAN.to_be_bytes());
+        }
+        let err = Field::from_dods(&bytes, 60, 240).unwrap_err();
+        assert!(err.contains("no values"), "{err}");
+    }
+
+    #[test]
+    fn an_hour_is_asked_for_once_and_a_stale_one_never() {
+        let t = crate::obs::parse_iso("2026-09-23T04:00:00Z").unwrap();
+        let hour = 60 * 60 * 1000;
+        assert_eq!(worth_fetching(None, t, t + hour / 4), Ok(true));
+        // Asked for already (read or not): not again, not even when stale.
+        assert_eq!(worth_fetching(Some(t), t, t + hour / 4), Ok(false));
+        assert_eq!(worth_fetching(Some(t), t, t + 5 * hour), Ok(false));
+        // A `_latest` over 3 hours old: an error, and no subset.
+        assert!(worth_fetching(None, t, t + 3 * hour).is_err());
+        assert_eq!(worth_fetching(Some(t), t + hour, t + 2 * hour), Ok(true));
     }
 
     #[test]

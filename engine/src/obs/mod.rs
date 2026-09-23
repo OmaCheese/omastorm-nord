@@ -276,7 +276,10 @@ pub fn layer_status(providers: &[ProviderInfo]) -> (&'static str, u32) {
     if answered < total {
         return ("loading", answered * 100 / total);
     }
-    if providers.iter().all(|p| p.status == "failed" || p.status == "skipped") {
+    if providers
+        .iter()
+        .all(|p| p.status == "failed" || p.status == "skipped")
+    {
         return ("error", 100);
     }
     ("ok", 100)
@@ -924,14 +927,24 @@ pub(crate) mod tests {
             serde_json::from_str(&line(lists, now)).unwrap()
         };
         let v = value(&lists);
-        assert_eq!((v["status"].as_str(), v["percent"].as_u64()), (Some("loading"), Some(0)));
+        assert_eq!(
+            (v["status"].as_str(), v["percent"].as_u64()),
+            (Some("loading"), Some(0))
+        );
         assert!(v.get("ageSeconds").is_none(), "no station, no age");
         lists[0].0.status = "ok";
         lists[0].1.push(station(now - 600_000, Some(9.0)));
         lists[1].0.status = "failed";
         let v = value(&lists);
-        assert_eq!((v["status"].as_str(), v["percent"].as_u64()), (Some("loading"), Some(50)));
-        assert_eq!(v["stations"].as_array().unwrap().len(), 1, "stations show as they come");
+        assert_eq!(
+            (v["status"].as_str(), v["percent"].as_u64()),
+            (Some("loading"), Some(50))
+        );
+        assert_eq!(
+            v["stations"].as_array().unwrap().len(),
+            1,
+            "stations show as they come"
+        );
         lists[2].0.status = "failed";
         lists[3].0.status = "skipped";
         assert_eq!(value(&lists)["status"], "ok");

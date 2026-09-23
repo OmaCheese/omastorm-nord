@@ -462,7 +462,8 @@ impl Catalog {
             .filter(|entry| match &entry.record {
                 None => true,
                 Some(record) => {
-                    let readable = |path: &Path| fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0);
+                    let readable =
+                        |path: &Path| fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0);
                     !readable(&record.texture)
                         || (record.frame.kind != FrameKind::Grid && !readable(&record.azimuth_lut))
                 }

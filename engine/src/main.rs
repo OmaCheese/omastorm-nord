@@ -1619,7 +1619,10 @@ impl Shared {
             .last_reset
             .is_some_and(|t| now.duration_since(t) < RESET_EVERY)
         {
-            eprintln!("{} Reset: ignored (the last was under 10 s ago)", iso(now_ms()));
+            eprintln!(
+                "{} Reset: ignored (the last was under 10 s ago)",
+                iso(now_ms())
+            );
             return false;
         }
         self.last_reset = Some(now);
@@ -1642,7 +1645,10 @@ impl Shared {
         let variant = self.variant_for(&station, want);
         match self.catalog.revalidate(&station.id, &variant) {
             Ok(0) => {}
-            Ok(n) => eprintln!("{} Reset {site}: dropped {n} catalogued frames whose files are gone", iso(now_ms())),
+            Ok(n) => eprintln!(
+                "{} Reset {site}: dropped {n} catalogued frames whose files are gone",
+                iso(now_ms())
+            ),
             Err(e) => eprintln!("{} Reset {site}: checking the catalog: {e}", iso(now_ms())),
         }
         self.timeline = Timeline::new(Vec::new());
@@ -3149,7 +3155,10 @@ mod tests {
         shared.kicks.insert(7, kick.clone());
         shared.kicks.insert(8, Arc::new(Notify::new()));
         shared.broadcast();
-        assert_eq!(shared.clients.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [8]);
+        assert_eq!(
+            shared.clients.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [8]
+        );
         assert!(!shared.kicks.contains_key(&7) && shared.kicks.contains_key(&8));
         assert!(fine_rx.try_recv().is_ok());
         runtime

@@ -62,6 +62,7 @@ for theme in dark light; do
   export XDG_RUNTIME_DIR=$R/rt XDG_CACHE_HOME=$R/cache XDG_CONFIG_HOME=$R/config
   export OMASTORM_ARCHIVE=$root/data/raw/radar_vara_qcvol_202609131055.h5 OMASTORM_LIGHTNING_BASE=http://127.0.0.1:9
   unset FROST_CLIENT_ID
+  # shellcheck disable=SC2016 # expanded by the inner sh, from its arguments
   unshare -rn sh -c '
     ip link set lo up
     python3 "$1/scripts/fake-weather.py" "$2/port" --log "$2/requests.log" --fail dmi --slow smhi=3,grid=5 > "$2/fake.out" 2>&1 &

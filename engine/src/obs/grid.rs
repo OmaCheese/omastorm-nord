@@ -576,7 +576,11 @@ pub fn line(held: &Held, layers: Layers) -> String {
         if status == "loading" { 0 } else { 100 }
     );
     if let Some(drawn) = &held.drawn {
-        let _ = write!(out, ",\"ageSeconds\":{}", ((now_ms() - drawn.time_ms) / 1000).max(0));
+        let _ = write!(
+            out,
+            ",\"ageSeconds\":{}",
+            ((now_ms() - drawn.time_ms) / 1000).max(0)
+        );
     }
     out.push_str("}\n");
     out
@@ -955,7 +959,10 @@ pub async fn run(runtime: PathBuf) {
                 fetcher.held.note = "loading".into();
                 hub.publish(fetcher.held.clone());
             }
-            if super::or_abort(fetcher.update(now), &hub.abort).await.is_none() {
+            if super::or_abort(fetcher.update(now), &hub.abort)
+                .await
+                .is_none()
+            {
                 continue;
             }
         }
@@ -969,7 +976,8 @@ pub async fn run(runtime: PathBuf) {
             }
         }
         let owed = hub.publish(fetcher.held.clone());
-        let _ = tokio::time::timeout(if owed { super::RETRY } else { TICK }, hub.wake.notified()).await;
+        let _ =
+            tokio::time::timeout(if owed { super::RETRY } else { TICK }, hub.wake.notified()).await;
     }
 }
 
@@ -1170,7 +1178,10 @@ mod tests {
         // S47: the same layers again are answered too: a client that lost
         // the line asks again (the clients never repeat an unchanged ask).
         hub.set(1, on, &tx);
-        assert!(rx.try_recv().is_ok(), "the same layers again: the grid again");
+        assert!(
+            rx.try_recv().is_ok(),
+            "the same layers again: the grid again"
+        );
         // A full queue keeps it owed until it is delivered.
         for _ in 0..4 {
             tx.try_send(String::new()).unwrap();
@@ -1180,7 +1191,11 @@ mod tests {
             assert_eq!(rx.try_recv().unwrap(), "");
         }
         assert!(rx.try_recv().is_err());
-        assert!(!hub.publish(Held { drawn: None, status: "failed", note: "x".into() }));
+        assert!(!hub.publish(Held {
+            drawn: None,
+            status: "failed",
+            note: "x".into()
+        }));
         assert!(rx.try_recv().is_ok(), "owed, then delivered");
         hub.set(
             1,

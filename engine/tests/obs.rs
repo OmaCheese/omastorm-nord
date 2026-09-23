@@ -110,7 +110,10 @@ fn layers_are_per_client_and_answered_with_obs() {
     // the fetch failed, and holds no layer.
     // S47: it says it is loading first.
     let grid = next_of(&mut new, "obs", REPLY).expect("obs source grid");
-    assert_eq!((grid["source"].as_str(), grid["status"].as_str()), (Some("grid"), Some("loading")));
+    assert_eq!(
+        (grid["source"].as_str(), grid["status"].as_str()),
+        (Some("grid"), Some("loading"))
+    );
     assert_eq!(grid["provider"]["status"], "loading");
     let grid = next_of(&mut new, "obs", REPLY).expect("obs source grid");
     assert_eq!(grid["source"], "grid");
@@ -165,13 +168,19 @@ fn layers_are_per_client_and_answered_with_obs() {
     // S47: `reset` forgets the list and fetches again, loading from 0;
     // everyone hears a state. A second within 10 s is a no-op.
     send(&mut new, json!({"type":"reset"}));
-    assert!(next_of(&mut old, "state", REPLY).is_some(), "the others hear the reset");
+    assert!(
+        next_of(&mut old, "state", REPLY).is_some(),
+        "the others hear the reset"
+    );
     let loading = next_of(&mut new, "obs", REPLY).expect("obs after reset");
     assert_eq!(loading["status"], "loading", "{loading}");
     assert_eq!(loading["percent"], 0);
     assert!(next_settled(&mut new, REPLY).is_some());
     send(&mut new, json!({"type":"reset"}));
-    assert!(next_of(&mut new, "state", REPLY).is_some(), "answered, though ignored");
+    assert!(
+        next_of(&mut new, "state", REPLY).is_some(),
+        "answered, though ignored"
+    );
     thread::sleep(Duration::from_secs(1));
     let log = fs::read_to_string(&log_path).unwrap_or_default();
     assert_eq!(log.matches("Obs fmi: requests=1").count(), 2, "{log}");

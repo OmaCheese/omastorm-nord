@@ -1145,14 +1145,13 @@ impl Shared {
     fn window_ms(&self, station: &Station, want: Want) -> i64 {
         let mine = station.provider == providers::ProviderId::Mosaic;
         let made = !want.is_lowest() && (mine || station.kind == SiteKind::Grid);
-        let (depth, cadence) = if mine || made {
+        let (span, cadence) = if mine || made {
             let depth = mosaic::depth(&self.state.mosaic, want, &self.sites, made);
-            (depth, mosaic::CADENCE_MS)
+            (depth as i64 * mosaic::CADENCE_MS, mosaic::CADENCE_MS)
         } else {
-            let (depth, cadence) = providers::build_back(station, want);
-            (depth, cadence.as_millis() as i64)
+            providers::build_back(station, want)
         };
-        (depth as i64 + 2) * cadence
+        span + 2 * cadence
     }
     /// `set_product` (S20, `docs/protocol.md`, products): refused, changing
     /// nothing, for an unknown id, no radar selected, or one that cannot make
@@ -3523,6 +3522,16 @@ mod tests {
         assert_eq!(shared.window_ms(&mine, Want::Lowest), 14 * five);
         s49_mosaic(&mut shared, "height", Some(2000));
         assert_eq!(shared.window_ms(&mine, Want::Lowest), 8 * five);
+        // Review S2: an AEMET radar's 10-minute cadence reaches only as far
+        // as ORD's listing, not 60 of its own cadences.
+        let mut aemet = station(&shared, "nohur");
+        aemet.country = "ES".into();
+        let ten = 2 * five;
+        assert_eq!(shared.window_ms(&aemet, Want::Lowest), 62 * five + 2 * ten);
+        assert_eq!(
+            shared.window_ms(&station(&shared, "nohur"), Want::Lowest),
+            62 * five
+        );
     }
     /// S47: a client `broadcast` drops for a full queue is kicked (its
     /// writer stops and the connection closes), not left open without

@@ -128,14 +128,19 @@ pub async fn poll(
     }
 }
 
-/// How far back `poll` builds `station`'s `want` (S49): the frames its
-/// backfill fetches, counting the live one, and the station's cadence,
-/// by each provider's own rule (`smhi_live`'s, `ord`'s per-angle sets,
-/// `opera`'s). The timeline drops catalogued frames older than that once
-/// the load brings a frame of its own. My mosaic's is `mosaic::depth`.
-pub fn build_back(station: &Station, want: crate::products::Want) -> (usize, Duration) {
+/// How far back `poll` builds `station`'s `want` (S49), in ms, and the
+/// station's cadence, in ms: the frames its backfill fetches, counting
+/// the live one, by each provider's own rule (`smhi_live`'s, `ord`'s
+/// per-angle sets, `opera`'s), at most as far as its listing reaches
+/// (ORD's `LISTING_MS`, S49 review S2). The timeline's window
+/// (`Shared::window_ms`) is built on it.
+pub fn build_back(station: &Station, want: crate::products::Want) -> (i64, i64) {
+    let span = |depth: usize, cadence: Duration| {
+        let cadence = cadence.as_millis() as i64;
+        (depth as i64 * cadence, cadence)
+    };
     match station.provider {
-        ProviderId::Smhi => (
+        ProviderId::Smhi => span(
             want.backfill(
                 crate::smhi_live::BACKFILL,
                 crate::smhi_live::PRODUCT_BACKFILL,
@@ -149,13 +154,17 @@ pub fn build_back(station: &Station, want: crate::products::Want) -> (usize, Dur
             } else {
                 ord::PRODUCT_BACKFILL
             };
-            (
+            let (depth_ms, cadence) = span(
                 want.backfill(ord::BACKFILL, product),
                 ord::cadence_for(station),
-            )
+            );
+            (depth_ms.min(ord::LISTING_MS), cadence)
         }
-        ProviderId::Opera => (opera::BACKFILL, opera::SPEC.cadence),
-        ProviderId::Mosaic => (crate::mosaic::BACKFILL, crate::mosaic::SPEC.cadence),
+        ProviderId::Opera => span(opera::BACKFILL, opera::SPEC.cadence),
+        // Not reached from `Shared::window_ms` (review N3): My mosaic's
+        // loads are `mosaic::poll*`, whose depth is `mosaic::depth`. Its
+        // set's own depth, for completeness.
+        ProviderId::Mosaic => span(crate::mosaic::BACKFILL, crate::mosaic::SPEC.cadence),
     }
 }
 

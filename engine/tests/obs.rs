@@ -165,7 +165,7 @@ fn layers_are_per_client_and_answered_with_obs() {
     assert!(log.contains("Obs smhi: requests=4 failed"), "{log}");
     assert_eq!(log.matches("Obs fmi: requests=1").count(), 1, "{log}");
 
-    // S47: `reset` forgets the list and fetches again, loading from 0;
+    // S47: `reset` forgets the list and reads it again, loading from 0;
     // everyone hears a state. A second within 10 s is a no-op.
     send(&mut new, json!({"type":"reset"}));
     assert!(
@@ -183,7 +183,10 @@ fn layers_are_per_client_and_answered_with_obs() {
     );
     thread::sleep(Duration::from_secs(1));
     let log = fs::read_to_string(&log_path).unwrap_or_default();
-    assert_eq!(log.matches("Obs fmi: requests=1").count(), 2, "{log}");
+    // Review N3: every provider failed (the port is closed), and an error
+    // backoff survives the reset: nothing is asked again before it is due.
+    assert_eq!(log.matches("Obs fmi: requests=1").count(), 1, "{log}");
+    assert!(log.contains("Obs: reset"), "{log}");
     assert_eq!(log.matches("Reset: by client").count(), 1, "{log}");
     assert!(log.contains("Reset: ignored"), "{log}");
 }

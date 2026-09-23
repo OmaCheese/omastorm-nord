@@ -3,7 +3,7 @@
 # the first popover do, in a throwaway HOME, against a LOCAL engine candidate.
 #
 #   1. git clone this repository into the throwaway HOME's plugins dir
-#      ($XDG_CONFIG_HOME/omarchy/plugins/rb.omastorm-se), as the plugin
+#      ($XDG_CONFIG_HOME/omarchy/plugins/omacheese.omastorm-nord), as the plugin
 #      manager does, and write the candidate pin into the clone's
 #      engine/release.pin, as P2's pin commit will;
 #   2. refuse a substituted asset (sha256 mismatch, nothing installed);
@@ -81,10 +81,10 @@ for v in "${!OMASTORM_@}"; do unset "$v"; done
 export HOME=$home XDG_CONFIG_HOME=$home/.config XDG_DATA_HOME=$home/.local/share
 export XDG_CACHE_HOME=$home/.cache XDG_STATE_HOME=$home/.local/state
 export XDG_RUNTIME_DIR=$rt TMPDIR=$rt/tmp
-plugin=$XDG_CONFIG_HOME/omarchy/plugins/rb.omastorm-se
-engine=$XDG_DATA_HOME/omastorm-se/bin/omastorm-engine
-sock=$XDG_RUNTIME_DIR/omastorm-se/engine.sock
-bootstrap_log=$XDG_RUNTIME_DIR/omastorm-se/bootstrap.log
+plugin=$XDG_CONFIG_HOME/omarchy/plugins/omacheese.omastorm-nord
+engine=$XDG_DATA_HOME/omastorm-nord/bin/omastorm-engine
+sock=$XDG_RUNTIME_DIR/omastorm-nord/engine.sock
+bootstrap_log=$XDG_RUNTIME_DIR/omastorm-nord/bootstrap.log
 stop_engine() { [[ -x $engine ]] && "$engine" stop >/dev/null 2>&1 || true; }
 trap stop_engine EXIT
 
@@ -136,9 +136,9 @@ for _ in {1..20}; do
   sleep .25
 done
 rm -rf -- "$plugin"
-rm -rf -- "$XDG_DATA_HOME/omastorm-se" "$XDG_CACHE_HOME/omastorm-se" "$XDG_STATE_HOME/omastorm-se"
-rm -rf -- "$XDG_CONFIG_HOME/omastorm-se"
-rm -f -- "$XDG_DATA_HOME/applications/omastorm-se.desktop"
+rm -rf -- "$XDG_DATA_HOME/omastorm-nord" "$XDG_CACHE_HOME/omastorm-nord" "$XDG_STATE_HOME/omastorm-nord"
+rm -rf -- "$XDG_CONFIG_HOME/omastorm-nord"
+rm -f -- "$XDG_DATA_HOME/applications/omastorm-nord.desktop"
 trap - EXIT
 
 step 'leftovers'

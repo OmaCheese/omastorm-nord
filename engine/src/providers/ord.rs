@@ -54,7 +54,7 @@ pub const CACHE: &str = "https://s3.waw3-1.cloudferro.com/openradar-24h";
 /// (`MET Norway`, `FMI`, `DMI`).
 pub const ATTRIBUTION: &str = "EUMETNET OPERA, CC BY 4.0";
 const USER_AGENT: &str = concat!(
-    "omastorm-se/",
+    "omastorm-nord/",
     env!("CARGO_PKG_VERSION"),
     " (fork of https://omastorm.com; EUMETNET Open Radar Data)"
 );

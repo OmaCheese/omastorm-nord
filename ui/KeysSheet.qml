@@ -68,7 +68,7 @@ Item {
                 spacing: 10
                 Word { text: "KEYS"; font.bold: true; font.pixelSize: sheet.theme.size.title; font.letterSpacing: 2 }
                 Item { Layout.fillWidth: true }
-                Word { text: "rebindable in ~/.config/omastorm-se/config.toml"; font.pixelSize: sheet.theme.size.small; opacity: .55 }
+                Word { text: "rebindable in ~/.config/omastorm-nord/config.toml"; font.pixelSize: sheet.theme.size.small; opacity: .55 }
             }
             GridLayout {
                 Layout.fillWidth: true

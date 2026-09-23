@@ -49,12 +49,12 @@ capture() { # name, delay ms, env...
 capture archived 2500 OMASTORM_CONFIG="$(config_for)"
 capture live 15000 OMASTORM_CONFIG="$(config_for "$site")"
 
-cp -r "${XDG_CACHE_HOME:-$HOME/.cache}/omastorm-se" "$scratch/cache/"
+cp -r "${XDG_CACHE_HOME:-$HOME/.cache}/omastorm-nord" "$scratch/cache/"
 daemon() { # runtime dir, wrapper...
   local rt=$1
   shift
   XDG_RUNTIME_DIR="$rt" XDG_CACHE_HOME="$scratch/cache" "$@" target/debug/omastorm-engine serve > "$rt/engine.log" 2>&1 &
-  for _ in $(seq 100); do [[ -S "$rt/omastorm-se/engine.sock" ]] && return; sleep .1; done
+  for _ in $(seq 100); do [[ -S "$rt/omastorm-nord/engine.sock" ]] && return; sleep .1; done
   echo "Scratch daemon in $rt did not start" >&2; cat "$rt/engine.log" >&2; exit 1
 }
 daemon "$scratch/offline" unshare -rn

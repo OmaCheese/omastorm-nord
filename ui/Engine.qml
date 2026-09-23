@@ -201,7 +201,7 @@ QtObject {
     property Timer resetTimeout: Timer { interval: 5000; onTriggered: engine.endReset(false) }
     /// Places answering this client's `search_places`; a reply, not state.
     signal placesReady(var message)
-    readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-se/"
+    readonly property string runtime: Quickshell.env("XDG_RUNTIME_DIR") + "/omastorm-nord/"
     /// `state.timeline`, or none (a harness state may leave it out).
     readonly property var timeline: state && state.timeline ? state.timeline : []
     /// `state.loading` (S31): how far the load this client waits for has

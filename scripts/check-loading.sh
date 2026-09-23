@@ -110,8 +110,8 @@ close
 
 # 6. An engine that answers with something unreadable (review SF3): the
 #    error itself, not the card saying "Starting engine" forever.
-mkdir -p "$check_dir/no-engine/omastorm-se"
-socat UNIX-LISTEN:"$check_dir/no-engine/omastorm-se/engine.sock",fork SYSTEM:'echo not-json; sleep 30' &
+mkdir -p "$check_dir/no-engine/omastorm-nord"
+socat UNIX-LISTEN:"$check_dir/no-engine/omastorm-nord/engine.sock",fork SYSTEM:'echo not-json; sleep 30' &
 fake=$!
 XDG_RUNTIME_DIR="$check_dir/no-engine" OMASTORM_ROOT=/nonexistent OMASTORM_QML="$qml" OMASTORM_CONFIG="$check_dir/none.toml" \
   OMASTORM_STATE="$check_dir/state.json" OMASTORM_WIDTH=960 OMASTORM_HEIGHT=680 \

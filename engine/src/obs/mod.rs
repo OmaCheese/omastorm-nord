@@ -5,7 +5,7 @@
 //! One module per provider parses that provider's bulk answer (`smhi`,
 //! `fmi`, `dmi`; `frost` is Norway, skipped without a client ID). This
 //! module decides when a provider is due, fetches and caches its bodies
-//! under `$XDG_CACHE_HOME/omastorm-se/obs/`, drops stale stations, and
+//! under `$XDG_CACHE_HOME/omastorm-nord/obs/`, drops stale stations, and
 //! hands the `obs` line to the clients that have a layer on (`Hub`).
 //!
 //! The M1 rule: nothing is fetched while no client has a layer on, and each
@@ -41,7 +41,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// list about 460 kB).
 const MAX_BODY: usize = 8 << 20;
 const USER_AGENT: &str = concat!(
-    "omastorm-se/",
+    "omastorm-nord/",
     env!("CARGO_PKG_VERSION"),
     " (fork of https://omastorm.com; weather layers)"
 );
@@ -456,7 +456,7 @@ impl Hub {
     }
 }
 
-/// `$XDG_CACHE_HOME/omastorm-se/obs`.
+/// `$XDG_CACHE_HOME/omastorm-nord/obs`.
 fn cache_dir() -> io::Result<PathBuf> {
     let dir = crate::osm::cache_root()?.join("obs");
     fs::create_dir_all(&dir)?;

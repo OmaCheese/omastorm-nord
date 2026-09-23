@@ -10,8 +10,8 @@
 #   scripts/soak-report.sh --engine web     # web | bar | both (default)
 #
 # Engines (override for a private run):
-#   web: WEB_RUNTIME=/run/user/1000/omastorm-web/omastorm-se  WEB_CACHE=~/.cache/omastorm-web/omastorm-se
-#   bar: BAR_RUNTIME=/run/user/1000/omastorm-se               BAR_CACHE=~/.cache/omastorm-se
+#   web: WEB_RUNTIME=/run/user/1000/omastorm-web/omastorm-nord  WEB_CACHE=~/.cache/omastorm-web/omastorm-nord
+#   bar: BAR_RUNTIME=/run/user/1000/omastorm-nord               BAR_CACHE=~/.cache/omastorm-nord
 #   WEB_UNIT=omastorm-web (the gateway whose journal holds the /tex lines; empty: skip)
 #
 # Sources of the request numbers:
@@ -40,10 +40,10 @@ done
 case $by in day) width=10 ;; hour) width=13 ;; *) echo "--by day|hour" >&2; exit 2 ;; esac
 
 uid=$(id -u)
-WEB_RUNTIME=${WEB_RUNTIME:-/run/user/$uid/omastorm-web/omastorm-se}
-WEB_CACHE=${WEB_CACHE:-$HOME/.cache/omastorm-web/omastorm-se}
-BAR_RUNTIME=${BAR_RUNTIME:-/run/user/$uid/omastorm-se}
-BAR_CACHE=${BAR_CACHE:-$HOME/.cache/omastorm-se}
+WEB_RUNTIME=${WEB_RUNTIME:-/run/user/$uid/omastorm-web/omastorm-nord}
+WEB_CACHE=${WEB_CACHE:-$HOME/.cache/omastorm-web/omastorm-nord}
+BAR_RUNTIME=${BAR_RUNTIME:-/run/user/$uid/omastorm-nord}
+BAR_CACHE=${BAR_CACHE:-$HOME/.cache/omastorm-nord}
 WEB_UNIT=${WEB_UNIT-omastorm-web}
 
 mb() { awk -v b="$1" 'BEGIN { printf "%.1f MB", b / 1e6 }'; }

@@ -5,7 +5,7 @@ export OMASTORM_ROOT="$PWD"
 # Plugin bootstrap: no build and no second Quickshell process. A checkout
 # with a debug engine stays offline. Otherwise the pinned release installer
 # fetches once, verifies the committed sha256, and installs under
-# $XDG_DATA_HOME/omastorm-se/bin (DESIGN.md, distribution).
+# $XDG_DATA_HOME/omastorm-nord/bin (DESIGN.md, distribution).
 if [[ ${1:-} == --ensure ]]; then
   # The plugin bootstrap runs detached; its stderr goes to the log it names.
   if [[ -n ${OMASTORM_BOOTSTRAP_LOG:-} ]]; then
@@ -30,13 +30,13 @@ target/debug/omastorm-engine ensure
 if [[ -t 1 ]]; then
   mode=live
   [[ -n ${OMASTORM_ARCHIVE:-} ]] && mode="archive $OMASTORM_ARCHIVE"
-  config=${OMASTORM_CONFIG:-$HOME/.config/omastorm-se/config.toml}
+  config=${OMASTORM_CONFIG:-$HOME/.config/omastorm-nord/config.toml}
   if [[ -n ${OMASTORM_STATE:-} ]]; then
     state=$OMASTORM_STATE
   elif [[ -n ${OMASTORM_CONFIG:-} ]]; then
     state="(not read; OMASTORM_CONFIG is set)"
   else
-    state=${XDG_STATE_HOME:-$HOME/.local/state}/omastorm-se/state.json
+    state=${XDG_STATE_HOME:-$HOME/.local/state}/omastorm-nord/state.json
   fi
   if [[ -n ${OMASTORM_LOCATION:-} ]]; then
     location=$OMASTORM_LOCATION

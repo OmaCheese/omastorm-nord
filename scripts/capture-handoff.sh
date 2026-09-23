@@ -23,12 +23,12 @@ bash scripts/cargo.sh build --offline --locked --quiet
 # A scratch runtime dir, never the user's: ensure ends an engine of another
 # build, so the installed plugin's engine would be replaced by this debug one.
 export XDG_RUNTIME_DIR="$scratch/runtime"
-export XDG_CACHE_HOME="$scratch/cache" # not the bar's ~/.cache/omastorm-se (S26)
+export XDG_CACHE_HOME="$scratch/cache" # not the bar's ~/.cache/omastorm-nord (S26)
 mkdir -p "$XDG_RUNTIME_DIR"
 engine="$PWD/target/debug/omastorm-engine" # absolute: the script ends in review/
 trap '"$engine" stop > /dev/null 2>&1 || true' EXIT
 target/debug/omastorm-engine ensure
-sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
+sock="$XDG_RUNTIME_DIR/omastorm-nord/engine.sock"
 tell() { printf '%s\n' "$@" | socat -t0.3 - "UNIX-CONNECT:$sock" > /dev/null; }
 # The pan: latitude, longitude, and the station the engine should hand off to.
 positions=('58.256 12.826 vara' '58.106 15.936 atvidaberg' '59.611 17.583 balsta' '61.577 16.714 hudiksvall' '63.639 18.402 ornskoldsvik' '65.431 21.865 lulea')

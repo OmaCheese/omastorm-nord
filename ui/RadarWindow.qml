@@ -35,7 +35,7 @@ Item {
     }
     function dismiss() {
         if (!session) Qt.quit();
-        else if (shell) shell.hide("rb.omastorm-se");
+        else if (shell) shell.hide("omacheese.omastorm-nord");
         else close();
     }
     readonly property var state: engine.state
@@ -754,7 +754,7 @@ Item {
     Connections { target: Quickshell; function onLastWindowClosed() { if (!app.session) Qt.quit(); } }
     FloatingWindow {
         id: win
-        title: "Omastorm SE"
+        title: "Omastorm Nord"
         visible: app.opened
         onVisibleChanged: if (!visible && app.opened) app.dismiss()
         implicitWidth: Number(Quickshell.env("OMASTORM_WIDTH")) || 960
@@ -928,7 +928,7 @@ Item {
                 id: brandRow
                 Layout.fillWidth: true
                 RadarMark { ink: app.theme.accent; size: 20; Layout.rightMargin: 8 }
-                LabelText { text: "OMASTORM SE"; font.bold: true; font.letterSpacing: 2.5; font.pixelSize: app.theme.size.heading }
+                LabelText { text: "OMASTORM NORD"; font.bold: true; font.letterSpacing: 2.5; font.pixelSize: app.theme.size.heading }
                 Item { Layout.fillWidth: true }
                 // LIVE / ARCHIVED as text; the light carries feed health.
                 RowLayout {

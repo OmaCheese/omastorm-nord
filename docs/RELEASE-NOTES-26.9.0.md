@@ -1,8 +1,8 @@
-# Omastorm SE engine 26.9.0
+# Omastorm Nord engine 26.9.0
 
-The first engine release of Omastorm SE, a fork of
+The first engine release of Omastorm Nord, a fork of
 [Omastorm](https://github.com/wesleygrimes/omastorm) by Wes Grimes. Where
-upstream draws NOAA NEXRAD over the United States, Omastorm SE draws European
+upstream draws NOAA NEXRAD over the United States, Omastorm Nord draws European
 weather radar: 41 radars in Sweden, Norway, Finland and Denmark, SMHI's
 national composite, EUMETNET OPERA's Nordic composite, and a mosaic of the
 radars you choose, in the Omarchy bar and window.
@@ -14,7 +14,7 @@ upstream's `engine-0.1.x` line.
 
 The plugin downloads this release's engine the first time the popover opens,
 checks its sha256 against `engine/release.pin`, and installs it under
-`~/.local/share/omastorm-se/bin`. Assets:
+`~/.local/share/omastorm-nord/bin`. Assets:
 
 - `omastorm-engine-x86_64-unknown-linux-gnu`
 - `omastorm-engine-aarch64-unknown-linux-gnu`
@@ -61,7 +61,7 @@ runners (x86_64 and ARM64) from the tagged commit.
 - Place search folds Nordic letters and knows local and English names
   (`goteborg`, `gothenburg` → Göteborg; `helsingfors` → Helsinki); map labels
   use local Latin-script names.
-- Its own directories and plugin id (`omastorm-se`, `rb.omastorm-se`), so it
+- Its own directories and plugin id (`omastorm-nord`, `omacheese.omastorm-nord`), so it
   installs beside upstream Omastorm without clashing.
 
 **Products** — beyond the lowest sweep, the engine builds `Clear view` (per

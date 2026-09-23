@@ -43,14 +43,14 @@ other_sum=$(sha256sum -- "$scratch/other" | awk '{print $1}')
 pin=$scratch/release.pin
 cat > "$pin" <<PIN
 tag=engine-test
-repo=OmaCheese/omastorm-se
+repo=OmaCheese/omastorm-nord
 asset_$native=omastorm-engine-$native-unknown-linux-gnu
 sha256_$native=$sum
 asset_$other=omastorm-engine-$other-unknown-linux-gnu
 sha256_$other=$other_sum
 PIN
 export OMASTORM_ENGINE_PIN=$pin
-dest=$XDG_DATA_HOME/omastorm-se/bin/omastorm-engine
+dest=$XDG_DATA_HOME/omastorm-nord/bin/omastorm-engine
 install_cmd=(bash scripts/fetch-engine.sh)
 
 # A substituted file is refused and leaves no dest.
@@ -120,7 +120,7 @@ chmod +x "$scratch/bin/curl"
 for arch in x86_64 aarch64; do
   rm -f "$dest"
   PATH="$scratch/bin:$PATH" DOWNLOAD_FIXTURES=$scratch/downloads OMASTORM_ENGINE_MACHINE=$arch "${install_cmd[@]}"
-  [[ $(cat "$scratch/downloads/url") == "https://github.com/OmaCheese/omastorm-se/releases/download/engine-test/omastorm-engine-$arch-unknown-linux-gnu" ]] \
+  [[ $(cat "$scratch/downloads/url") == "https://github.com/OmaCheese/omastorm-nord/releases/download/engine-test/omastorm-engine-$arch-unknown-linux-gnu" ]] \
     || fail "Wrong download URL for $arch"
 done
 rm -f "$dest"
@@ -150,7 +150,7 @@ done
 rm -rf "$XDG_DATA_HOME"
 bash run.sh --ensure
 [[ ! -e $dest ]] || fail 'Checkout --ensure wrote the release dest'
-timeout 2 socat -t0.2 - "UNIX-CONNECT:$XDG_RUNTIME_DIR/omastorm-se/engine.sock" < /dev/null | rg -q '"type":"hello"' \
+timeout 2 socat -t0.2 - "UNIX-CONNECT:$XDG_RUNTIME_DIR/omastorm-nord/engine.sock" < /dev/null | rg -q '"type":"hello"' \
   || fail 'Checkout --ensure did not produce a hello'
 target/debug/omastorm-engine stop >/dev/null
 
@@ -169,7 +169,7 @@ rm -rf "$clone/target"
 export OMASTORM_ENGINE_ASSET=$debug OMASTORM_ENGINE_PIN=$clone/engine/release.pin
 (cd "$clone" && bash run.sh --ensure)
 [[ -x $dest ]] || fail 'Clone --ensure did not install the engine'
-timeout 2 socat -t0.2 - "UNIX-CONNECT:$XDG_RUNTIME_DIR/omastorm-se/engine.sock" < /dev/null | rg -q '"type":"hello"' \
+timeout 2 socat -t0.2 - "UNIX-CONNECT:$XDG_RUNTIME_DIR/omastorm-nord/engine.sock" < /dev/null | rg -q '"type":"hello"' \
   || fail 'Clone --ensure did not produce a hello'
 "$dest" stop >/dev/null
 
@@ -209,7 +209,7 @@ if [[ -x $dest ]]; then
     exit 0
   fi
   "$dest" ensure
-  hello=$(timeout 2 socat -t0.2 - "UNIX-CONNECT:$XDG_RUNTIME_DIR/omastorm-se/engine.sock" < /dev/null | head -n1 || true)
+  hello=$(timeout 2 socat -t0.2 - "UNIX-CONNECT:$XDG_RUNTIME_DIR/omastorm-nord/engine.sock" < /dev/null | head -n1 || true)
   "$dest" stop >/dev/null
   rg -q '"type":"hello"' <<< "$hello" || fail 'Pinned asset did not produce a hello'
   [[ $(jq -r .v <<< "$hello") == "$ui_protocol" ]] \

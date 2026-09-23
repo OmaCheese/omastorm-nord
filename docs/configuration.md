@@ -9,11 +9,11 @@ engine. The UI sends the commands described in [protocol.md](protocol.md).
 
 | File | Owner and purpose | Contents |
 | --- | --- | --- |
-| `~/.config/omastorm-se/config.toml` | User-managed, deliberate preferences | Optional fixed launch center, radar override, treatment, weak-return floor, keybindings |
-| `$XDG_STATE_HOME/omastorm-se/state.json` | App-managed, remembered session | Last map center, zoom, and optional radar lock chosen in the UI |
+| `~/.config/omastorm-nord/config.toml` | User-managed, deliberate preferences | Optional fixed launch center, radar override, treatment, weak-return floor, keybindings |
+| `$XDG_STATE_HOME/omastorm-nord/state.json` | App-managed, remembered session | Last map center, zoom, and optional radar lock chosen in the UI |
 
 When `XDG_STATE_HOME` is unset, state lives at
-`~/.local/state/omastorm-se/state.json`. Onboarding, panning, zooming, and UI lock
+`~/.local/state/omastorm-nord/state.json`. Onboarding, panning, zooming, and UI lock
 changes write state, not config. Deleting state resets the remembered session
 without removing deliberate preferences. Missing or invalid state falls back
 to the remaining location sources; it must not prevent startup. Keep state
@@ -151,7 +151,7 @@ the machine's own state and weather files are not read unless
 
 ## Remembered state
 
-`~/.local/state/omastorm-se/state.json` is written atomically (a temporary file
+`~/.local/state/omastorm-nord/state.json` is written atomically (a temporary file
 renamed into place). It holds the last map centre, span in kilometres, and
 the UI radar lock when one is set:
 

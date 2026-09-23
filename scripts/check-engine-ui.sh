@@ -44,7 +44,7 @@ ShellRoot {
             renamed.frame.texture = "tex/sweep-TEST-r1.png";
             renamed.frame.azimuthLut = "tex/azlut-TEST-r1.png";
             engine.receive(JSON.stringify(renamed));
-            check(!!engine.state && engine.texture.indexOf("/omastorm-se/tex/sweep-TEST-r1.png") > 0 && engine.azimuthLut.indexOf("/omastorm-se/tex/azlut-TEST-r1.png") > 0, "Free one-segment texture names were rejected");
+            check(!!engine.state && engine.texture.indexOf("/omastorm-nord/tex/sweep-TEST-r1.png") > 0 && engine.azimuthLut.indexOf("/omastorm-nord/tex/azlut-TEST-r1.png") > 0, "Free one-segment texture names were rejected");
             engine.receive(good);
             check(!!engine.state && engine.error === "", "Fixture state did not recover after renamed textures");
             // Version 2: a grid frame has no azimuth lookup (its texture stands

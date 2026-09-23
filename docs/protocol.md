@@ -12,7 +12,7 @@ lists every difference.
 
 ## Transport
 
-- Unix stream socket at `$XDG_RUNTIME_DIR/omastorm-se/engine.sock`.
+- Unix stream socket at `$XDG_RUNTIME_DIR/omastorm-nord/engine.sock`.
 - Newline-delimited JSON, UTF-8, one object per line, no pretty printing.
 - Multiple clients may connect (window and popover). Every client receives every
   broadcast. Commands from any client apply to the shared state.
@@ -198,7 +198,7 @@ It is small (a few KB) so clients replace rather than merge.
   `rays` 1, `gates` 1, empty `scanTime` and `sweepEnd`, the station table's
   coordinates. Before any station is selected the placeholder is `-loading`, sited
   at the middle of the contiguous network.
-- Paths are relative to `$XDG_RUNTIME_DIR/omastorm-se/` and have the form
+- Paths are relative to `$XDG_RUNTIME_DIR/omastorm-nord/` and have the form
   `tex/<file>`: the literal prefix `tex/` and exactly one further segment that
   is not empty, `.`, or `..` and contains no `/`, backslash, or NUL. The file
   name is otherwise free and carries no meaning to the UI. Both ends apply this
@@ -300,7 +300,7 @@ when `osm` becomes available. `labels` are the tile's places for the overlay.
  "labels":[{"name":"Moore","lat":35.3395,"lon":-97.4867,"class":"city","rank":8}]}
 ```
 
-- `path` is relative to `$XDG_RUNTIME_DIR/omastorm-se/` and has the form
+- `path` is relative to `$XDG_RUNTIME_DIR/omastorm-nord/` and has the form
   `tiles/<set>/<z>/<x>/<file>`: the literal prefix, `ne` or `osm`, two
   decimal integers, and one further segment under the texture rule (not
   empty, `.`, or `..`; no `/`, backslash, or NUL). The file name is otherwise
@@ -436,7 +436,7 @@ own.
 
 ## Texture files
 
-Directory `$XDG_RUNTIME_DIR/omastorm-se/tex/`. Every file is written to a temporary
+Directory `$XDG_RUNTIME_DIR/omastorm-nord/tex/`. Every file is written to a temporary
 name and renamed into place. Files are never modified after rename; a change
 produces a new name, so no client cache (Qt's, a browser's) can ever show
 stale pixels. The engine deletes files no `state` has referenced for 30 s;
@@ -576,7 +576,7 @@ and weak-return floor then apply exactly as for a polar sweep. The shader
 gets `kind` as a uniform, plus the grid's rectangle as its north-west
 corner's offset from `frame.site` and its size, both in Mercator units.
 
-**Tiles:** `$XDG_RUNTIME_DIR/omastorm-se/tiles/<set>/<z>/<x>/<y>-<gen>.png`,
+**Tiles:** `$XDG_RUNTIME_DIR/omastorm-nord/tiles/<set>/<z>/<x>/<y>-<gen>.png`,
 Web Mercator XYZ numbering, 512 px, RGBA antialiased masks tinted by the
 UI's shader (`ui/shaders/tile.frag`):
 
@@ -596,7 +596,7 @@ in `osm` data. Sets: `ne` (Natural Earth, embedded in the binary, any zoom) and
 `osm` (OpenMapTiles-schema vector tiles fetched lazily from z7; roads exist
 only here). Masks are rasterized on demand into the runtime directory, never
 modified, and dropped oldest-first past 4,096 files. The fetched vector tiles,
-not the masks, are what persists: `$XDG_CACHE_HOME/omastorm-se/vt/<source>/<version>/<z>/<x>/<y>.pbf`,
+not the masks, are what persists: `$XDG_CACHE_HOME/omastorm-nord/vt/<source>/<version>/<z>/<x>/<y>.pbf`,
 512 MB ceiling, least-recently-read evicted.
 
 ## Golden files
@@ -636,7 +636,7 @@ coordinates, and `product`, `palette`, and `bounds` the engine's reflectivity
 vocabulary shared with the fixture; the values are requantized with `scale`
 2 and `offset` 66. SMHI publishes whole volumes, so every frame is
 `complete`; `partial` is never sent. Complete frames enter the per-station
-catalog under `$XDG_CACHE_HOME/omastorm-se/frames/` (SQLite catalog plus the
+catalog under `$XDG_CACHE_HOME/omastorm-nord/frames/` (SQLite catalog plus the
 PNGs; 60 per station; the UI never reads it). Selecting a station shows its
 newest catalogued frame while the poller fetches the newest volume and
 backfills up to 60 from the day listing, newest first, so a picture arrives
@@ -1056,7 +1056,7 @@ which now bounds nothing.
   radars again, in any order, with the same reaches, rule, height and
   `above`, change nothing; another height is another set. The set is engine state,
   shared by that engine's clients like the station, and a live engine keeps
-  it across restarts (`$XDG_CACHE_HOME/omastorm-se/mosaic.json`, checked
+  it across restarts (`$XDG_CACHE_HOME/omastorm-nord/mosaic.json`, checked
   against the station table again at start). A client also remembers its
   last set and sends it again when it connects to an engine whose
   `state.mosaic.sites` is empty.
@@ -1657,10 +1657,10 @@ others, and a client that never sends `set_layers` never receives `obs`
   stations stay while they are under 90 minutes old), or `skipped` (not
   configured: Norway's Frost API needs a client ID, which the engine reads
   from `FROST_CLIENT_ID` or from `FROST_CLIENT_ID=` in
-  `$XDG_CONFIG_HOME/omastorm-se/frost.env`, default
-  `~/.config/omastorm-se/frost.env`; without one Norway has no stations and
+  `$XDG_CONFIG_HOME/omastorm-nord/frost.env`, default
+  `~/.config/omastorm-nord/frost.env`; without one Norway has no stations and
   nothing is invented). `note` explains a `failed` or `skipped` one, e.g.
-  `"note":"no Frost client ID (FROST_CLIENT_ID or ~/.config/omastorm-se/frost.env)"`.
+  `"note":"no Frost client ID (FROST_CLIENT_ID or ~/.config/omastorm-nord/frost.env)"`.
 - `attribution` is one line naming the providers whose stations are in the
   list; a client shows it whenever a layer is drawn.
 - `obs` is sent to every client with a layer on whenever the list changes,
@@ -1691,7 +1691,7 @@ hour's reports are in and fetched after half past). DMI's station names
 come from its station list, fetched at most once a day; so does Frost's
 list of Norwegian stations, whose latest observations take two requests
 (Frost refuses URLs over 2048 characters). Bodies are cached
-under `$XDG_CACHE_HOME/omastorm-se/obs/`, so a restart within 10 minutes
+under `$XDG_CACHE_HOME/omastorm-nord/obs/`, so a restart within 10 minutes
 fetches nothing. Every fetch writes one `Obs` line to `engine.log`.
 
 | Provider | Endpoint | Cadence | Stations (2026-09-22) |
@@ -1771,7 +1771,7 @@ the probe names a newer hour than the one cached, one subset of
 written about HH:15, so after an hour is in the engine waits until
 20 minutes past the next hour, then probes every 10 minutes until the new
 hour is there: one download per hour at most. The subset is cached under
-`$XDG_CACHE_HOME/omastorm-se/obs/`, so a restart within the hour fetches
+`$XDG_CACHE_HOME/omastorm-nord/obs/`, so a restart within the hour fetches
 nothing. Every fetch writes one `Grid metnordic` line to `engine.log`.
 
 | Grid | |
@@ -1964,8 +1964,8 @@ work on a quiet day. No request is made in replay.
 
 ## Configuration
 
-`~/.config/omastorm-se/config.toml` and
-`$XDG_STATE_HOME/omastorm-se/state.json` are read by the UI, never by the engine.
+`~/.config/omastorm-nord/config.toml` and
+`$XDG_STATE_HOME/omastorm-nord/state.json` are read by the UI, never by the engine.
 Explicit preferences override remembered view state. The UI resolves the map
 center and radar lock independently, then sends `select_site`, `lock`,
 `follow`, and settled `view_center` commands as needed. Unlocked navigation

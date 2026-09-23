@@ -15,7 +15,7 @@ QtObject {
         var state = Quickshell.env("OMASTORM_STATE");
         if (state) return state.slice(0, state.lastIndexOf("/") + 1) + "mosaic.json";
         if (Quickshell.env("OMASTORM_CONFIG")) return "";
-        return (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omastorm-se/mosaic.json";
+        return (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omastorm-nord/mosaic.json";
     }
     /// {sites: [{id}], rule}, and for a height set heightM and
     /// above (S30), or null before any.

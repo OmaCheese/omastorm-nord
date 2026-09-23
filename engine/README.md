@@ -16,8 +16,8 @@ are described in [data/README.md](../data/README.md).
 ## Runtime and storage
 
 `XDG_RUNTIME_DIR` must name an absolute directory. The daemon owns
-`omastorm-se/engine.sock`, uses `engine.lock` to serialize startup, and logs to
-`omastorm-se/engine.log`. `ensure` starts a background daemon and waits up to
+`omastorm-nord/engine.sock`, uses `engine.lock` to serialize startup, and logs to
+`omastorm-nord/engine.log`. `ensure` starts a background daemon and waits up to
 10 seconds for its hello. Concurrent launches share it; it outlives windows.
 
 Hello includes the PID, protocol version, and executable fingerprint.
@@ -69,7 +69,7 @@ as unavailable; Leksand has published nothing since January 2026. Cached
 frames remain usable under every condition.
 
 `src/catalog.rs` stores the newest 60 complete frames per station in
-`$XDG_CACHE_HOME/omastorm-se/frames/`: a SQLite WAL catalog and PNG files.
+`$XDG_CACHE_HOME/omastorm-nord/frames/`: a SQLite WAL catalog and PNG files.
 Entries retain scan geometry, times, and source provenance. The UI never reads
 this store. The timeline serves cached frames through new runtime textures.
 Playback loops complete frames over about ten seconds, bounded to 250 ms–1 s
@@ -82,7 +82,7 @@ volume a poller reads, so every product of that volume, and later a mosaic or
 a section, is composed from disk instead of fetching the volume again. The
 frame catalog above is unchanged; the store sits beside it:
 
-- **Layout.** `$XDG_CACHE_HOME/omastorm-se/tilts/index.sqlite` (its own WAL
+- **Layout.** `$XDG_CACHE_HOME/omastorm-nord/tilts/index.sqlite` (its own WAL
   database) and one file per tilt,
   `tilts/<station>/<YYYYMMDDTHHMMSSZ>-<tenths>-<dataset>.u8z`: zlib of the
   scan's `Sweep` exactly as `odim.rs` decodes it (u8 codes rays × gates, each
@@ -189,7 +189,7 @@ frames from the catalog and their PNGs (`<site>/<id>-<hash>-sweep.png`,
 `-azlut.png`, `-codes.png`), with the engine's own `XDG_CACHE_HOME`:
 
 ```sh
-dir=${XDG_CACHE_HOME:-~/.cache}/omastorm-se/frames
+dir=${XDG_CACHE_HOME:-~/.cache}/omastorm-nord/frames
 sqlite3 "$dir/catalog.sqlite" "DELETE FROM frames WHERE id LIKE '%-etop' OR id LIKE '%-vil'"
 rm -f "$dir"/*/*-etop-*.png "$dir"/*/*-vil-*.png
 ```
@@ -453,7 +453,7 @@ layers (temperature and wind; `set_layers` and `obs` in
 provider, normalised to one station list, stations older than 90 minutes
 dropped. Nothing is fetched while no client has a layer on; each provider
 at most every 10 minutes, bodies cached in
-`$XDG_CACHE_HOME/omastorm-se/obs/`; every fetch writes an `Obs <provider>:
+`$XDG_CACHE_HOME/omastorm-nord/obs/`; every fetch writes an `Obs <provider>:
 requests=… bytes=… stations=…` line to `engine.log`.
 
 | Provider | Key | Requests per update |
@@ -465,8 +465,8 @@ requests=… bytes=… stations=…` line to `engine.log`.
 
 **Frost client ID.** Frost answers 401 without one. The engine reads it
 from the environment variable `FROST_CLIENT_ID`, else from a line
-`FROST_CLIENT_ID=<id>` in `$XDG_CONFIG_HOME/omastorm-se/frost.env`
-(default `~/.config/omastorm-se/frost.env`; keep it mode 600). It is sent
+`FROST_CLIENT_ID=<id>` in `$XDG_CONFIG_HOME/omastorm-nord/frost.env`
+(default `~/.config/omastorm-nord/frost.env`; keep it mode 600). It is sent
 as HTTP basic auth (the ID as user name, empty password); the client
 secret in that file is for OAuth2 and is not read. The ID never goes into
 a URL, the cache, a log line or a fixture. With neither, Norway is skipped
@@ -488,7 +488,7 @@ DAP2 subset (about 1.9 MB: temperature every 3 km, wind every 24 km).
 The analysis for HH:00 is written about HH:15, so the next probe is at
 HH+1:20, then every 10 minutes until the hour is in: one download an hour
 at most, and nothing while no client shows the grid. The subset is cached
-as `$XDG_CACHE_HOME/omastorm-se/obs/metnordic.dods`.
+as `$XDG_CACHE_HOME/omastorm-nord/obs/metnordic.dods`.
 
 The grid is a Lambert conformal conic on a sphere (lat 63°, lon 15°,
 R 6371 km); `grid.rs` inverts it to draw the temperature as a Web
@@ -519,7 +519,7 @@ offline replays); unset, as in use, it reads the real cache. S32's
 `OMASTORM_ORD_BASE` does the same for ORD's radars.
 
 Vector tiles persist under
-`$XDG_CACHE_HOME/omastorm-se/vt/<source>/<version>/<z>/<x>/<y>.pbf`.
+`$XDG_CACHE_HOME/omastorm-nord/vt/<source>/<version>/<z>/<x>/<y>.pbf`.
 The two newest data versions are retained. Above 512 MB, eviction removes the
 least recently read tiles until usage falls below 448 MB. Rendered masks are
 runtime files capped at 4,096; their names include build/data generation tags.

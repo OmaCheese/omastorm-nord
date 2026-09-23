@@ -1,7 +1,7 @@
 # Contributing
 
 Report bugs and propose work in
-[this fork's issues](https://github.com/OmaCheese/omastorm-se/issues). A bug
+[this fork's issues](https://github.com/OmaCheese/omastorm-nord/issues). A bug
 upstream Omastorm has too belongs
 [upstream](https://github.com/wesleygrimes/omastorm/issues), where the fix
 helps both.
@@ -11,11 +11,11 @@ implementation.
 ## Issues
 
 For a bug, use the
-[bug report template](https://github.com/OmaCheese/omastorm-se/issues/new?template=bug-report.md).
+[bug report template](https://github.com/OmaCheese/omastorm-nord/issues/new?template=bug-report.md).
 Say what happened, what you expected, and your Omarchy version, plugin commit,
 engine, and GPU as the template asks.
 
-`$XDG_RUNTIME_DIR/omastorm-se/engine.log` is the daemon's stderr: startup,
+`$XDG_RUNTIME_DIR/omastorm-nord/engine.log` is the daemon's stderr: startup,
 `Live {site}: …` feed lines, decode and tile errors. Attach the last screenful
 covering the failure, not a single line. If the engine never installed, attach
 `bootstrap.log` from the same directory too. Paths are in the
@@ -57,7 +57,7 @@ Quickshell instances you launched; a windowless process left after closing is
 a leak to investigate.
 
 `mise start` loads this checkout's `ui/` in a window. The bar still uses the
-installed plugin under `~/.config/omarchy/plugins/rb.omastorm-se` unless
+installed plugin under `~/.config/omarchy/plugins/omacheese.omastorm-nord` unless
 you point it here:
 
 ```sh

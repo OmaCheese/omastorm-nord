@@ -57,7 +57,7 @@ call accept
 expect 'Enter closes the picker' 'false' "$(call status | grep -o '"open":[a-z]*' | cut -d: -f2)"
 # The field must let go of the keyboard, or the next `/` types into it instead of reopening.
 expect 'Enter hands the keyboard back' 'false' "$(call status | grep -o '"focused":[a-z]*' | cut -d: -f2)"
-sock="$XDG_RUNTIME_DIR/omastorm-se/engine.sock"
+sock="$XDG_RUNTIME_DIR/omastorm-nord/engine.sock"
 for _ in {1..50}; do
   site=$(timeout 2 socat -t0.2 - "UNIX-CONNECT:$sock" < /dev/null | sed -n 2p | grep -o '"site":{[^}]*}' || true)
   [[ $site == *"\"id\":\"$first\""* && $site == *'"locked":true'* ]] && break

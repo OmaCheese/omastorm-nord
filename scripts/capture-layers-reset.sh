@@ -9,7 +9,7 @@
 # Nothing leaves the machine: the engine and scripts/fake-weather.py run in
 # a private network namespace (`unshare -rn`), the providers are the
 # fake's fixtures, the radar's feed is unreachable. FRAMES_FROM may name an
-# XDG_CACHE_HOME/omastorm-se of an earlier run whose frame catalog holds
+# XDG_CACHE_HOME/omastorm-nord of an earlier run whose frame catalog holds
 # Vara frames, so the radar shows one (the load itself cannot finish
 # offline, which is honest: after a Reset it says 0 %). RUN names the run
 # directory (default target/capture-s47); the PNGs go to review/s47/.
@@ -56,9 +56,9 @@ save() { q capture save "$out/$1.png"; sleep 1; echo "$1: $(q layers states | jq
 for theme in dark light; do
   R=$run/$theme
   rm -rf "$R"
-  mkdir -p "$R/rt/omastorm-se" "$R/cache/omastorm-se" "$R/config" "$R/state"
+  mkdir -p "$R/rt/omastorm-nord" "$R/cache/omastorm-nord" "$R/config" "$R/state"
   chmod 700 "$R/rt"
-  if [[ -n ${FRAMES_FROM:-} ]]; then cp -r "$FRAMES_FROM/frames" "$FRAMES_FROM/tilts" "$R/cache/omastorm-se/" 2>/dev/null || true; fi
+  if [[ -n ${FRAMES_FROM:-} ]]; then cp -r "$FRAMES_FROM/frames" "$FRAMES_FROM/tilts" "$R/cache/omastorm-nord/" 2>/dev/null || true; fi
   export XDG_RUNTIME_DIR=$R/rt XDG_CACHE_HOME=$R/cache XDG_CONFIG_HOME=$R/config
   export OMASTORM_ARCHIVE=$root/data/raw/radar_vara_qcvol_202609131055.h5 OMASTORM_LIGHTNING_BASE=http://127.0.0.1:9
   unset FROST_CLIENT_ID
@@ -68,9 +68,9 @@ for theme in dark light; do
     python3 "$1/scripts/fake-weather.py" "$2/port" --log "$2/requests.log" --fail dmi --slow smhi=3,grid=5 > "$2/fake.out" 2>&1 &
     for i in $(seq 50); do [ -f "$2/port" ] && break; sleep .1; done
     OMASTORM_OBS_BASE=http://127.0.0.1:$(cat "$2/port") exec "$1/target/debug/omastorm-engine" serve
-  ' sh "$root" "$R" >> "$R/rt/omastorm-se/engine.log" 2>&1 &
+  ' sh "$root" "$R" >> "$R/rt/omastorm-nord/engine.log" 2>&1 &
   ns=$!
-  for _ in {1..100}; do [[ -S $R/rt/omastorm-se/engine.sock ]] && break; sleep .1; done
+  for _ in {1..100}; do [[ -S $R/rt/omastorm-nord/engine.sock ]] && break; sleep .1; done
   : > "$R/config.toml"
   printf '{"lat":61.0,"lon":15.5,"span":1300,"lock":"vara"}\n' > "$R/state/state.json"
   printf '{"radar":true,"temp":true,"wind":true,"source":"both","lightning":false}\n' > "$R/state/layers.json"

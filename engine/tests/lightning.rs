@@ -167,7 +167,7 @@ impl Engine {
     fn connect(&self) -> BufReader<UnixStream> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if let Ok(stream) = UnixStream::connect(self.root.join("omastorm-se/engine.sock")) {
+            if let Ok(stream) = UnixStream::connect(self.root.join("omastorm-nord/engine.sock")) {
                 stream
                     .set_read_timeout(Some(Duration::from_millis(250)))
                     .unwrap();
@@ -181,7 +181,7 @@ impl Engine {
         fs::read_to_string(self.root.join("stderr.log")).unwrap_or_default()
     }
     fn file(&self, path: &str) -> Vec<u8> {
-        fs::read(self.root.join("omastorm-se").join(path)).unwrap()
+        fs::read(self.root.join("omastorm-nord").join(path)).unwrap()
     }
 }
 

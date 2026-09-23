@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "rb.omastorm-se",
-  "name": "Omastorm SE",
+  "id": "omacheese.omastorm-nord",
+  "name": "Omastorm Nord",
   "version": "26.9.0",
   "author": "OmaCheese",
   "license": "MIT",
-  "homepage": "https://github.com/OmaCheese/omastorm-se",
+  "homepage": "https://github.com/OmaCheese/omastorm-nord",
   "description": "Live Nordic weather radar for the Omarchy desktop, a fork of Omastorm",
   "kinds": [
     "bar-widget",
@@ -16,7 +16,7 @@
     "panel": "ui/Panel.qml"
   },
   "barWidget": {
-    "displayName": "Omastorm SE",
+    "displayName": "Omastorm Nord",
     "description": "Home radar, scan age, playback, and expand",
     "category": "Weather",
     "allowMultiple": false,

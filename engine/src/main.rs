@@ -187,7 +187,7 @@ struct Timeline {
     shown: Option<String>,
     /// S49: the build-back window of the load that opened this timeline
     /// (`Shared::window_ms`), until the load's first frame of its own
-    /// (`own_frame`) drops the catalogued frames older than it.
+    /// (`own_frame`) cuts the frames that cannot join up with it.
     window_ms: Option<i64>,
 }
 impl Timeline {
@@ -200,42 +200,51 @@ impl Timeline {
         }
     }
     /// A catalogued ring opened for a load that builds back `window_ms`
-    /// (S49). A ring already spliced on disk (a gap longer than the window
-    /// between two of its frames) opens from after its newest splice: no
-    /// load keeps the part before it. The rest, the newest frame on
-    /// screen, stays until the load brings a frame of its own
-    /// (`own_frame`), and for good if it brings none (offline).
+    /// (S49), cut at its newest splice (`cut_at_splice`) at once: a ring
+    /// reopened within a cadence (a reselect, a product switch and back)
+    /// may bring no frame of its own before the next one is due (its
+    /// newest is catalogued, the poller says `Current`), so `own_frame`
+    /// would not fire and a splice on disk would stay on screen. The
+    /// newest frame shows; the rest stays until the load brings a frame of
+    /// its own, and for good if it brings none (offline, silent).
     fn opened(stored: Vec<Entry>, window_ms: i64) -> Self {
         let mut timeline = Timeline {
             window_ms: Some(window_ms),
             ..Timeline::new(stored)
         };
-        let splice = timeline
-            .stored
-            .windows(2)
-            .rposition(|w| w[1].start_ms - w[0].start_ms > window_ms);
-        if let Some(before) = splice {
-            timeline.stored.drain(..=before);
-        }
+        timeline.cut_at_splice(window_ms, None);
         timeline
     }
     /// S49: the load brought a frame of its own starting at `start_ms`
-    /// (not yet in the timeline). Once per load, the catalogued frames
-    /// older than its window before the newest frame leave, so a morning's
-    /// frames left from an earlier load are not spliced onto this one's.
-    /// Until then (a source that brings nothing: offline, silent) they all
-    /// stay. True when the pinned frame left; the pin moves to the oldest,
-    /// and the caller shows it.
+    /// (not yet in the timeline). Once per load (and again after the
+    /// poller's own restart, `Shared::restart_live_as`), the frames that
+    /// cannot join up with it leave (`cut_at_splice`): a morning left from
+    /// an earlier load is not spliced onto this one's afternoon, while a
+    /// contiguous ring stays whole. Until then all stay. True when the
+    /// pinned frame left; the pin moves to the oldest, and the caller
+    /// shows it.
     fn own_frame(&mut self, start_ms: i64) -> bool {
         let Some(window) = self.window_ms.take() else {
             return false;
         };
-        let newest = self
-            .stored
-            .last()
-            .map_or(start_ms, |e| e.start_ms.max(start_ms));
-        self.stored.retain(|e| e.start_ms >= newest - window);
+        self.cut_at_splice(window, Some(start_ms));
         self.repin()
+    }
+    /// S49: drop the stored frames before the newest gap longer than
+    /// `window` between two frames, `joining` (a frame about to join)
+    /// counted among them.
+    fn cut_at_splice(&mut self, window: i64, joining: Option<i64>) {
+        let mut times: Vec<i64> = self
+            .stored
+            .iter()
+            .map(|e| e.start_ms)
+            .chain(joining)
+            .collect();
+        times.sort_unstable();
+        let splice = times.windows(2).rev().find(|w| w[1] - w[0] > window);
+        if let Some(&[before, _]) = splice {
+            self.stored.retain(|e| e.start_ms > before);
+        }
     }
     fn len(&self) -> usize {
         self.stored.len() + usize::from(self.partial.is_some())
@@ -3373,35 +3382,74 @@ mod tests {
     fn stale_frames_leave_a_height_set() {
         s49_log_case("s49-height", |s| s49_mosaic(s, "height", Some(2000)), true);
     }
-    /// Catalogued frames inside the load's window stay (they are not built
-    /// again); only the older ones leave. Nordic Lowest beam's window is
-    /// its 6 frame times and two of slack: 13:45 on from 14:25.
+    /// A ring whose frames join up stays whole (review S1): the rule is
+    /// the gap, not the age. Nordic Lowest beam's window is 40 minutes, so
+    /// a 30-minute hole joins up; a 12:30 frame stays when 14:25 comes.
     #[test]
-    fn frames_inside_the_window_stay() {
-        // 12:30 to 14:20, contiguous: the ring keeps it all while loading.
-        let times: Vec<i64> = (0..23).map(|i| s49_at(12, 30 + 5 * i)).collect();
-        let mut shared = s49_opened(
-            "s49-inside",
-            |shared| {
-                assert!(shared.select_site("nordic").0);
-                assert!(shared.set_product(products::LOWB, 0, None, None).0);
-            },
-            &times,
-        );
-        assert_eq!(shared.timeline.stored.len(), 23);
+    fn a_contiguous_ring_stays_whole() {
+        let mut times: Vec<i64> = (0..11).map(|i| s49_at(12, 30 + 5 * i)).collect();
+        times.extend((0..7).map(|i| s49_at(13, 50 + 5 * i)));
+        let mut shared = s49_opened("s49-inside", s49_lowb, &times);
+        assert_eq!(shared.timeline.stored.len(), 18);
         let entry = s49_store(&shared, s49_at(14, 25));
         shared.backfilled(entry).unwrap();
-        assert_eq!(
-            s49_times(&shared),
-            [
-                "13:45", "13:50", "13:55", "14:00", "14:05", "14:10", "14:15", "14:20", "14:25"
-            ]
-        );
-        // Once per load: the next frame drops nothing (the ring prunes by
-        // count, as before).
-        let next = s49_store(&shared, s49_at(14, 30));
+        let kept = s49_times(&shared);
+        assert_eq!((kept.len(), kept[0].as_str()), (19, "12:30"));
+        // Once per load: a later frame after a gap cuts nothing (the ring
+        // prunes by count, as before).
+        let next = s49_store(&shared, s49_at(16, 0));
         shared.backfilled(next).unwrap();
-        assert_eq!(shared.timeline.stored.len(), 10);
+        assert_eq!(shared.timeline.stored.len(), 20);
+    }
+    fn s49_lowb(shared: &mut Shared) {
+        assert!(shared.select_site("nordic").0);
+        assert!(shared.set_product(products::LOWB, 0, None, None).0);
+    }
+    /// Review S1: a contiguous ring survives a product switch and back, a
+    /// reselect, and a reset, each a new load with its own first frame.
+    #[test]
+    fn a_contiguous_ring_survives_a_product_switch_and_back() {
+        let times: Vec<i64> = (0..12).map(|i| s49_at(13, 5 * i)).collect();
+        let mut shared = s49_opened("s49-switch", s49_lowb, &times);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let stop = |shared: &mut Shared| {
+            if let Some(task) = shared.live.take() {
+                task.abort();
+            }
+        };
+        let mut minute = 0;
+        let mut own_frame = |shared: &mut Shared| {
+            let entry = s49_store(shared, s49_at(14, minute));
+            minute += 5;
+            shared.backfilled(entry).unwrap();
+        };
+        own_frame(&mut shared);
+        assert_eq!(shared.timeline.stored.len(), 13);
+        // Column max and back.
+        assert!(shared.set_product(products::CMAX, 0, None, None).0);
+        assert!(shared.set_product(products::LOWB, 0, None, None).0);
+        stop(&mut shared);
+        assert_eq!(shared.timeline.stored.len(), 13, "reopened whole");
+        own_frame(&mut shared);
+        assert_eq!(shared.timeline.stored.len(), 14);
+        // Another station and back (a handoff does the same).
+        assert!(shared.select_site("vara").0);
+        s49_lowb(&mut shared);
+        stop(&mut shared);
+        own_frame(&mut shared);
+        assert_eq!(shared.timeline.stored.len(), 15);
+        // A reset.
+        shared.last_reset = None;
+        assert!(shared.reset());
+        stop(&mut shared);
+        own_frame(&mut shared);
+        assert_eq!(shared.timeline.stored.len(), 16);
+        let times = s49_times(&shared);
+        assert_eq!((times[0].as_str(), times[15].as_str()), ("13:00", "14:15"));
     }
     /// A ring already spliced on disk (a morning, then the last load's
     /// frames, more than the window apart) opens without the morning, so
@@ -3448,22 +3496,14 @@ mod tests {
     /// oldest frame left, which shows.
     #[test]
     fn a_pin_on_a_stale_frame_moves_to_the_oldest_left() {
-        let times: Vec<i64> = (0..23).map(|i| s49_at(12, 30 + 5 * i)).collect();
-        let mut shared = s49_opened(
-            "s49-pin",
-            |shared| {
-                assert!(shared.select_site("nordic").0);
-                assert!(shared.set_product(products::LOWB, 0, None, None).0);
-            },
-            &times,
-        );
+        let mut shared = s49_opened("s49-pin", s49_lowb, &s49_morning());
         let (ok, _) = shared.navigate(|t| Ok(t.pin(1)));
         assert!(ok && !shared.timeline.following());
-        assert_eq!(shared.state.frame.scan_time, iso(s49_at(12, 35)));
+        assert_eq!(shared.state.frame.scan_time, iso(s49_at(9, 5)));
         let entry = s49_store(&shared, s49_at(14, 25));
         shared.backfilled(entry).unwrap();
-        assert_eq!(s49_times(&shared)[0], "13:45");
-        assert_eq!(shared.state.frame.scan_time, iso(s49_at(13, 45)));
+        assert_eq!(s49_times(&shared), ["14:25"]);
+        assert_eq!(shared.state.frame.scan_time, iso(s49_at(14, 25)));
     }
     /// The window follows each kind's own depth and cadence.
     #[test]

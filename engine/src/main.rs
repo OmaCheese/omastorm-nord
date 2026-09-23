@@ -3536,6 +3536,42 @@ mod tests {
         assert_eq!(s49_times(&shared), ["14:25"]);
         assert_eq!(shared.state.frame.scan_time, iso(s49_at(14, 25)));
     }
+    /// Review N4: the load's first frame is a sweep in progress (a
+    /// radar's, `arrived(.., false)`) while the viewer is pinned to a stale
+    /// frame: the stale frames leave, the pin with them, and the sweep in
+    /// progress shows.
+    #[test]
+    fn a_partial_first_frame_cuts_and_moves_a_stale_pin() {
+        let mut shared = s49_opened(
+            "s49-partial",
+            |shared| {
+                assert!(shared.select_site("vara").0);
+                assert!(shared.set_product(products::CMAX, 0, None, None).0);
+            },
+            &s49_morning(),
+        );
+        let (ok, _) = shared.navigate(|t| Ok(t.pin(2)));
+        assert!(ok && !shared.timeline.following());
+        let mut frame = fixture_frame();
+        frame.id = format!("vara-{}-{}", compact(s49_at(14, 25)), shared.variant());
+        frame.scan_time = iso(s49_at(14, 25));
+        let arrival = Arrival {
+            frame: frame.clone(),
+            texture: b"sweep".to_vec(),
+            lut: b"lut".to_vec(),
+            start_ms: s49_at(14, 25),
+            end_ms: s49_at(14, 26),
+            stored: None,
+        };
+        shared.arrived(arrival, false).unwrap();
+        assert!(shared.timeline.stored.is_empty(), "the morning left");
+        assert_eq!(shared.timeline.len(), 1);
+        assert!(shared.timeline.is_partial(0));
+        assert_eq!(
+            shared.state.frame.id, frame.id,
+            "the sweep in progress shows"
+        );
+    }
     /// The window follows each kind's own depth and cadence.
     #[test]
     fn each_load_has_its_own_window() {

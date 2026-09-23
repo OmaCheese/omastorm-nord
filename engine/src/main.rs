@@ -864,7 +864,11 @@ impl Shared {
     fn load_name(&self, station: &Station, want: Want) -> String {
         match loading::kind_of(station, want) {
             loading::Kind::Radar => loading::radar_name(station, want),
-            loading::Kind::Made if station.provider == providers::ProviderId::Mosaic => {
+            // S45: My mosaic's own product (Rain mass) is named as
+            // `mosaic::run` names it, like a composite's, not by the set's.
+            loading::Kind::Made
+                if station.provider == providers::ProviderId::Mosaic && want.is_lowest() =>
+            {
                 format!("My mosaic, {}", self.state.mosaic.product().1)
             }
             loading::Kind::Made => format!("{} {}", station.name, want.product().1),
@@ -974,11 +978,12 @@ impl Shared {
         if station.provider == providers::ProviderId::Mosaic {
             let set = self.state.mosaic.variant();
             // S37: a mosaic product is its own ring — the same set shows a
-            // different thing — so the want joins the set's name.
+            // different thing — so the want joins the set's name, as the
+            // frames it builds are named (S45: `mosaic::mine_ring`).
             if want.is_lowest() {
                 set
             } else {
-                format!("{set}-{}", want.variant())
+                mosaic::mine_ring(&set, want)
             }
         } else {
             want.variant()
@@ -1195,7 +1200,10 @@ impl Shared {
         if let Some(station) = shown
             && self.state.source == Source::Live
         {
-            if let Err(message) = self.open_catalog(&station, Want::Lowest) {
+            // S45: the ring of what it shows, its own product's while one is
+            // chosen (S37), which is what the poller then builds.
+            let want = self.want();
+            if let Err(message) = self.open_catalog(&station, want) {
                 return (true, Some(message));
             }
             self.state.connection.status = ConnectionStatus::Loading;
@@ -1441,6 +1449,12 @@ impl Shared {
                 self.broadcast();
             }
             return Ok(());
+        }
+        // S45: while the loading placeholder is on screen, the load's frame
+        // takes the screen whatever the timeline says, so no pin can leave
+        // the placeholder up after a frame of what it waits for is made.
+        if self.state.frame.scan_time.is_empty() {
+            self.timeline.shown = None;
         }
         let following = self.timeline.following();
         self.state.connection.status = ConnectionStatus::Ok;
@@ -2017,7 +2031,14 @@ async fn live_events(shared: Arc<Mutex<Shared>>, mut events: Receiver<providers:
             // condition stays, as for a catalogued sweep in `arrived`.
             providers::Event::Current { site } => {
                 let mut shared = shared.lock().unwrap();
-                if shared.state.site.id == site && shared.state.source == Source::Live {
+                // S45: never over the loading placeholder. A station opened
+                // on its cached frame has one on screen; the placeholder
+                // means the word is an aborted poller's (the product or set
+                // before a switch), whose ring this is not.
+                if shared.state.site.id == site
+                    && shared.state.source == Source::Live
+                    && !shared.state.frame.scan_time.is_empty()
+                {
                     // S31: its newest frame was on screen already.
                     shared.loading.shown(Instant::now());
                     if known_sweep_clears_loading(shared.state.connection.status) {
@@ -3163,6 +3184,158 @@ mod tests {
         if let Some(task) = shared.live.take() {
             task.abort();
         }
+    }
+    /// S45 (the human, 2026-09-23: "my mosaic with rain mass on the web is
+    /// hanging"): My mosaic switched to a set that fills at once from the
+    /// tilt store, then seconds later to Rain mass, whose fill fetches.
+    /// Driven through `live_events` as the pollers drive it: the aborted
+    /// set poller's late words are dropped, and Rain mass's first built
+    /// frame takes the screen, clears `loading` and ends the load that
+    /// names it. Before S45 the frames were built and catalogued under a
+    /// ring (`vil`) other than the one shown (`<set>-vil`), so every one
+    /// was dropped, and the placeholder, `loading` and "My mosaic, Lowest
+    /// beam: placing the radars" stayed for good.
+    #[test]
+    fn my_mosaics_rain_mass_takes_the_screen_after_a_quick_switch() {
+        let (shared, runtime) = live_shared("s45-quick");
+        let shared = Arc::new(Mutex::new(shared));
+        let guard = runtime.enter();
+        let stop = |shared: &mut Shared| {
+            if let Some(task) = shared.live.take() {
+                task.abort();
+            }
+        };
+        let (lowest, station) = {
+            let mut shared = shared.lock().unwrap();
+            assert!(shared.select_site("mymosaic").0);
+            stop(&mut shared);
+            let sites = ["nobml", "nohgb", "nosta"].map(|id| mosaic::SiteArg::Id(id.into()));
+            let (changed, refused) = shared.set_mosaic(&sites, Some("lowest"), None, None);
+            assert!(changed && refused.is_none(), "{refused:?}");
+            stop(&mut shared);
+            let station = shared
+                .sites
+                .iter()
+                .find(|s| s.id == mosaic::STATION)
+                .cloned()
+                .unwrap();
+            let lowest = mosaic::Layout::new(&shared.state.mosaic, &shared.sites).unwrap();
+            (lowest, station)
+        };
+        drop(guard);
+        let build = |layout: &mosaic::Layout, t: i64| {
+            let inputs: Vec<Option<mosaic::Input>> = layout.radars.iter().map(|_| None).collect();
+            Scan::Mosaic(Box::new(mosaic::build(layout, t, &inputs)))
+        };
+        let sweep = |layout: &mosaic::Layout, t: i64| providers::Event::Sweep {
+            site: mosaic::STATION.into(),
+            sweep: build(layout, t),
+            complete: true,
+            provenance: "test".into(),
+        };
+        // Run the events as the engine does, until the pollers are done.
+        let run = |events: Vec<providers::Event>| {
+            let (tx, rx) = mpsc::channel(events.len().max(1));
+            for event in events {
+                tx.try_send(event).unwrap();
+            }
+            drop(tx);
+            runtime.block_on(live_events(shared.clone(), rx));
+        };
+        // Recent, so the feed's age says ok.
+        let five = 300_000;
+        let t = now_ms() / five * five - five;
+        // The set fills from the tilt store: on screen, ok.
+        run(vec![sweep(&lowest, t)]);
+        {
+            let shared = shared.lock().unwrap();
+            assert!(shared.state.frame.id.ends_with(&lowest.variant()));
+            assert_eq!(shared.state.connection.status, ConnectionStatus::Ok);
+        }
+        // Ten seconds later, Rain mass: its own ring, empty, so the
+        // placeholder, and a load named for Rain mass.
+        let vil = {
+            let _guard = runtime.enter();
+            let mut shared = shared.lock().unwrap();
+            let (changed, refused) = shared.set_product(products::VIL, 0, None, None);
+            assert!(changed && refused.is_none(), "{refused:?}");
+            stop(&mut shared);
+            assert_eq!(shared.state.frame.id, "mymosaic-loading");
+            assert_eq!(shared.state.connection.status, ConnectionStatus::Loading);
+            shared.snapshot();
+            let load = shared.state.loading.clone().unwrap();
+            assert_eq!(load.label, "My mosaic Rain mass: placing the radars");
+            let want = shared.want();
+            mosaic::Layout::mine_grid(&shared.state.mosaic, &station, want, &shared.sites).unwrap()
+        };
+        // The aborted set poller's last words: a frame of the set and its
+        // "caught up". Neither is Rain mass's; the placeholder and the
+        // load stay.
+        run(vec![
+            sweep(&lowest, t + five),
+            providers::Event::Current {
+                site: mosaic::STATION.into(),
+            },
+        ]);
+        {
+            let mut shared = shared.lock().unwrap();
+            assert_eq!(shared.state.frame.id, "mymosaic-loading");
+            assert_eq!(shared.state.connection.status, ConnectionStatus::Loading);
+            shared.snapshot();
+            let load = shared.state.loading.clone().unwrap();
+            assert_eq!(load.stage, loading::Stage::First);
+        }
+        // Rain mass's fill: its build, its newest frame, one frame back.
+        let building = |started: bool| providers::Event::Building {
+            site: mosaic::STATION.into(),
+            variant: vil.variant(),
+            time: "08:20Z".into(),
+            building: started,
+        };
+        run(vec![
+            building(true),
+            building(false),
+            sweep(&vil, t),
+            providers::Event::Backfill {
+                site: mosaic::STATION.into(),
+                sweep: build(&vil, t - five),
+                provenance: "test".into(),
+            },
+        ]);
+        let mut shared = shared.lock().unwrap();
+        let newest = format!("mymosaic-{}-{}", compact(t), vil.variant());
+        assert_eq!(shared.state.frame.id, newest, "on screen");
+        assert_eq!(shared.state.frame.product, products::VIL);
+        assert_eq!(shared.state.connection.status, ConnectionStatus::Ok);
+        let ids: Vec<&str> = shared
+            .timeline
+            .stored
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                format!("mymosaic-{}-{}", compact(t - five), vil.variant()).as_str(),
+                newest.as_str()
+            ]
+        );
+        shared.snapshot();
+        let load = shared.state.loading.clone();
+        assert!(
+            load.as_ref().is_none_or(
+                |l| l.stage != loading::Stage::First && !l.label.contains("Lowest beam")
+            ),
+            "{load:?}"
+        );
+        // Reopened (a reselect, a restart), the ring it was catalogued in
+        // is the one shown.
+        let variant = shared.variant();
+        let listed = shared
+            .catalog
+            .list_variant(mosaic::STATION, &variant)
+            .unwrap();
+        assert_eq!(listed.len(), 2);
     }
     #[test]
     fn catalogued_frames_keep_stable_names_and_name_them_in_the_timeline() {

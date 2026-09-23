@@ -736,7 +736,23 @@ impl Radar {
 #[derive(Clone)]
 pub enum Job {
     Mine,
-    Grid { station: Box<Station>, want: Want },
+    /// `mine`: My mosaic's chosen set's `Set::variant` when the product is
+    /// My mosaic's own (S37); `None` for a composite's. It joins the ring's
+    /// name (`mine_ring`), since the layout's own `set` is the flattened one.
+    Grid {
+        station: Box<Station>,
+        want: Want,
+        mine: Option<String>,
+    },
+}
+
+/// The catalog ring, and the frame ids' last parts, of My mosaic's own
+/// product (S37): the chosen set's variant, then the product's, so each set
+/// keeps its own rain mass. `main.rs` names the ring it shows with this, the
+/// layout (`Layout::variant`) the frames it builds (S45: they differed, and
+/// every frame of the load was dropped).
+pub fn mine_ring(set: &str, want: Want) -> String {
+    format!("{set}-{}", want.variant())
 }
 
 /// How a frame's texels are chosen.
@@ -812,6 +828,7 @@ impl Layout {
         let job = Job::Grid {
             station: Box::new(station.clone()),
             want,
+            mine: None,
         };
         Layout::place(&set, sites, Some(bbox), job)
     }
@@ -837,6 +854,7 @@ impl Layout {
         let job = Job::Grid {
             station: Box::new(station.clone()),
             want,
+            mine: Some(set.variant()),
         };
         Layout::place(&flat, sites, None, job)
     }
@@ -985,10 +1003,16 @@ impl Layout {
     }
 
     /// The last part of the frame ids and the catalog ring: the set's, or a
-    /// composite product's own (`cmax`, `lowb`, `cappi2000`, …).
+    /// composite product's own (`cmax`, `lowb`, `cappi2000`, …), or My
+    /// mosaic's own product's (`mine_ring`: `m1a2b3c4d-vil`).
     pub fn variant(&self) -> String {
         match &self.job {
             Job::Mine => self.set.variant(),
+            Job::Grid {
+                want,
+                mine: Some(set),
+                ..
+            } => mine_ring(set, *want),
             Job::Grid { want, .. } => want.variant(),
         }
     }
@@ -1737,7 +1761,7 @@ fn height_key(miss_m: f64, d: usize) -> u64 {
 /// A built frame: the grid, and what names and credits it.
 pub struct Built {
     pub grid: Grid,
-    /// `Set::variant`, the frame id's last part.
+    /// `Layout::variant`, the frame id's end (`products::variant_of`).
     pub variant: String,
     /// `frame.product` and `productName` (`Set::product`).
     pub product: &'static str,

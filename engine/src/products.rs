@@ -464,6 +464,9 @@ impl Want {
 /// `loading` is a product too (S24a review #3): one a later engine makes,
 /// so an engine rolled back over that engine's cache keeps those frames in
 /// their own ring instead of showing them as its lowest scan.
+///
+/// My mosaic's own product (S37, S45) is the last two parts, its set's and
+/// the product's (`mymosaic-20260923T082000Z-mfd65208d-vil`: `mfd65208d-vil`).
 pub fn variant_of(frame_id: &str) -> &str {
     let last = frame_id.rsplit('-').next().unwrap_or_default();
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
@@ -478,7 +481,22 @@ pub fn variant_of(frame_id: &str) -> &str {
         || last.strip_prefix('a').is_some_and(digits)
         // S25: a My mosaic set (`mosaic::Set::variant`).
         || last.strip_prefix('m').is_some_and(hex8);
-    if product { last } else { "e0" }
+    if !product {
+        return "e0";
+    }
+    // S45: My mosaic's own product (S37) is its set's ring and the
+    // product's, `m1a2b3c4d-vil` (`mosaic::mine_ring`): both parts name it.
+    let head = &frame_id[..frame_id.len() - last.len()];
+    let before = head
+        .strip_suffix('-')
+        .and_then(|h| h.rsplit('-').next())
+        .filter(|b| {
+            b.strip_prefix('m').is_some_and(hex8) && !last.strip_prefix('m').is_some_and(hex8)
+        });
+    match before {
+        Some(set) => &frame_id[frame_id.len() - last.len() - set.len() - 1..],
+        None => last,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1427,6 +1445,17 @@ mod tests {
         );
         assert_eq!(Want::LowestBeam.variant(), "lowb");
         assert_eq!(variant_of("nordic-20260915T1200Z-lowb"), "lowb");
+        // S45: My mosaic's own product names its set's ring and itself.
+        assert_eq!(
+            variant_of("mymosaic-20260923T082000Z-mfd65208d-vil"),
+            "mfd65208d-vil"
+        );
+        assert_eq!(
+            variant_of("mymosaic-20260923T082000Z-mfd65208d"),
+            "mfd65208d"
+        );
+        assert_eq!(variant_of("mymosaic-20260923T082000Z-vil"), "vil");
+        assert_eq!(variant_of("mymosaic-mfd65208d-loading"), "e0");
         let elevations = [0.5, 1.0, 1.5];
         let choice = |id: &str, index| Choice {
             id: id.into(),

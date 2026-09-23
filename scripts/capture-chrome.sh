@@ -14,7 +14,8 @@
 #   - a right press and drag opens the menu and never pans.
 # RUN names the directory for the runtime, cache, state and harness
 # (default ~/Projects/omastorm-S46-run/chrome); the PNGs go to review/s46/.
-# ONLY="themes sizes popover live wheel" picks sections (default: all).
+# ONLY="themes sizes popover live picker wheel" picks sections (default: all).
+# S48 adds the picker section: its PNGs go to review/s48/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 run=${RUN:-$HOME/Projects/omastorm-S46-run/chrome}
@@ -43,6 +44,9 @@ harness_qml=$(TMPDIR="$run" scripts/capture-harness.sh --input)
 harness=$(dirname "$harness_qml")
 perl -0pi -e 's/(\n        function click\(x: real, y: real\): void \{[^\n]*\n)/$1        function rpress(x: real, y: real): void { inputEvents.mousePress(surface, x, y, Qt.RightButton, Qt.NoModifier, -1); }\n        function rmove(x: real, y: real): void { inputEvents.mouseMove(surface, x, y, -1, Qt.RightButton, Qt.NoModifier); }\n        function rrelease(x: real, y: real): void { inputEvents.mouseRelease(surface, x, y, Qt.RightButton, Qt.NoModifier, -1); }\n/' "$harness/RadarWindow.qml"
 grep -q 'function rpress' "$harness/RadarWindow.qml"
+# S48: the picker's centred fallback (no chip), on demand.
+perl -0pi -e 's/(\n        function rpress\(x: real, y: real\): void \{[^\n]*\n)/$1        function unanchor(): void { picker.anchorItem = null; }\n/' "$harness/RadarWindow.qml"
+grep -q 'function unanchor' "$harness/RadarWindow.qml"
 
 call() { quickshell ipc --pid "$pid" call "$@"; }
 field() { jq -r "$1"; }
@@ -150,6 +154,89 @@ echo "LIVE text size: $before -> $after (file replaced, window kept open)"
 [[ $after == 16 ]] || { echo "the window did not follow base-size" >&2; exit 1; }
 grab live-16
 stop
+fi
+
+# ---- S48: the picker's list scrolls ---------------------------------------------
+# Every match in a list as tall as the window lets it: a real wheel over the
+# list moves it and never the map, the keys keep the selection in view,
+# typing goes back to the top, the card shrinks to few rows, and the load
+# logs no IPC warning. PNGs in review/s48/.
+out48=$PWD/review/s48
+mkdir -p "$out48"
+grab48() { rm -f "$out48/$1.png"; call input grab "$out48/$1.png"; for _ in {1..50}; do [[ -s $out48/$1.png ]] && break; sleep .1; done; [[ -s $out48/$1.png ]] || { echo "no capture $1" >&2; exit 1; }; echo "captured review/s48/$1.png"; }
+pfail=0
+check48() { if [[ $2 == true ]]; then echo "PICKER $1: PASS"; else echo "PICKER $1: FAIL ($3)"; pfail=1; fi; }
+pview() { call picker view; }
+# picker_run <theme> <base> [width height]
+picker_run() {
+  local theme=$1 base=$2 w=${3:-1100} h=${4:-780} tag v a b lx ly
+  tag=$theme-$base
+  [[ $w == 1100 && $h == 780 ]] || tag+="-${w}x$h"
+  start "$theme" "$base" radar "$w" "$h"
+  call chrome status > /dev/null || { echo "PICKER $tag: the window never answered" >&2; tail -5 "$run/window-$theme-$base.log" >&2; exit 1; }
+  local ipc; ipc=$(grep -c 'IpcHandler' "$run/window-$theme-$base.log" || true)
+  check48 "$tag no IPC warning on load" "$([[ $ipc == 0 ]] && echo true || echo false)" "$(grep IpcHandler "$run/window-$theme-$base.log" | head -2)"
+  call picker open ""; sleep .4
+  v=$(pview); echo "PICKER $tag open: $v"
+  check48 "$tag lists every match ($(jq -r .footer <<< "$v"))" "$(call picker matches | jq --argjson t "$(call picker status | jq .total)" 'length == $t and $t > 4')" "$(call picker status)"
+  check48 "$tag card ends 6 px above the window's bottom or earlier" "$(jq '.card.y + .card.h <= .window - 6' <<< "$v")" "$v"
+  check48 "$tag list overflows and is window-tall" "$(jq --argjson h "$h" '.overflow and (.card.y + .card.h >= .window - 8)' <<< "$v")" "$v"
+  # The wheel over the list, a notch at a time, to mid-way.
+  read -r lx ly < <(centre pickerList)
+  local maxy s0 s1 y0 y1; maxy=$(jq '.contentHeight - .height' <<< "$v")
+  s0=$(span); y0=$(pview | jq .contentY)
+  for _ in {1..12}; do
+    [[ $(pview | jq --argjson m "$maxy" '.contentY >= $m / 2') == true ]] && break
+    call input wheel "$lx" "$ly" -120; sleep .15
+  done
+  s1=$(span); y1=$(pview | jq .contentY)
+  check48 "$tag wheel over the list scrolls it ($y0 -> $y1 of $maxy), span $s0 -> $s1" "$([[ $s0 == "$s1" && $y1 -gt $y0 ]] && echo true || echo false)" ""
+  grab48 "$tag-scrolled"
+  call input wheel "$lx" "$ly" 120; sleep .15
+  check48 "$tag wheel up scrolls back" "$(pview | jq --argjson y "$y1" '.contentY < $y')" "$(pview)"
+  # Keys keep the selection in view.
+  local k
+  for k in End PageUp PageUp Home PageDown PageDown Down Down Down End Up; do
+    call input key "$k"; sleep .08
+    v=$(pview)
+    [[ $(jq .selectedVisible <<< "$v") == true ]] || { check48 "$tag key $k keeps the selection in view" false "$v"; break; }
+  done
+  v=$(pview)
+  check48 "$tag keys End/PageUp/Home/PageDown/Down/Up keep the selection in view (last $v)" "$(jq '.selectedVisible and .selected > 0' <<< "$v")" "$v"
+  call input key Home; sleep .08
+  check48 "$tag Home goes to the top" "$(pview | jq '.selected == 0 and .contentY == 0')" "$(pview)"
+  call input key End; sleep .1
+  # Typing filters and goes back to the top.
+  call input text "no"; sleep .3
+  v=$(pview); echo "PICKER $tag filtered 'no': $v"
+  check48 "$tag typing resets to the top, footer '$(jq -r .footer <<< "$v")'" "$(jq '.contentY == 0 and .selected == 0 and (.footer | test("^[0-9]+ of [0-9]+$"))' <<< "$v")" "$v"
+  grab48 "$tag-filtered"
+  # Few rows: the card shrinks to them.
+  call picker open vara; sleep .3
+  v=$(pview)
+  check48 "$tag few rows shrink the card" "$(jq '(.overflow | not) and .height == .contentHeight' <<< "$v")" "$v"
+  if [[ $base == 12 && $w == 1100 ]]; then grab48 "$tag-few"; fi
+  call picker close
+  # The centred fallback (no chip) takes the same room from its own top.
+  if [[ $theme == dark ]]; then
+    call input unanchor; call picker open ""; sleep .4
+    v=$(pview); echo "PICKER $tag centred: $v"
+    check48 "$tag centred fallback: window-tall, 6 px margin, scrolls" "$(jq '.overflow and (.card.y + .card.h <= .window - 6) and (.card.y + .card.h >= .window - 8)' <<< "$v")" "$v"
+    read -r lx ly < <(centre pickerList)
+    s0=$(span); call input wheel "$lx" "$ly" -240; sleep .2; s1=$(span)
+    check48 "$tag centred fallback wheel" "$(pview | jq --arg a "$s0" --arg b "$s1" '.contentY > 0 and $a == $b')" "$(pview)"
+    grab48 "$tag-centred"
+    call picker close
+  fi
+  stop
+}
+if want picker; then
+  for theme in dark light; do for base in 12 16; do picker_run "$theme" "$base"; done; done
+  # The compact window (under 560 px wide), and a short one.
+  picker_run dark 12 520 700
+  picker_run dark 16 1100 480
+  if (( pfail )); then echo "S48 picker checks: FAIL" >&2; exit 1; fi
+  echo "S48 picker checks: PASS"
 fi
 
 # ---- the wheel over every overlay ----------------------------------------------

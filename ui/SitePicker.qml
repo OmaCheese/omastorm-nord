@@ -97,12 +97,12 @@ Item {
         // S48: the top stays put (under the chip, or at cardTop) and the
         // list takes the room down to 6 px above the window's bottom; only
         // when even one row does not fit does the card move up.
-        readonly property real top: anchored ? Math.max(6, anchor.y + 6) : Math.max(20, picker.cardTop)
+        readonly property real topEdge: anchored ? Math.max(6, anchor.y + 6) : Math.max(20, picker.cardTop)
         // Everything on the card but the list: margins, input row, hairline,
         // footer and the three gaps between them.
         readonly property real chrome: 2 * column.anchors.margins + inputRow.implicitHeight + 1 + footer.implicitHeight + 3 * column.spacing
-        readonly property real listRoom: Math.max(picker.rowHeight, picker.height - 6 - top - chrome)
-        y: Math.round(Math.max(6, Math.min(top, picker.height - height - 6)))
+        readonly property real listRoom: Math.max(picker.rowHeight, picker.height - 6 - topEdge - chrome)
+        y: Math.round(Math.max(6, Math.min(topEdge, picker.height - height - 6)))
         height: column.implicitHeight + 2 * column.anchors.margins
         color: Qt.alpha(picker.theme.background, .95)
         border.width: 1

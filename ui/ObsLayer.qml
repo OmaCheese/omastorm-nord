@@ -39,6 +39,15 @@ Item {
     property bool wind: false
     property var theme
     property bool compact: false
+    /// S46: the theme's type scale (a fallback for a bare host).
+    readonly property var sizes: theme && theme.size ? theme.size : ({small: 10, caption: 11, body: 12, label: 13, title: 14, k: 1})
+    /// S46: a click on the legend asks the host to enlarge it (legend
+    /// zoom); the host says whether it is enlarged.
+    property bool legendZoomed: false
+    signal legendClicked()
+    /// The legend's box and the hover card, for the host's wheel guard.
+    readonly property Item legendItem: legendBox
+    readonly property Item tipItem: tip
     /// The scale and the wind key; off, only the credit line shows.
     property bool showLegend: true
     /// Room kept free at the bottom right for the map credit.
@@ -344,7 +353,7 @@ Item {
                     text: mark.drawTemp ? stationLayer.degrees(mark.s.tempC) : ""
                     color: stationLayer.inkOn(parent.fill)
                     font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
-                    font.pixelSize: stationLayer.compact ? 10 : 11
+                    font.pixelSize: stationLayer.compact ? stationLayer.sizes.small : stationLayer.sizes.caption
                     font.bold: true
                 }
             }
@@ -412,7 +421,7 @@ Item {
                     text: modelData
                     color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
                     font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
-                    font.pixelSize: 11
+                    font.pixelSize: stationLayer.sizes.caption
                     font.bold: index === 0
                     opacity: index === 1 ? .7 : 1
                 }
@@ -445,17 +454,34 @@ Item {
         anchors.bottomMargin: stationLayer.creditHeight
         width: legendColumn.implicitWidth + 16
         height: legendColumn.implicitHeight + 10
+        // S46: twice the size while zoomed, grown from the corner it sits
+        // in, over everything on the map; the host shrinks it again.
+        transformOrigin: Item.BottomRight
+        scale: stationLayer.legendZoomed ? 2 : 1
+        border.width: stationLayer.legendZoomed ? .5 : 0
+        border.color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
+        TapHandler { onTapped: stationLayer.legendClicked() }
         // Review N4: under the stations, so it never hides one; S43: over
         // the grid's arrows, which cover the whole map.
-        z: .5
+        z: stationLayer.legendZoomed ? 20 : .5
         color: Qt.alpha(stationLayer.theme ? stationLayer.theme.background : "#1a1b26", .8)
         Column {
             id: legendColumn
             x: 8; y: 5
             spacing: 4
+            // S46: the scale's name and unit, on the enlarged card.
+            Text {
+                visible: stationLayer.legendZoomed && stationLayer.showLegend
+                text: [stationLayer.temp ? "TEMPERATURE °C" : "", stationLayer.wind ? "WIND m/s" : ""].filter(x => x).join(" · ")
+                color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
+                font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
+                font.pixelSize: stationLayer.sizes.small
+                font.bold: true
+            }
             Item {
                 visible: stationLayer.temp && stationLayer.showLegend
-                width: 170; height: 24
+                // S46: wide and tall enough for the ticks at any text size.
+                width: Math.round(170 * Math.max(1, stationLayer.sizes.k)); height: 13 + Math.ceil(stationLayer.sizes.small * 1.3)
                 // Review S3: with the grid's field on, the ramp is drawn as
                 // the field is, at its opacity over the theme's background.
                 Rectangle {
@@ -492,7 +518,7 @@ Item {
                         text: stationLayer.degrees(modelData)
                         color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
                         font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
-                        font.pixelSize: 9
+                        font.pixelSize: stationLayer.sizes.small
                         opacity: .8
                     }
                 }
@@ -503,14 +529,14 @@ Item {
                 Text {
                     text: "→"
                     color: stationLayer.arrowInk
-                    font.pixelSize: 12
+                    font.pixelSize: stationLayer.sizes.body
                     font.bold: true
                 }
                 Text {
                     text: "wind blows to · 7 (12) = m/s (gust) · ○ calm"
                     color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
                     font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
-                    font.pixelSize: 9
+                    font.pixelSize: stationLayer.sizes.small
                     opacity: .8
                     anchors.verticalCenter: parent.verticalCenter
                 }
@@ -562,7 +588,7 @@ Item {
                 text: stationLayer.credit
                 color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
                 font.family: stationLayer.theme ? stationLayer.theme.font : "monospace"
-                font.pixelSize: 9
+                font.pixelSize: stationLayer.sizes.small
                 opacity: .6
             }
         }

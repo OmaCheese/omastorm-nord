@@ -26,6 +26,8 @@ Item {
     property bool on: false
     property var theme
     property bool compact: false
+    /// S46: the theme's type scale (the window's; a fallback for a bare host).
+    readonly property var sizes: theme && theme.size ? theme.size : ({small: 10, caption: 11, body: 12, label: 13, title: 14, k: 1})
     /// The frame on screen (for its scanTime) and whether it is the live one.
     property var frame: null
     property bool live: true
@@ -243,9 +245,22 @@ Item {
     property bool creditInKey: false
     /// Where the key sits: top left, below the map's north mark.
     property real keyTop: 34
+    /// S46: a click on the key asks the host to enlarge it (legend zoom);
+    /// the host says whether it is enlarged.
+    property bool keyZoomed: false
+    signal keyClicked()
+    /// The key's box in this layer, for the host's wheel guard.
+    readonly property Item keyItem: key
     Rectangle {
         id: key
         visible: root.showKey && root.on
+        // Twice the size while zoomed, grown from its top-left corner.
+        transformOrigin: Item.TopLeft
+        scale: root.keyZoomed ? 2 : 1
+        z: root.keyZoomed ? 20 : 0
+        border.width: root.keyZoomed ? .5 : 0
+        border.color: root.theme ? root.theme.foreground : "#a9b1d6"
+        TapHandler { onTapped: root.keyClicked() }
         anchors.left: parent.left
         anchors.top: parent.top
         anchors.leftMargin: 10
@@ -262,7 +277,7 @@ Item {
                 text: "NORDLIS STRIKES"
                 color: root.theme ? root.theme.foreground : "#a9b1d6"
                 font.family: root.theme ? root.theme.font : "monospace"
-                font.pixelSize: 9
+                font.pixelSize: root.sizes.small
                 opacity: .75
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -282,7 +297,7 @@ Item {
                 text: "ground " + root.shownCounts[0]
                 color: root.theme ? root.theme.foreground : "#a9b1d6"
                 font.family: root.theme ? root.theme.font : "monospace"
-                font.pixelSize: 9
+                font.pixelSize: root.sizes.small
                 anchors.verticalCenter: parent.verticalCenter
             }
             Canvas {
@@ -298,7 +313,7 @@ Item {
                 text: "cloud " + root.shownCounts[1]
                 color: root.theme ? root.theme.foreground : "#a9b1d6"
                 font.family: root.theme ? root.theme.font : "monospace"
-                font.pixelSize: 9
+                font.pixelSize: root.sizes.small
                 anchors.verticalCenter: parent.verticalCenter
             }
             // New to old over the trail.
@@ -319,7 +334,7 @@ Item {
                 text: Math.round(root.trailMs / 60000) + " min" + (root.creditInKey ? " · " + root.credit : "")
                 color: root.theme ? root.theme.foreground : "#a9b1d6"
                 font.family: root.theme ? root.theme.font : "monospace"
-                font.pixelSize: 9
+                font.pixelSize: root.sizes.small
                 opacity: .75
                 anchors.verticalCenter: parent.verticalCenter
             }

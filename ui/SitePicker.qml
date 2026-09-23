@@ -18,6 +18,12 @@ Item {
     property string homeSite: ""      // the configured home, marked in its row
     property bool compact: false
     property real cardTop: 20         // where the card's top edge sits
+    // S46: the chip that opens the picker (the header's site name). The
+    // card drops down under it like a menu, left edges aligned, kept
+    // inside the window; with none (or hidden) it sits centred at cardTop.
+    property Item anchorItem: null
+    /// The card, for the host's wheel guard, checks and captures.
+    readonly property Item cardItem: card
     property bool open: false
     property alias query: field.text
     // Whether the field holds the keyboard; closed, it must not.
@@ -59,9 +65,15 @@ Item {
     }
     Rectangle {
         id: card
-        width: Math.min(520, picker.width - 40)
-        x: Math.round((picker.width - width) / 2)
-        y: Math.round(Math.max(20, Math.min(picker.cardTop, picker.height - height - 20)))
+        width: Math.min(Math.round(520 * Math.max(1, picker.theme.size.k)), picker.width - 12)
+        // Where the chip's bottom-left corner is, measured again at each
+        // open and whenever the window changes size.
+        readonly property point anchor: picker.open && picker.anchorItem && picker.anchorItem.visible && picker.width > 0 && picker.height > 0
+            ? picker.anchorItem.mapToItem(picker, 0, picker.anchorItem.height) : Qt.point(NaN, NaN)
+        readonly property bool anchored: !isNaN(anchor.x)
+        x: Math.round(anchored ? Math.max(6, Math.min(picker.width - width - 6, anchor.x)) : (picker.width - width) / 2)
+        y: Math.round(anchored ? Math.max(6, Math.min(picker.height - height - 6, anchor.y + 6))
+            : Math.max(20, Math.min(picker.cardTop, picker.height - height - 20)))
         height: column.implicitHeight + 28
         color: Qt.alpha(picker.theme.background, .95)
         border.width: 1
@@ -154,7 +166,7 @@ Item {
                             anchors.leftMargin: 12
                             anchors.rightMargin: 12
                             spacing: 12
-                            Word { text: Sites.mark(row.modelData.site.id, row.modelData.idHits, picker.theme.accent); textFormat: Text.StyledText; font.bold: true; color: row.ink; Layout.preferredWidth: 52 }
+                            Word { text: Sites.mark(row.modelData.site.id, row.modelData.idHits, picker.theme.accent); textFormat: Text.StyledText; font.bold: true; color: row.ink; Layout.preferredWidth: Math.round(52 * Math.max(1, picker.theme.size.k)) }
                             Word { text: Sites.mark(row.modelData.place, row.modelData.placeHits, picker.theme.accent); textFormat: Text.StyledText; color: row.ink; opacity: .9; Layout.fillWidth: true }
                             Word { text: [row.modelData.site.id === picker.homeSite ? "home" : "", row.modelData.tag, row.modelData.where].filter(t => t).join(" · "); font.pixelSize: picker.theme.size.small; color: row.ink; opacity: .6 }
                         }

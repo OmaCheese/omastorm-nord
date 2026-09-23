@@ -460,7 +460,7 @@ Item {
         scale: stationLayer.legendZoomed ? 2 : 1
         border.width: stationLayer.legendZoomed ? .5 : 0
         border.color: stationLayer.theme ? stationLayer.theme.foreground : "#a9b1d6"
-        TapHandler { onTapped: stationLayer.legendClicked() }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: stationLayer.legendClicked() }
         // Review N4: under the stations, so it never hides one; S43: over
         // the grid's arrows, which cover the whole map.
         z: stationLayer.legendZoomed ? 20 : .5

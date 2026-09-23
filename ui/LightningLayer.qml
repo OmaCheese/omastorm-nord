@@ -260,7 +260,7 @@ Item {
         z: root.keyZoomed ? 20 : 0
         border.width: root.keyZoomed ? .5 : 0
         border.color: root.theme ? root.theme.foreground : "#a9b1d6"
-        TapHandler { onTapped: root.keyClicked() }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.keyClicked() }
         anchors.left: parent.left
         anchors.top: parent.top
         anchors.leftMargin: 10

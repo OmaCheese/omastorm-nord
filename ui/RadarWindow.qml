@@ -154,12 +154,16 @@ Item {
     // only if it clears the previous shown number and the last one. This keeps
     // spacing even at any width and band count instead of hiding by parity.
     TextMetrics { id: legendMetrics; font.family: app.theme.font; font.pixelSize: app.theme.size.small; text: "0" }
-    readonly property var legendShown: {
+    readonly property var legendShown: legendFit(legendRow.width, legendMetrics.advanceWidth, 8)
+    readonly property var legendZoomShown: legendZoom === "radar" ? legendFit(zoomRow.width, zoomMetrics.advanceWidth, 16) : []
+    // S46: the same fit for any strip width and digit width (the enlarged
+    // legend's too).
+    function legendFit(width, advance, gap) {
         var n = bands, shown = [];
         if (!n) return shown;
-        var column = legendRow.width / n, gap = 8, last = (n - 1) * column, cursor = 0;
+        var column = width / n, last = (n - 1) * column, cursor = 0;
         for (var i = 0; i < n - 1; i++) {
-            var x = i * column, right = x + legendLabel(i).length * legendMetrics.advanceWidth + gap;
+            var x = i * column, right = x + legendLabel(i).length * advance + gap;
             shown[i] = x >= cursor && right <= last;
             if (shown[i]) cursor = right;
         }
@@ -250,7 +254,112 @@ Item {
         if (!session && KeyMap.envFloor(Quickshell.env("OMASTORM_WEAK")) === undefined) weakFloor = floor;
     }
     Component.onCompleted: applySettings()
-    readonly property bool overlayOpen: picker.open || locationPicker.open || sheet.open || mosaicPicker.open
+    readonly property bool overlayOpen: picker.open || locationPicker.open || sheet.open || mosaicPicker.open || mapMenu.opened || legendZoom !== ""
+    // S46: legend zoom. Which legend is enlarged: "radar" (the colour scale
+    // under the map), "obs" (temperature and wind), "lightning" (the
+    // strikes' key), "" none. A click on a legend enlarges it; a click
+    // anywhere (on it again or outside) or Escape shrinks it. Not
+    // remembered.
+    property string legendZoom: ""
+    // S46: the wheel over an overlay never zooms the map (the human
+    // 2026-09-23: "scrolling above this box still zooms the map"). One
+    // test for every overlay, asked by the map's own wheel handler: while
+    // a scrimmed overlay is open (pickers, sheet, LAYERS, menus, an
+    // enlarged legend) the scrim covers the map and no wheel zooms; else a
+    // wheel over a floating card or key on the map (below) is the card's.
+    readonly property bool mapCovered: picker.open || locationPicker.open || sheet.open || layersPanel.opened
+        || treatmentMenu.opened || productMenu.opened || mapMenu.opened || legendZoom !== ""
+        || (mosaicPicker.open && !mosaicPicker.docked)
+    function wheelSinks() {
+        return [helpChip, scaleBar, ringCaptionBox, loadingCard, mapCredit, northMark,
+                obsLayer.legendItem, obsLayer.tipItem, lightningLayer.keyItem, mosaicPicker];
+    }
+    function wheelBlockedAt(mx, my) {
+        if (mapCovered) return true;
+        for (var it of wheelSinks()) {
+            if (!it || !it.visible || it.width <= 0 || it.height <= 0) continue;
+            var p = map.mapToItem(it, mx, my);   // through any scale (an enlarged legend)
+            if (p.x >= 0 && p.y >= 0 && p.x < it.width && p.y < it.height) return true;
+        }
+        return false;
+    }
+    // S46: the right-click menu's regions: every composite the picker lists
+    // (Sweden, Nordic, Iberia), My mosaic, the single radars shown lately
+    // (this window's, newest first, not remembered), and More… (the picker).
+    property var recentSites: []
+    onSiteIdChanged: {
+        var s = engine.sites.find(x => x.id === siteId);
+        if (!s || s.kind === "grid" || s.provider === "mosaic") return;
+        recentSites = [siteId].concat(recentSites.filter(id => id !== siteId)).slice(0, 4);
+    }
+    function keyNote(action) { return (bindings[action] || []).map(KeyMap.pretty).join(" "); }
+    readonly property var mapMenuRows: {
+        if (!mapMenu.opened) return [];
+        var rows = [{kind: "header", label: "REGION"}];
+        var composites = engine.sites.filter(s => s.kind === "grid" && s.provider !== "mosaic");
+        for (let s of composites)
+            rows.push({label: (s.name || s.id).toUpperCase(), note: "COMPOSITE", current: s.id === siteId, run: () => app.choose(s)});
+        var mine = engine.sites.find(s => s.provider === "mosaic");
+        if (mine) rows.push({label: "MY MOSAIC", note: mosaicSet && mosaicSet.sites.length ? mosaicSet.sites.length + " RADARS" : "", current: mine.id === siteId, run: () => app.choose(mine)});
+        for (let id of recentSites) {
+            let r = engine.sites.find(x => x.id === id);
+            if (r) rows.push({label: (r.name || r.id).toUpperCase(), note: r.country || "", current: r.id === siteId, run: () => app.choose(r)});
+        }
+        rows.push({label: "MORE…", key: keyNote("search"), run: () => picker.show("")});
+        rows.push({kind: "sep"});
+        rows.push({label: "PRODUCT · " + (productLabel || "—"), enabled: productRows.length > 0,
+                   sub: productRows.map(r => ({label: r.label, note: r.note,
+                                               current: !!state && !!state.product && state.product.id === r.product && state.product.elevationIndex === r.index,
+                                               run: () => app.chooseProduct(r)}))});
+        rows.push({kind: "header", label: "LAYERS"});
+        var l = store.layers;
+        for (let row of [["radar", "RADAR"], ["temp", "TEMPERATURE"], ["wind", "WIND"], ["lightning", "LIGHTNING"]])
+            rows.push({label: row[1], checked: !!l[row[0]], run: () => app.store.layers.toggle(row[0])});
+        rows.push({label: "FROM · " + String(l.source).toUpperCase(),
+                   sub: [["stations", "STATIONS"], ["grid", "GRID"], ["both", "BOTH"]].map(row => ({
+                       label: row[1], radio: true, checked: l.source === row[0], run: () => app.store.layers.setSource(row[0])}))});
+        rows.push({kind: "sep"});
+        rows.push({label: "LOCATION…", key: keyNote("home"), run: () => locationPicker.show("")});
+        rows.push({label: "KEYS", key: keyNote("help"), run: () => sheet.show()});
+        // S47's universal reset, once it is merged; hidden before.
+        if (typeof app.resetAll === "function") {
+            rows.push({kind: "sep"});
+            rows.push({label: "RESET (RELOAD EVERYTHING)", run: () => app.resetAll()});
+        }
+        return rows;
+    }
+    function openMapMenu(mx, my) {
+        treatmentMenu.close();
+        productMenu.close();
+        var p = map.mapToItem(mapMenu, mx, my);
+        mapMenu.show(p.x, p.y);
+    }
+    // S46: the chrome for checks and captures: the right-click menu, the
+    // legend zoom, and where each overlay is (surface pixels).
+    // quickshell ipc --pid <pid> call chrome menu 300 200
+    IpcHandler {
+        target: "chrome"
+        function menu(x: real, y: real): void { app.openMapMenu(x, y); }
+        function closeMenu(): void { mapMenu.close(); }
+        function legend(name: string): void { app.legendZoom = name; }
+        function rect(name: string): string {
+            var it = ({map: map, picker: picker.cardItem, chip: siteTitle, menu: mapMenu.cardItem, submenu: mapMenu.subItem,
+                       layers: layersPanel, sheet: sheet, location: locationPicker, mosaic: mosaicPicker, treatment: treatmentMenu, product: productMenu,
+                       help: helpChip, scale: scaleBar, rings: ringCaptionBox, loading: loadingCard, credit: mapCredit, north: northMark,
+                       obsLegend: obsLayer.legendItem, obsTip: obsLayer.tipItem, lightningKey: lightningLayer.keyItem,
+                       legend: legend, legendCard: legendZoomCard})[name];
+            if (!it) return "";
+            var p = it.mapToItem(surface, 0, 0), q = it.mapToItem(surface, it.width, it.height);
+            return JSON.stringify({x: Math.round(p.x), y: Math.round(p.y), w: Math.round(q.x - p.x), h: Math.round(q.y - p.y), visible: it.visible});
+        }
+        function status(): string {
+            return JSON.stringify({menu: mapMenu.opened, rows: app.mapMenuRows.map(r => r.kind || (r.label + (r.checked === true ? " [x]" : r.checked === false ? " [ ]" : "") + (r.current ? " *" : "") + (r.sub ? " >" : ""))),
+                                   cursor: mapMenu.cursor, sub: mapMenu.subRow, inSub: mapMenu.inSub, legendZoom: app.legendZoom,
+                                   span: Math.round(map.span * 1000) / 1000, lat: Math.round(map.centerLat * 10000) / 10000, lon: Math.round(map.centerLon * 10000) / 10000,
+                                   covered: app.mapCovered, base: app.theme.baseSize, size: app.theme.size, picker: picker.open, recent: app.recentSites,
+                                   resetAll: typeof app.resetAll === "function"});
+        }
+    }
     // My mosaic (S25): whether it is the station shown, and the chosen
     // radars' circles for the map (the checklist's while it is open).
     readonly property bool mosaicShown: !!engine.site && engine.site.provider === "mosaic"
@@ -1097,6 +1206,9 @@ Item {
                         app.store.rememberView(lat, lon, map.span);
                     }
                     onResetRequested: app.resetView()
+                    // S46: the right-click menu, and the one wheel guard.
+                    onContextRequested: (x, y) => app.openMapMenu(x, y)
+                    wheelBlocked: (x, y) => app.wheelBlockedAt(x, y)
                     Component.onCompleted: app.applyView()
                     // The map asks for tiles when its camera settles and the
                     // engine answers this window alone, tile by tile.
@@ -1120,6 +1232,8 @@ Item {
                             || app.scan.id === app.newestComplete.id)
                     clockMs: Number(Quickshell.env("OMASTORM_LIGHTNING_CLOCK_MS") || 0)
                     creditInKey: win.compact
+                    keyZoomed: app.legendZoom === "lightning"
+                    onKeyClicked: app.legendZoom = "lightning"
                 }
                 // S42: the weather stations over the radar.
                 ObsLayer {
@@ -1135,6 +1249,8 @@ Item {
                     theme: app.theme
                     compact: win.compact
                     creditHeight: 30
+                    legendZoomed: app.legendZoom === "obs"
+                    onLegendClicked: app.legendZoom = "obs"
                 }
                 // Place-follow (crosshair) stays out of the release until GPS
                 // is wired; keep the mock chip for captures via OMASTORM_MOCK_GPS.
@@ -1151,6 +1267,7 @@ Item {
                     MouseArea { id: followArea; anchors.fill: parent; hoverEnabled: true }
                 }
                 LabelText {
+                    id: northMark
                     anchors.top: parent.top; anchors.left: parent.left; anchors.margins: 10
                     text: "N ↑"; opacity: .75
                     visible: !!app.state
@@ -1276,6 +1393,7 @@ Item {
                 // OSM ODbL safe harbour: short credit in a map corner. Full
                 // catalogue (NOAA, Natural Earth, GeoNames, …) stays in README.
                 LabelText {
+                    id: mapCredit
                     anchors.bottom: parent.bottom; anchors.right: parent.right; anchors.margins: 12
                     // The grey marks' positions credit their source (S23).
                     text: "© OpenStreetMap" + (engine.referenceSites.length ? " · other radars: EUMETNET" : "")
@@ -1301,6 +1419,9 @@ Item {
                 Layout.fillWidth: true
                 spacing: 4
                 visible: !!app.scan && app.store.layers.radar
+                // S46: a click enlarges it (legend zoom).
+                TapHandler { onTapped: app.legendZoom = "radar" }
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
                 Item {
                     Layout.fillWidth: true
                     implicitHeight: legendRow.implicitHeight
@@ -1563,6 +1684,8 @@ Item {
             homeSite: ""
             compact: win.compact
             cardTop: layout.anchors.margins + mapFrame.y
+            // S46: it drops down under the site name that opens it.
+            anchorItem: siteTitle
             onChosen: site => app.choose(site)
           }
           LocationPicker {
@@ -1608,6 +1731,14 @@ Item {
           Connections {
             target: treatmentMenu
             function onOpenedChanged() { if (!treatmentMenu.opened && mosaicPicker.open) mosaicPicker.takeKeys(); }
+          }
+          Connections {
+            target: mapMenu
+            function onOpenedChanged() { if (!mapMenu.opened && mosaicPicker.open) Qt.callLater(mosaicPicker.takeKeys); }
+          }
+          Connections {
+            target: app
+            function onLegendZoomChanged() { if (app.legendZoom === "" && mosaicPicker.open) mosaicPicker.takeKeys(); }
           }
           MosaicPicker {
             id: mosaicPicker
@@ -1877,6 +2008,90 @@ Item {
                     }
                 }
             }
+          }
+          // S46: an enlarged legend over a clear scrim: any click (on the
+          // legend again or outside it) or Escape shrinks it. The radar's
+          // scale is drawn here as a card over the map's foot; the
+          // temperature/wind legend and the strikes' key grow in place.
+          Item {
+            id: legendZoomLayer
+            anchors.fill: parent
+            visible: app.legendZoom !== ""
+            focus: visible
+            onVisibleChanged: if (visible) forceActiveFocus()
+            Keys.onPressed: event => { if (event.key === Qt.Key_Escape) { app.legendZoom = ""; event.accepted = true; } }
+            MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onPressed: app.legendZoom = "" }
+            TextMetrics { id: zoomMetrics; font.family: app.theme.font; font.pixelSize: app.theme.size.small * 2; text: "0" }
+            Rectangle {
+                id: legendZoomCard
+                visible: app.legendZoom === "radar" && !!app.scan
+                width: Math.min(mapFrame.width - 24, Math.round(760 * app.grow))
+                height: zoomColumn.implicitHeight + 24
+                x: Math.round(layout.x + mapFrame.x + (mapFrame.width - width) / 2)
+                y: Math.round(layout.y + mapFrame.y + mapFrame.height - height - 12)
+                color: Qt.alpha(app.theme.background, .96)
+                border.width: 1
+                border.color: app.theme.foreground
+                ColumnLayout {
+                    id: zoomColumn
+                    x: 12; y: 12
+                    width: parent.width - 24
+                    spacing: 8
+                    RowLayout {
+                        Layout.fillWidth: true
+                        LabelText {
+                            Layout.fillWidth: true
+                            text: app.scan ? app.scan.productName.toUpperCase() : ""
+                            font.pixelSize: app.theme.size.title; font.bold: true; font.letterSpacing: 1
+                        }
+                        LabelText { text: app.scan ? app.scan.units : ""; font.pixelSize: app.theme.size.title; color: app.theme.accent }
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                        implicitHeight: zoomRow.implicitHeight
+                        RowLayout {
+                            id: zoomRow
+                            anchors.left: parent.left; anchors.right: parent.right
+                            spacing: 0
+                            Repeater {
+                                model: app.legendZoom === "radar" && app.scan ? app.scan.palette : []
+                                ColumnLayout {
+                                    required property string modelData
+                                    required property int index
+                                    Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 6
+                                    Rectangle { Layout.fillWidth: true; height: Math.round(16 * app.grow); color: modelData }
+                                    LabelText {
+                                        text: app.legendLabel(index)
+                                        opacity: app.legendZoomShown[index] ? 1 : 0
+                                        font.pixelSize: app.theme.size.small * 2
+                                    }
+                                }
+                            }
+                        }
+                        // The weak-return floor, as on the strip.
+                        Rectangle {
+                            visible: app.floorFraction > 0
+                            height: Math.round(16 * app.grow)
+                            width: Math.round(zoomRow.width * app.floorFraction)
+                            color: Qt.alpha(app.theme.background, .8)
+                            Rectangle { anchors.right: parent.right; width: 2; height: parent.height; color: app.theme.foreground; opacity: .7 }
+                        }
+                    }
+                    LabelText {
+                        Layout.fillWidth: true
+                        visible: app.floorFraction > 0
+                        text: "SHADED: UNDER THE WEAK-RETURN FLOOR, NOT DRAWN (W)"
+                        font.pixelSize: app.theme.size.small; opacity: .6
+                    }
+                }
+            }
+          }
+          // S46: the map's right-click menu, over everything but the sheet.
+          MapMenu {
+            id: mapMenu
+            anchors.fill: parent
+            theme: app.theme
+            rows: app.mapMenuRows
           }
           // The `?` sheet over everything, below the map's top edge.
           KeysSheet {

@@ -1108,7 +1108,11 @@ pub async fn poll_with(cfg: Config, station: Station, events: Sender<Event>, cac
                 if let Some(file) = next {
                     let first = newest.is_none();
                     let handled = if covered(file.valid_ms, &known) {
-                        if first && !send(&events, Event::Current { site: site.clone() }).await {
+                        let current = Event::Current {
+                            site: site.clone(),
+                            variant: cfg.want.variant(),
+                        };
+                        if first && !send(&events, current).await {
                             return;
                         }
                         true

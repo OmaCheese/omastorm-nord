@@ -217,6 +217,13 @@ Item {
         center = { x: Number(lon), y: Number(lat) };
     }
     signal resetRequested()
+    // S46: a right-click on the map asks the host for its menu at that
+    // point (map coordinates). A right press never pans.
+    signal contextRequested(real x, real y)
+    // S46: the host's overlay test, a function (x, y) in map coordinates
+    // that is true while a picker, menu, panel, card or key holds that
+    // point; a wheel there never zooms the map. Null: every wheel zooms.
+    property var wheelBlocked: null
     // The keyboard pan (DESIGN.md, keyboard map): one step is an eighth of
     // the viewport's shorter side, in the given screen direction.
     function pan(dx, dy) {
@@ -1134,9 +1141,10 @@ Item {
         id: pointer
         anchors.fill: parent
         enabled: map.interactive
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         // S39: hover only in pick mode, for the hand over a mark.
         hoverEnabled: map.pickMode
-        cursorShape: pressed && (!map.pickMode || dragging) ? Qt.ClosedHandCursor
+        cursorShape: pressed && !(pressedButtons & Qt.RightButton) && (!map.pickMode || dragging) ? Qt.ClosedHandCursor
             : map.pickMode && hovered !== "" ? Qt.PointingHandCursor : Qt.OpenHandCursor
         property real lastX
         property real lastY
@@ -1148,8 +1156,11 @@ Item {
         property bool doubled: false
         property string hovered: ""
         function hover(id) { if (hovered !== id) { hovered = id; map.radarHovered(id); } }
-        onPressed: mouse => { lastX=mouse.x; lastY=mouse.y; pressX=mouse.x; pressY=mouse.y; dragging=false; doubled=false; }
+        onPressed: mouse => {
+            if (mouse.button === Qt.RightButton) { map.contextRequested(mouse.x, mouse.y); return; }
+            lastX=mouse.x; lastY=mouse.y; pressX=mouse.x; pressY=mouse.y; dragging=false; doubled=false; }
         onPositionChanged: mouse => {
+            if (pressedButtons & Qt.RightButton) return;
             if (map.pickMode) {
                 if (!pressed) { hover(map.radarAt(mouse.x, mouse.y)); return; }
                 // Under clickTravel a press is still a click: the map holds still.
@@ -1163,7 +1174,7 @@ Item {
             }
         }
         onReleased: mouse => {
-            if (!map.pickMode) return;
+            if (mouse.button === Qt.RightButton || !map.pickMode) return;
             var wasDrag = dragging, second = doubled;
             dragging = false; doubled = false;
             if (!wasDrag && !second) {
@@ -1175,6 +1186,7 @@ Item {
         }
         onExited: hover("")
         onWheel: wheel => {
+            if (map.wheelBlocked && map.wheelBlocked(wheel.x, wheel.y)) return;
             // Zoom about the pointer: the ground under it stays put.
             var mx=map.viewCenterX+(wheel.x-width/2)*map.unitsPerPixel;
             var my=map.viewCenterY+(wheel.y-height/2)*map.unitsPerPixel;
@@ -1185,6 +1197,7 @@ Item {
         }
         // In pick mode a double-click on a mark is its click, not a reset.
         onDoubleClicked: mouse => {
+            if (mouse.button === Qt.RightButton) return;
             if (map.pickMode) doubled = true;
             if (!map.pickMode || map.radarAt(mouse.x, mouse.y) === "") map.resetRequested();
         }

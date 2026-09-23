@@ -153,13 +153,17 @@ Item {
     // Which legend numbers fit: the last always shows; each earlier one shows
     // only if it clears the previous shown number and the last one. This keeps
     // spacing even at any width and band count instead of hiding by parity.
-    TextMetrics { id: legendMetrics; font.family: app.theme.font; font.pixelSize: 10; text: "0" }
-    readonly property var legendShown: {
+    TextMetrics { id: legendMetrics; font.family: app.theme.font; font.pixelSize: app.theme.size.small; text: "0" }
+    readonly property var legendShown: legendFit(legendRow.width, legendMetrics.advanceWidth, 8)
+    readonly property var legendZoomShown: legendZoom === "radar" ? legendFit(zoomRow.width, zoomMetrics.advanceWidth, 16) : []
+    // S46: the same fit for any strip width and digit width (the enlarged
+    // legend's too).
+    function legendFit(width, advance, gap) {
         var n = bands, shown = [];
         if (!n) return shown;
-        var column = legendRow.width / n, gap = 8, last = (n - 1) * column, cursor = 0;
+        var column = width / n, last = (n - 1) * column, cursor = 0;
         for (var i = 0; i < n - 1; i++) {
-            var x = i * column, right = x + legendLabel(i).length * legendMetrics.advanceWidth + gap;
+            var x = i * column, right = x + legendLabel(i).length * advance + gap;
             shown[i] = x >= cursor && right <= last;
             if (shown[i]) cursor = right;
         }
@@ -250,7 +254,124 @@ Item {
         if (!session && KeyMap.envFloor(Quickshell.env("OMASTORM_WEAK")) === undefined) weakFloor = floor;
     }
     Component.onCompleted: applySettings()
-    readonly property bool overlayOpen: picker.open || locationPicker.open || sheet.open || mosaicPicker.open
+    readonly property bool overlayOpen: picker.open || locationPicker.open || sheet.open || mosaicPicker.open || mapMenu.opened || legendZoom !== ""
+    // S46: legend zoom. Which legend is enlarged: "radar" (the colour scale
+    // under the map), "obs" (temperature and wind), "lightning" (the
+    // strikes' key), "" none. A click on a legend enlarges it; a click
+    // anywhere (on it again or outside) or Escape shrinks it. Not
+    // remembered.
+    property string legendZoom: ""
+    // S46: the wheel over an overlay never zooms the map (the human
+    // 2026-09-23: "scrolling above this box still zooms the map"). One
+    // test for every overlay, asked by the map's own wheel handler: while
+    // a scrimmed overlay is open (pickers, sheet, LAYERS, menus, an
+    // enlarged legend) the scrim covers the map and no wheel zooms; else a
+    // wheel over a floating card or key on the map (below) is the card's.
+    readonly property bool mapCovered: picker.open || locationPicker.open || sheet.open || layersPanel.opened
+        || treatmentMenu.opened || productMenu.opened || mapMenu.opened || legendZoom !== ""
+        || (mosaicPicker.open && !mosaicPicker.docked)
+    function wheelSinks() {
+        return [helpChip, followChip, scaleBar, ringCaptionBox, loadingCard, mapCredit, northMark,
+                obsLayer.legendItem, obsLayer.tipItem, lightningLayer.keyItem, mosaicPicker];
+    }
+    function wheelBlockedAt(mx, my) {
+        if (mapCovered) return true;
+        for (var it of wheelSinks()) {
+            if (!it || !it.visible || it.width <= 0 || it.height <= 0) continue;
+            var p = map.mapToItem(it, mx, my);   // through any scale (an enlarged legend)
+            if (p.x >= 0 && p.y >= 0 && p.x < it.width && p.y < it.height) return true;
+        }
+        return false;
+    }
+    // S46: the right-click menu's regions: every composite the picker lists
+    // (Sweden, Nordic, Iberia), My mosaic, the single radars shown lately
+    // (this window's, newest first, not remembered), and More… (the picker).
+    property var recentSites: []
+    onSiteIdChanged: {
+        var s = engine.sites.find(x => x.id === siteId);
+        if (!s || s.kind === "grid" || s.provider === "mosaic") return;
+        recentSites = [siteId].concat(recentSites.filter(id => id !== siteId)).slice(0, 4);
+    }
+    // Review S1: what the menu reads from the engine's state, as strings
+    // and numbers that change only when their value does, so the stream of
+    // state messages does not rebuild the rows (and move the submenu).
+    readonly property string shownProductKey: state && state.product ? state.product.id + "/" + state.product.elevationIndex : ""
+    readonly property string productRowsKey: JSON.stringify(productRows)
+    readonly property int mosaicCount: mosaicSet ? mosaicSet.sites.length : 0
+    readonly property var mapMenuRows: {
+        if (!mapMenu.opened) return [];
+        var rows = [{kind: "header", label: "REGION"}];
+        var composites = engine.sites.filter(s => s.kind === "grid" && s.provider !== "mosaic");
+        for (let s of composites)
+            rows.push({label: (s.name || s.id).toUpperCase(), note: "COMPOSITE", current: s.id === siteId, run: () => app.choose(s)});
+        var mine = engine.sites.find(s => s.provider === "mosaic");
+        if (mine) rows.push({label: "MY MOSAIC", note: mosaicCount ? mosaicCount + " RADARS" : "", current: mine.id === siteId, run: () => app.choose(mine)});
+        for (let id of recentSites) {
+            let r = engine.sites.find(x => x.id === id);
+            // Review S3: these go first when the card would not fit.
+            if (r) rows.push({label: (r.name || r.id).toUpperCase(), note: r.country || "", current: r.id === siteId, droppable: true, run: () => app.choose(r)});
+        }
+        rows.push({label: "MORE…", run: () => picker.show("")});
+        rows.push({kind: "sep"});
+        var products = JSON.parse(productRowsKey);
+        rows.push({label: "PRODUCT · " + (productLabel || "—"), enabled: products.length > 0,
+                   sub: products.map(r => ({label: r.label, note: r.note,
+                                               current: shownProductKey === r.product + "/" + r.index,
+                                               run: () => app.chooseProduct(r)}))});
+        rows.push({kind: "header", label: "LAYERS"});
+        var l = store.layers;
+        for (let row of [["radar", "RADAR"], ["temp", "TEMPERATURE"], ["wind", "WIND"], ["lightning", "LIGHTNING"]])
+            rows.push({label: row[1], checked: !!l[row[0]], run: () => app.store.layers.toggle(row[0])});
+        rows.push({label: "FROM · " + String(l.source).toUpperCase(),
+                   sub: [["stations", "STATIONS"], ["grid", "GRID"], ["both", "BOTH"]].map(row => ({
+                       label: row[1], radio: true, checked: l.source === row[0], run: () => app.store.layers.setSource(row[0])}))});
+        rows.push({kind: "sep"});
+        rows.push({label: "LOCATION…", run: () => locationPicker.show("")});
+        rows.push({label: "KEYS", run: () => sheet.show()});
+        // S47's universal reset (guarded for a host without it).
+        if (typeof app.resetAll === "function") {
+            rows.push({kind: "sep"});
+            rows.push({label: "RESET (RELOAD EVERYTHING)", run: () => app.resetAll()});
+        }
+        return rows;
+    }
+    function openMapMenu(mx, my) {
+        treatmentMenu.close();
+        productMenu.close();
+        // Review M1: never over an open overlay (it keeps the keyboard).
+        if (mapCovered) return;
+        var p = map.mapToItem(mapMenu, mx, my);
+        mapMenu.show(p.x, p.y);
+    }
+    // S46: the chrome for checks and captures: the right-click menu, the
+    // legend zoom, and where each overlay is (surface pixels).
+    // quickshell ipc --pid <pid> call chrome menu 300 200
+    IpcHandler {
+        target: "chrome"
+        function menu(x: real, y: real): void { app.openMapMenu(x, y); }
+        function closeMenu(): void { mapMenu.close(); }
+        // The recent radars, set for checks (a real visit selects a radar).
+        function recent(ids: string): void { app.recentSites = ids.split(",").filter(x => x); }
+        function shownRows(): string { return JSON.stringify(mapMenu.shownRows.map(r => r.kind || r.label)); }
+        function legend(name: string): void { app.legendZoom = name; }
+        function rect(name: string): string {
+            var it = ({map: map, picker: picker.cardItem, chip: siteTitle, menu: mapMenu.cardItem, submenu: mapMenu.subItem,
+                       layers: layersPanel.cardItem, sheet: sheet.cardItem, location: locationPicker.cardItem, mosaic: mosaicPicker, treatment: treatmentMenu, product: productMenu,
+                       help: helpChip, scale: scaleBar, rings: ringCaptionBox, loading: loadingCard, credit: mapCredit, north: northMark,
+                       obsLegend: obsLayer.legendItem, obsTip: obsLayer.tipItem, lightningKey: lightningLayer.keyItem,
+                       legend: legend, legendCard: legendZoomCard})[name];
+            if (!it) return "";
+            var p = it.mapToItem(surface, 0, 0), q = it.mapToItem(surface, it.width, it.height);
+            return JSON.stringify({x: Math.round(p.x), y: Math.round(p.y), w: Math.round(q.x - p.x), h: Math.round(q.y - p.y), visible: it.visible});
+        }
+        function status(): string {
+            return JSON.stringify({menu: mapMenu.opened, rows: app.mapMenuRows.map(r => r.kind || (r.label + (r.checked === true ? " [x]" : r.checked === false ? " [ ]" : "") + (r.current ? " *" : "") + (r.sub ? " >" : ""))),
+                                   cursor: mapMenu.cursor, sub: mapMenu.subRow, inSub: mapMenu.inSub, legendZoom: app.legendZoom,
+                                   span: Math.round(map.span * 1000) / 1000, lat: Math.round(map.centerLat * 10000) / 10000, lon: Math.round(map.centerLon * 10000) / 10000,
+                                   covered: app.mapCovered, base: app.theme.baseSize, size: app.theme.size, picker: picker.open, recent: app.recentSites,
+                                   resetAll: typeof app.resetAll === "function"});
+        }
+    }
     // My mosaic (S25): whether it is the station shown, and the chosen
     // radars' circles for the map (the checklist's while it is open).
     readonly property bool mosaicShown: !!engine.site && engine.site.provider === "mosaic"
@@ -598,6 +719,9 @@ Item {
         function status(): string { return JSON.stringify({open: locationPicker.open, query: locationPicker.query, selected: locationPicker.selected, focused: locationPicker.fieldFocused, count: locationPicker.rows.length, lat: locationPicker.latText, lon: locationPicker.lonText, error: locationPicker.coordError}); }
     }
     readonly property var theme: session ? session.theme.snapshot : themeInputs.snapshot
+    // S46: fixed chrome (controls, menu cards, rows) grows with Omarchy's
+    // text size above the default base of 12 and never shrinks below it.
+    readonly property real grow: Math.max(1, theme.size.k)
     Theme { id: themeInputs; registerIpc: !app.session }
     // Glyphs is the default; config.toml's `treatment` and the keys change it.
     property string treatment: session ? session.treatment : Quickshell.env("OMASTORM_STYLE") || "GLYPHS"
@@ -638,14 +762,14 @@ Item {
         component LabelText: Text {
             color: app.theme.foreground
             font.family: app.theme.font
-            font.pixelSize: app.theme.baseSize
+            font.pixelSize: app.theme.size.body
             elide: Text.ElideRight
         }
         component Control: Button {
             id: button
             property bool selected: false
-            implicitHeight: 30
-            implicitWidth: Math.max(30, contentItem.implicitWidth + 18)
+            implicitHeight: Math.round(30 * app.grow)
+            implicitWidth: Math.max(Math.round(30 * app.grow), contentItem.implicitWidth + 18)
             padding: 6
             contentItem: LabelText {
                 text: button.text
@@ -683,7 +807,7 @@ Item {
                 color: glyphRoot.ink
                 opacity: glyphRoot.fade
                 font.family: app.theme.font
-                font.pixelSize: 14
+                font.pixelSize: app.theme.size.title
                 renderType: Text.NativeRendering
             }
         }
@@ -693,8 +817,8 @@ Item {
             id: transport
             property string glyph: "play"
             property bool selected: false
-            implicitHeight: 30
-            implicitWidth: 30
+            implicitHeight: Math.round(30 * app.grow)
+            implicitWidth: Math.round(30 * app.grow)
             padding: 0
             focusPolicy: Qt.NoFocus
             contentItem: Glyph {
@@ -724,7 +848,7 @@ Item {
             spacing: 0
             Button {
                 id: name
-                implicitHeight: 30
+                implicitHeight: Math.round(30 * app.grow)
                 implicitWidth: contentItem.implicitWidth + (win.compact ? 14 : 22)
                 padding: 0
                 focusPolicy: Qt.NoFocus
@@ -739,7 +863,7 @@ Item {
                         text: chip.tag; visible: chip.tag !== ""
                         color: chip.tagAccent ? app.theme.accent : app.theme.foreground
                         opacity: chip.tagAccent ? .9 : .55
-                        font.pixelSize: 10; font.letterSpacing: 1
+                        font.pixelSize: app.theme.size.small; font.letterSpacing: 1
                     }
                     Glyph { glyph: "chevron"; implicitWidth: 12; fade: .6 }
                     Item { Layout.fillWidth: true }
@@ -777,6 +901,9 @@ Item {
             id: layout
             anchors.fill: parent
             anchors.margins: win.compact ? 12 : 20
+            // Review S2: room for the loading bar's names, which hang below
+            // the tick strip and grow with the text.
+            anchors.bottomMargin: Math.max(win.compact ? 12 : 20, loadingBar.implicitHeight + 2)
             spacing: 10
             // Chrome names (use these when tweaking):
             //   brand row     — mark, OMASTORM, status light, LIVE/ARCHIVED
@@ -797,7 +924,7 @@ Item {
                 id: brandRow
                 Layout.fillWidth: true
                 RadarMark { ink: app.theme.accent; size: 20; Layout.rightMargin: 8 }
-                LabelText { text: "OMASTORM SE"; font.bold: true; font.letterSpacing: 2.5; font.pixelSize: app.theme.baseSize + 5 }
+                LabelText { text: "OMASTORM SE"; font.bold: true; font.letterSpacing: 2.5; font.pixelSize: app.theme.size.heading }
                 Item { Layout.fillWidth: true }
                 // LIVE / ARCHIVED as text; the light carries feed health.
                 RowLayout {
@@ -829,7 +956,7 @@ Item {
                 // No border or hover fill on the title — it reads as text.
                 Button {
                     id: siteTitle
-                    implicitHeight: 30
+                    implicitHeight: Math.round(30 * app.grow)
                     padding: 0
                     focusPolicy: Qt.NoFocus
                     // S40 review 4: nothing while My mosaic's panel is open.
@@ -843,7 +970,7 @@ Item {
                         // never "VARA vara"; an ODIM node code shows dimmed
                         // beside it ("HURUM nohur"). A station outside the
                         // table (archived KTLX) is its id.
-                        LabelText { text: engine.site ? app.siteName : app.siteId || "—"; font.pixelSize: app.theme.baseSize + 7; font.bold: true }
+                        LabelText { text: engine.site ? app.siteName : app.siteId || "—"; font.pixelSize: app.theme.size.display; font.bold: true }
                         LabelText { text: app.siteId; visible: !win.compact && !!engine.site && !app.idIsName; opacity: .65 }
                         Glyph { glyph: "chevron"; implicitWidth: 12; fade: .5 }
                     }
@@ -854,7 +981,7 @@ Item {
                 // sits outside that radar's rings — no banner.
                 Rectangle {
                     id: lockButton
-                    implicitWidth: 30; implicitHeight: 30
+                    implicitWidth: Math.round(30 * app.grow); implicitHeight: Math.round(30 * app.grow)
                     radius: 2
                     Layout.alignment: Qt.AlignTop
                     opacity: !!app.state ? 1 : .35
@@ -885,7 +1012,7 @@ Item {
                 Button {
                     id: radarsChip
                     visible: app.mosaicShown || mosaicPicker.open
-                    implicitHeight: 30
+                    implicitHeight: Math.round(30 * app.grow)
                     implicitWidth: contentItem.implicitWidth + 18
                     padding: 0
                     focusPolicy: Qt.NoFocus
@@ -915,7 +1042,7 @@ Item {
                 // on besides the radar. Like RADARS it never takes the keys.
                 Button {
                     id: layersChip
-                    implicitHeight: 30
+                    implicitHeight: Math.round(30 * app.grow)
                     implicitWidth: contentItem.implicitWidth + 18
                     padding: 0
                     focusPolicy: Qt.NoFocus
@@ -1067,7 +1194,7 @@ Item {
                     radarOpacity: !app.store.layers.radar ? 0 : app.condition === "unavailable" ? .6 : 1
                     // S43: the MET Nordic temperature field under the radar.
                     underlay: obsLayer.underlay
-                    labelSize: win.compact ? 10 : 12
+                    labelSize: win.compact ? app.theme.size.small : app.theme.size.body
                     locked: app.locked
                     product: app.state ? app.state.product : null
                     relief: app.relief
@@ -1094,6 +1221,9 @@ Item {
                         app.store.rememberView(lat, lon, map.span);
                     }
                     onResetRequested: app.resetView()
+                    // S46: the right-click menu, and the one wheel guard.
+                    onContextRequested: (x, y) => app.openMapMenu(x, y)
+                    wheelBlocked: (x, y) => app.wheelBlockedAt(x, y)
                     Component.onCompleted: app.applyView()
                     // The map asks for tiles when its camera settles and the
                     // engine answers this window alone, tile by tile.
@@ -1117,6 +1247,8 @@ Item {
                             || app.scan.id === app.newestComplete.id)
                     clockMs: Number(Quickshell.env("OMASTORM_LIGHTNING_CLOCK_MS") || 0)
                     creditInKey: win.compact
+                    keyZoomed: app.legendZoom === "lightning"
+                    onKeyClicked: app.legendZoom = "lightning"
                 }
                 // S42: the weather stations over the radar.
                 ObsLayer {
@@ -1132,6 +1264,8 @@ Item {
                     theme: app.theme
                     compact: win.compact
                     creditHeight: 30
+                    legendZoomed: app.legendZoom === "obs"
+                    onLegendClicked: app.legendZoom = "obs"
                 }
                 // Place-follow (crosshair) stays out of the release until GPS
                 // is wired; keep the mock chip for captures via OMASTORM_MOCK_GPS.
@@ -1148,6 +1282,7 @@ Item {
                     MouseArea { id: followArea; anchors.fill: parent; hoverEnabled: true }
                 }
                 LabelText {
+                    id: northMark
                     anchors.top: parent.top; anchors.left: parent.left; anchors.margins: 10
                     text: "N ↑"; opacity: .75
                     visible: !!app.state
@@ -1157,7 +1292,7 @@ Item {
                 Rectangle {
                     id: helpChip
                     anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 10
-                    width: helpRow.implicitWidth + 12; height: 22
+                    width: helpRow.implicitWidth + 12; height: Math.round(22 * app.grow)
                     color: Qt.alpha(app.theme.background, .9)
                     opacity: helpArea.containsMouse ? 1 : .7
                     visible: !!app.state
@@ -1166,7 +1301,7 @@ Item {
                         anchors.centerIn: parent
                         spacing: 5
                         Glyph { glyph: "keys" }
-                        LabelText { text: "?"; font.pixelSize: 10 }
+                        LabelText { text: "?"; font.pixelSize: app.theme.size.small }
                     }
                     MouseArea { id: helpArea; anchors.fill: parent; hoverEnabled: true; onClicked: app.run("help") }
                 }
@@ -1186,7 +1321,7 @@ Item {
                     property real nice: metric ? 25 : 10
                     property bool wasMetric: metric
                     width: barPx + 16
-                    height: 28
+                    height: Math.round(28 * app.grow)
                     color: Qt.alpha(app.theme.background, .9)
                     function nearest(raw) {
                         var best = steps[0], err = Math.abs(steps[0] - raw);
@@ -1232,7 +1367,7 @@ Item {
                                 if (!scaleBar.metric && n < 1) return n + " " + u;
                                 return n + " " + u;
                             }
-                            font.pixelSize: 10
+                            font.pixelSize: app.theme.size.small
                             opacity: .75
                         }
                         Rectangle {
@@ -1267,17 +1402,18 @@ Item {
                         width: Math.min(mapFrame.width * .6, 460)
                         wrapMode: Text.Wrap
                         text: map.ringNote.toUpperCase()
-                        font.pixelSize: 10; opacity: .75
+                        font.pixelSize: app.theme.size.small; opacity: .75
                     }
                 }
                 // OSM ODbL safe harbour: short credit in a map corner. Full
                 // catalogue (NOAA, Natural Earth, GeoNames, …) stays in README.
                 LabelText {
+                    id: mapCredit
                     anchors.bottom: parent.bottom; anchors.right: parent.right; anchors.margins: 12
                     // The grey marks' positions credit their source (S23).
                     text: "© OpenStreetMap" + (engine.referenceSites.length ? " · other radars: EUMETNET" : "")
                     visible: !!app.scan
-                    font.pixelSize: 10; opacity: .55
+                    font.pixelSize: app.theme.size.small; opacity: .55
                 }
                 LabelText { anchors.centerIn: parent; width: parent.width-24; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter; text: map.error || engine.error; visible: text.length > 0 && !(loadingCard.visible && !map.error) }
                 // S41: while nothing is drawn yet, the load in steps over the
@@ -1298,6 +1434,9 @@ Item {
                 Layout.fillWidth: true
                 spacing: 4
                 visible: !!app.scan && app.store.layers.radar
+                // S46: a click enlarges it (legend zoom).
+                TapHandler { onTapped: app.legendZoom = "radar" }
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
                 Item {
                     Layout.fillWidth: true
                     implicitHeight: legendRow.implicitHeight
@@ -1320,12 +1459,12 @@ Item {
                                         id: number
                                         text: app.legendLabel(index)
                                         opacity: app.legendShown[index] ? 1 : 0
-                                        font.pixelSize: 10
+                                        font.pixelSize: app.theme.size.small
                                     }
                                     Item { Layout.fillWidth: true }
                                     LabelText {
                                         text: app.scan ? app.scan.units : ""
-                                        font.pixelSize: 10
+                                        font.pixelSize: app.theme.size.small
                                         visible: index===app.bands-1 && labelRow.width >= number.implicitWidth + implicitWidth + 8
                                     }
                                 }
@@ -1370,7 +1509,7 @@ Item {
                             Layout.fillWidth: !engine.loading
                             visible: !!app.scan && !!app.scan.scanTime
                             text: app.scan ? app.stamp(app.scan.scanTime) : ""
-                            font.pixelSize: 10
+                            font.pixelSize: app.theme.size.small
                             opacity: .65
                             horizontalAlignment: Text.AlignLeft
                             elide: Text.ElideRight
@@ -1381,7 +1520,7 @@ Item {
                         LabelText {
                             visible: !!engine.loading
                             text: engine.percent + " %"
-                            font.pixelSize: 13
+                            font.pixelSize: app.theme.size.label
                             font.bold: true
                             color: app.theme.accent
                         }
@@ -1389,7 +1528,7 @@ Item {
                             Layout.fillWidth: true
                             visible: !!engine.loading
                             text: engine.activeStep ? engine.activeStep.name + (engine.activeStep.detail ? " · " + engine.activeStep.detail : "") : ""
-                            font.pixelSize: 11
+                            font.pixelSize: app.theme.size.caption
                             color: app.theme.accent
                             horizontalAlignment: Text.AlignLeft
                             elide: Text.ElideRight
@@ -1398,7 +1537,7 @@ Item {
                             visible: !win.compact && app.frameIndex >= 0
                             horizontalAlignment: Text.AlignRight
                             text: (app.frameIndex + 1) + " / " + app.frames.length
-                            font.pixelSize: 10
+                            font.pixelSize: app.theme.size.small
                             opacity: .65
                         }
                     }
@@ -1502,7 +1641,7 @@ Item {
                 Button {
                     id: productChip
                     visible: app.productRows.length > 0
-                    implicitHeight: 30
+                    implicitHeight: Math.round(30 * app.grow)
                     implicitWidth: contentItem.implicitWidth + 18
                     padding: 0
                     opacity: productMenu.opened || hovered || activeFocus ? 1 : .7
@@ -1526,7 +1665,7 @@ Item {
                 // three in the picker's row style above it, 1 2 3 choose.
                 Button {
                     id: treatmentChip
-                    implicitHeight: 30
+                    implicitHeight: Math.round(30 * app.grow)
                     implicitWidth: contentItem.implicitWidth + 18
                     padding: 0
                     opacity: treatmentMenu.opened || hovered || activeFocus ? 1 : .7
@@ -1560,6 +1699,8 @@ Item {
             homeSite: ""
             compact: win.compact
             cardTop: layout.anchors.margins + mapFrame.y
+            // S46: it drops down under the site name that opens it.
+            anchorItem: siteTitle
             onChosen: site => app.choose(site)
           }
           LocationPicker {
@@ -1605,6 +1746,14 @@ Item {
           Connections {
             target: treatmentMenu
             function onOpenedChanged() { if (!treatmentMenu.opened && mosaicPicker.open) mosaicPicker.takeKeys(); }
+          }
+          Connections {
+            target: mapMenu
+            function onOpenedChanged() { if (!mapMenu.opened && mosaicPicker.open) Qt.callLater(mosaicPicker.takeKeys); }
+          }
+          Connections {
+            target: app
+            function onLegendZoomChanged() { if (app.legendZoom === "" && mosaicPicker.open) mosaicPicker.takeKeys(); }
           }
           MosaicPicker {
             id: mosaicPicker
@@ -1689,7 +1838,7 @@ Item {
                 readonly property point anchor: treatmentMenu.opened ? treatmentChip.mapToItem(treatmentMenu, treatmentChip.width, 0) : Qt.point(0, 0)
                 x: Math.round(anchor.x - width)
                 y: Math.round(anchor.y - height - 6)
-                width: 168
+                width: Math.round(168 * app.grow)
                 height: treatmentRows.implicitHeight + 12
                 color: Qt.alpha(app.theme.background, .95)
                 border.width: 1
@@ -1710,7 +1859,7 @@ Item {
                             readonly property bool hot: rowArea.containsMouse || treatmentMenu.cursor === index
                             readonly property color ink: current || hot ? app.theme.accent : app.theme.foreground
                             Layout.fillWidth: true
-                            implicitHeight: 28
+                            implicitHeight: Math.round(28 * app.grow)
                             color: hot ? Qt.alpha(app.theme.foreground, .08) : "transparent"
                             RowLayout {
                                 anchors.fill: parent
@@ -1719,7 +1868,7 @@ Item {
                                 LabelText { text: treatmentRow.modelData; color: treatmentRow.ink; Layout.fillWidth: true }
                                 LabelText {
                                     text: (app.bindings[treatmentRow.modelData.toLowerCase()] || []).map(KeyMap.pretty).join(" ")
-                                    color: treatmentRow.ink; font.pixelSize: 10; opacity: .6
+                                    color: treatmentRow.ink; font.pixelSize: app.theme.size.small; opacity: .6
                                 }
                             }
                             MouseArea { id: rowArea; anchors.fill: parent; hoverEnabled: true; onClicked: app.run(treatmentRow.modelData.toLowerCase()) }
@@ -1738,13 +1887,13 @@ Item {
                 id: stepButton
                 property string label
                 signal activated()
-                implicitWidth: Math.max(22, stepLabel.implicitWidth + 10)
-                implicitHeight: 20
+                implicitWidth: Math.max(Math.round(22 * app.grow), stepLabel.implicitWidth + 10)
+                implicitHeight: Math.round(20 * app.grow)
                 color: stepArea.containsMouse && enabled ? Qt.alpha(app.theme.accent, .18) : "transparent"
                 border.width: 1
                 border.color: Qt.alpha(app.theme.foreground, enabled ? .3 : .12)
                 opacity: enabled ? 1 : .4
-                LabelText { id: stepLabel; anchors.centerIn: parent; text: stepButton.label; font.pixelSize: 10 }
+                LabelText { id: stepLabel; anchors.centerIn: parent; text: stepButton.label; font.pixelSize: app.theme.size.small }
                 MouseArea { id: stepArea; anchors.fill: parent; hoverEnabled: true; enabled: stepButton.enabled; onClicked: stepButton.activated() }
             }
             anchors.fill: parent
@@ -1775,7 +1924,7 @@ Item {
                     : productText.mapToItem(productMenu, productText.width, productText.height)
                 x: Math.max(4, Math.round(anchor.x - width))
                 y: Math.max(4, Math.round(fromChip ? anchor.y - height - 6 : anchor.y + 6))
-                width: 214
+                width: Math.round(214 * app.grow)
                 height: productRowsColumn.implicitHeight + 12
                 color: Qt.alpha(app.theme.background, .95)
                 border.width: 1
@@ -1799,20 +1948,20 @@ Item {
                             // The first angle row opens the advanced part.
                             readonly property bool firstAngle: modelData.note !== "" && (index === 0 || app.productRows[index - 1].note === "")
                             Layout.fillWidth: true
-                            implicitHeight: 24 + (firstAngle ? 18 : 0)
+                            implicitHeight: Math.round((24 + (firstAngle ? 18 : 0)) * app.grow)
                             color: hot ? Qt.alpha(app.theme.foreground, .08) : "transparent"
                             LabelText {
                                 visible: productRow.firstAngle
                                 anchors.left: parent.left; anchors.leftMargin: 10; anchors.top: parent.top; anchors.topMargin: 4
-                                text: "SCAN ANGLE · BEAM 50 / 100 KM"; font.pixelSize: 9; opacity: .55
+                                text: "SCAN ANGLE · BEAM 50 / 100 KM"; font.pixelSize: app.theme.size.small; opacity: .55
                             }
                             RowLayout {
                                 anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                                height: 24
+                                height: Math.round(24 * app.grow)
                                 anchors.leftMargin: 10
                                 anchors.rightMargin: 10
                                 LabelText { text: productRow.modelData.label; color: productRow.ink; Layout.fillWidth: true }
-                                LabelText { text: productRow.modelData.note; color: productRow.ink; font.pixelSize: 10; opacity: .6 }
+                                LabelText { text: productRow.modelData.note; color: productRow.ink; font.pixelSize: app.theme.size.small; opacity: .6 }
                             }
                             MouseArea { id: productArea; anchors.fill: parent; hoverEnabled: true; onClicked: app.chooseProduct(productRow.modelData) }
                         }
@@ -1829,11 +1978,11 @@ Item {
                             wrapMode: Text.Wrap
                             text: (app.chosenAbove === "ground" ? "HEIGHT ABOVE THE GROUND UNDER EACH POINT" : "HEIGHT ABOVE SEA")
                                 + " · THE BEAM IS 1.7 KM THICK AT 100 KM, SO FINER STEPS REPEAT FAR OUT"
-                            font.pixelSize: 9; opacity: .55
+                            font.pixelSize: app.theme.size.small; opacity: .55
                         }
                         RowLayout {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 24
+                            Layout.preferredHeight: Math.round(24 * app.grow)
                             spacing: 4
                             LabelText { text: app.heightM / 1000 + " KM"; color: app.theme.accent; Layout.fillWidth: true }
                             MenuStep { label: "−"; enabled: app.heightM > 500; onActivated: app.stepHeight(-1) }
@@ -1842,7 +1991,7 @@ Item {
                         // S30: measured from sea level or from the ground.
                         RowLayout {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 24
+                            Layout.preferredHeight: Math.round(24 * app.grow)
                             spacing: 4
                             visible: app.groundOffered
                             LabelText { text: "FROM"; opacity: .6; Layout.fillWidth: true }
@@ -1861,11 +2010,11 @@ Item {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
                             text: "RELIEF · THE TOPS AS A SURFACE LIT FROM THE NORTH-WEST"
-                            font.pixelSize: 9; opacity: .55
+                            font.pixelSize: app.theme.size.small; opacity: .55
                         }
                         RowLayout {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: 24
+                            Layout.preferredHeight: Math.round(24 * app.grow)
                             spacing: 4
                             LabelText { text: app.relief ? "ON" : "OFF"; color: app.theme.accent; Layout.fillWidth: true }
                             MenuStep { label: "ON"; enabled: !app.relief; onActivated: app.relief = true }
@@ -1874,6 +2023,90 @@ Item {
                     }
                 }
             }
+          }
+          // S46: an enlarged legend over a clear scrim: any click (on the
+          // legend again or outside it) or Escape shrinks it. The radar's
+          // scale is drawn here as a card over the map's foot; the
+          // temperature/wind legend and the strikes' key grow in place.
+          Item {
+            id: legendZoomLayer
+            anchors.fill: parent
+            visible: app.legendZoom !== ""
+            focus: visible
+            onVisibleChanged: if (visible) forceActiveFocus()
+            Keys.onPressed: event => { if (event.key === Qt.Key_Escape) { app.legendZoom = ""; event.accepted = true; } }
+            MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onPressed: app.legendZoom = "" }
+            TextMetrics { id: zoomMetrics; font.family: app.theme.font; font.pixelSize: app.theme.size.small * 2; text: "0" }
+            Rectangle {
+                id: legendZoomCard
+                visible: app.legendZoom === "radar" && !!app.scan
+                width: Math.min(mapFrame.width - 24, Math.round(760 * app.grow))
+                height: zoomColumn.implicitHeight + 24
+                x: Math.round(layout.x + mapFrame.x + (mapFrame.width - width) / 2)
+                y: Math.round(layout.y + mapFrame.y + mapFrame.height - height - 12)
+                color: Qt.alpha(app.theme.background, .96)
+                border.width: 1
+                border.color: app.theme.foreground
+                ColumnLayout {
+                    id: zoomColumn
+                    x: 12; y: 12
+                    width: parent.width - 24
+                    spacing: 8
+                    RowLayout {
+                        Layout.fillWidth: true
+                        LabelText {
+                            Layout.fillWidth: true
+                            text: app.scan ? app.scan.productName.toUpperCase() : ""
+                            font.pixelSize: app.theme.size.title; font.bold: true; font.letterSpacing: 1
+                        }
+                        LabelText { text: app.scan ? app.scan.units : ""; font.pixelSize: app.theme.size.title; color: app.theme.accent }
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                        implicitHeight: zoomRow.implicitHeight
+                        RowLayout {
+                            id: zoomRow
+                            anchors.left: parent.left; anchors.right: parent.right
+                            spacing: 0
+                            Repeater {
+                                model: app.legendZoom === "radar" && app.scan ? app.scan.palette : []
+                                ColumnLayout {
+                                    required property string modelData
+                                    required property int index
+                                    Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 6
+                                    Rectangle { Layout.fillWidth: true; height: Math.round(16 * app.grow); color: modelData }
+                                    LabelText {
+                                        text: app.legendLabel(index)
+                                        opacity: app.legendZoomShown[index] ? 1 : 0
+                                        font.pixelSize: app.theme.size.small * 2
+                                    }
+                                }
+                            }
+                        }
+                        // The weak-return floor, as on the strip.
+                        Rectangle {
+                            visible: app.floorFraction > 0
+                            height: Math.round(16 * app.grow)
+                            width: Math.round(zoomRow.width * app.floorFraction)
+                            color: Qt.alpha(app.theme.background, .8)
+                            Rectangle { anchors.right: parent.right; width: 2; height: parent.height; color: app.theme.foreground; opacity: .7 }
+                        }
+                    }
+                    LabelText {
+                        Layout.fillWidth: true
+                        visible: app.floorFraction > 0
+                        text: "SHADED: UNDER THE WEAK-RETURN FLOOR, NOT DRAWN (W)"
+                        font.pixelSize: app.theme.size.small; opacity: .6
+                    }
+                }
+            }
+          }
+          // S46: the map's right-click menu, over everything but the sheet.
+          MapMenu {
+            id: mapMenu
+            anchors.fill: parent
+            theme: app.theme
+            rows: app.mapMenuRows
           }
           // The `?` sheet over everything, below the map's top edge.
           KeysSheet {

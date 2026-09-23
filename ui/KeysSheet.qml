@@ -14,6 +14,8 @@ Item {
     property bool compact: false
     property real cardTop: 20         // the map's top edge; the card sits below it
     property bool open: false
+    /// S46: the card, for the host's checks and captures.
+    readonly property Item cardItem: card
     readonly property var columns: KeyMap.sheet(bindings)
     // What MosaicPicker.qml's keys do; not rebindable.
     readonly property var mosaicKeys: [
@@ -29,7 +31,7 @@ Item {
     component Word: Text {
         color: sheet.theme.foreground
         font.family: sheet.theme.font
-        font.pixelSize: 12
+        font.pixelSize: sheet.theme.size.body
         elide: Text.ElideRight
         verticalAlignment: Text.AlignVCenter
     }
@@ -44,18 +46,18 @@ Item {
     Rectangle {
         anchors.fill: parent
         color: Qt.alpha(sheet.theme.background, .5)
-        MouseArea { anchors.fill: parent; onClicked: sheet.close() }
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onClicked: sheet.close() }
     }
     Rectangle {
         id: card
-        width: Math.min(660, sheet.width - 40)
+        width: Math.min(Math.round(660 * Math.max(1, sheet.theme.size.k)), sheet.width - 40)
         x: Math.round((sheet.width - width) / 2)
         y: Math.round(Math.max(20, Math.min(sheet.cardTop + 20, sheet.height - height - 20)))
         height: column.implicitHeight + 36
         color: Qt.alpha(sheet.theme.background, .97)
         border.width: 1
         border.color: sheet.theme.foreground
-        MouseArea { anchors.fill: parent } // a click on the card stays on the card
+        MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons } // any click on the card stays on the card
         ColumnLayout {
             id: column
             anchors.fill: parent
@@ -64,9 +66,9 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 10
-                Word { text: "KEYS"; font.bold: true; font.pixelSize: 14; font.letterSpacing: 2 }
+                Word { text: "KEYS"; font.bold: true; font.pixelSize: sheet.theme.size.title; font.letterSpacing: 2 }
                 Item { Layout.fillWidth: true }
-                Word { text: "rebindable in ~/.config/omastorm-se/config.toml"; font.pixelSize: 10; opacity: .55 }
+                Word { text: "rebindable in ~/.config/omastorm-se/config.toml"; font.pixelSize: sheet.theme.size.small; opacity: .55 }
             }
             GridLayout {
                 Layout.fillWidth: true
@@ -87,11 +89,11 @@ Item {
                                 id: row
                                 required property var modelData
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 26
+                                Layout.preferredHeight: Math.round(26 * Math.max(1, sheet.theme.size.k))
                                 spacing: 8
                                 Row {
-                                    Layout.preferredWidth: 124
-                                    Layout.minimumWidth: 124
+                                    Layout.preferredWidth: Math.round(124 * Math.max(1, sheet.theme.size.k))
+                                    Layout.minimumWidth: Math.round(124 * Math.max(1, sheet.theme.size.k))
                                     spacing: 4
                                     Repeater {
                                         model: row.modelData.caps
@@ -102,7 +104,7 @@ Item {
                                             color: "transparent"
                                             border.width: 1
                                             border.color: Qt.alpha(sheet.theme.foreground, .4)
-                                            Word { id: cap; anchors.centerIn: parent; text: parent.modelData; font.pixelSize: 11 }
+                                            Word { id: cap; anchors.centerIn: parent; text: parent.modelData; font.pixelSize: sheet.theme.size.caption }
                                         }
                                     }
                                 }
@@ -115,7 +117,7 @@ Item {
             // S40: My mosaic's panel has its own keys, fixed, in force while
             // it is open (the window's stand down then).
             Rectangle { Layout.fillWidth: true; height: 1; color: Qt.alpha(sheet.theme.foreground, .17) }
-            Word { text: "MY MOSAIC PANEL"; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1; opacity: .6 }
+            Word { text: "MY MOSAIC PANEL"; font.pixelSize: sheet.theme.size.small; font.bold: true; font.letterSpacing: 1; opacity: .6 }
             Flow {
                 Layout.fillWidth: true
                 spacing: 14
@@ -134,7 +136,7 @@ Item {
                                 color: "transparent"
                                 border.width: 1
                                 border.color: Qt.alpha(sheet.theme.foreground, .4)
-                                Word { id: mosaicCap; anchors.centerIn: parent; text: parent.modelData; font.pixelSize: 11 }
+                                Word { id: mosaicCap; anchors.centerIn: parent; text: parent.modelData; font.pixelSize: sheet.theme.size.caption }
                             }
                         }
                         Word { text: mosaicKey.modelData.label; height: 18; opacity: .85; leftPadding: 2 }
@@ -146,7 +148,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 elide: Text.ElideNone
-                font.pixelSize: 10
+                font.pixelSize: sheet.theme.size.small
                 opacity: .55
                 lineHeight: 1.4
                 text: sheet.closeKeys

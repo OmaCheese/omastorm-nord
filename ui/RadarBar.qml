@@ -51,8 +51,10 @@ BarWidget {
         // Card geometry is stable (308×372 content + 28 inset around it).
         padding: 12
         borderSpec: Border.flat(Color.accent, 2)
-        contentWidth: 336
-        contentHeight: 400
+        // S46: the card's size at Omarchy's text size, plus the inset.
+        readonly property real grow: Math.max(1, root.session.theme.snapshot.size.k)
+        contentWidth: Math.round(308 * grow) + 28
+        contentHeight: Math.round(372 * grow) + 28
         focusTarget: content.item
         Loader {
             id: content

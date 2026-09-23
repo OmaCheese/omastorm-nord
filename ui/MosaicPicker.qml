@@ -102,7 +102,7 @@ FocusScope {
     component Word: Text {
         color: picker.theme.foreground
         font.family: picker.theme.font
-        font.pixelSize: 12
+        font.pixelSize: picker.theme.size.body
         elide: Text.ElideRight
         verticalAlignment: Text.AlignVCenter
     }
@@ -122,13 +122,13 @@ FocusScope {
             id: stepText
             anchors.centerIn: parent
             text: step.label
-            font.pixelSize: step.accent ? 11 : 10; font.bold: step.accent
+            font.pixelSize: step.accent ? picker.theme.size.caption : picker.theme.size.small; font.bold: step.accent
             color: step.accent ? picker.theme.accent : picker.theme.foreground
         }
         MouseArea { id: stepArea; anchors.fill: parent; hoverEnabled: true; enabled: step.enabled; cursorShape: Qt.PointingHandCursor; onClicked: step.activated() }
     }
     component Heading: Word {
-        font.pixelSize: 10; font.bold: true; font.letterSpacing: 1; opacity: .6
+        font.pixelSize: picker.theme.size.small; font.bold: true; font.letterSpacing: 1; opacity: .6
     }
     visible: open
     function siteOf(id) { return engine ? engine.sites.find(s => s.id === id) || null : null; }
@@ -299,7 +299,7 @@ FocusScope {
             Word {
                 text: picker.warning || picker.draft.sites.length + " OF " + picker.maxSites
                 color: picker.warning ? picker.theme.accent : picker.theme.foreground
-                font.pixelSize: 10; font.bold: picker.warning !== ""; opacity: picker.warning ? 1 : .6
+                font.pixelSize: picker.theme.size.small; font.bold: picker.warning !== ""; opacity: picker.warning ? 1 : .6
                 Layout.fillWidth: true
             }
             Rectangle {
@@ -307,7 +307,7 @@ FocusScope {
                 color: closeArea.containsMouse ? Qt.alpha(picker.theme.accent, .18) : "transparent"
                 border.width: 1
                 border.color: Qt.alpha(picker.theme.foreground, .3)
-                Word { anchors.centerIn: parent; text: "✕"; font.pixelSize: 11 }
+                Word { anchors.centerIn: parent; text: "✕"; font.pixelSize: picker.theme.size.caption }
                 MouseArea { id: closeArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: picker.close() }
             }
         }
@@ -325,7 +325,7 @@ FocusScope {
                     color: ruleArea.containsMouse || on ? Qt.alpha(picker.theme.accent, .18) : "transparent"
                     border.width: 1
                     border.color: on ? picker.theme.accent : Qt.alpha(picker.theme.foreground, .3)
-                    Word { id: ruleText; anchors.centerIn: parent; text: ruleChip.modelData.name.toUpperCase(); font.pixelSize: 10; color: ruleChip.on ? picker.theme.accent : picker.theme.foreground }
+                    Word { id: ruleText; anchors.centerIn: parent; text: ruleChip.modelData.name.toUpperCase(); font.pixelSize: picker.theme.size.small; color: ruleChip.on ? picker.theme.accent : picker.theme.foreground }
                     MouseArea { id: ruleArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: picker.setRule(ruleChip.modelData.id) }
                 }
             }
@@ -334,7 +334,7 @@ FocusScope {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             elide: Text.ElideNone
-            font.pixelSize: 10; opacity: .6
+            font.pixelSize: picker.theme.size.small; opacity: .6
             text: picker.draft.rule === "strongest"
                 ? "EACH SPOT: THE STRONGEST ECHO ANY TICKED RADAR SEES THERE"
                 : picker.draft.rule === "height"
@@ -346,8 +346,8 @@ FocusScope {
             Layout.fillWidth: true
             spacing: 4
             visible: picker.draft.rule === "height"
-            Word { text: "HEIGHT"; font.pixelSize: 10; opacity: .6 }
-            Word { text: (picker.draft.heightM || 2000) / 1000 + " KM"; color: picker.theme.accent; font.pixelSize: 10; Layout.fillWidth: true }
+            Word { text: "HEIGHT"; font.pixelSize: picker.theme.size.small; opacity: .6 }
+            Word { text: (picker.draft.heightM || 2000) / 1000 + " KM"; color: picker.theme.accent; font.pixelSize: picker.theme.size.small; Layout.fillWidth: true }
             Step { label: "−"; enabled: (picker.draft.heightM || 2000) > 500; onActivated: picker.stepHeight(-1) }
             Step { label: "+"; enabled: (picker.draft.heightM || 2000) < 12000; onActivated: picker.stepHeight(1) }
             Step { visible: picker.groundOffered; label: "SEA"; enabled: picker.draft.above === "ground"; onActivated: picker.setAbove("sea") }
@@ -359,14 +359,14 @@ FocusScope {
         RowLayout {
             Layout.fillWidth: true
             Heading { text: "CHOSEN"; Layout.fillWidth: true }
-            Word { text: picker.draft.sites.length ? "CLICK ONE TO CENTRE IT" : ""; font.pixelSize: 9; opacity: .45 }
+            Word { text: picker.draft.sites.length ? "CLICK ONE TO CENTRE IT" : ""; font.pixelSize: picker.theme.size.small; opacity: .45 }
         }
         Word {
             visible: !picker.draft.sites.length
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             elide: Text.ElideNone
-            font.pixelSize: 10; opacity: .5
+            font.pixelSize: picker.theme.size.small; opacity: .5
             text: picker.docked ? "NONE YET. CLICK A RADAR ON THE MAP, OR TICK ONE BELOW." : "NONE YET. TICK ONE BELOW."
         }
         Flow {
@@ -392,7 +392,7 @@ FocusScope {
                         height: parent.height
                         Item {
                             width: chosenName.implicitWidth + 14; height: parent.height
-                            Word { id: chosenName; anchors.centerIn: parent; text: chosen.site ? chosen.site.name.toUpperCase() : chosen.modelData.id; color: picker.theme.accent; font.pixelSize: 10; font.bold: true }
+                            Word { id: chosenName; anchors.centerIn: parent; text: chosen.site ? chosen.site.name.toUpperCase() : chosen.modelData.id; color: picker.theme.accent; font.pixelSize: picker.theme.size.small; font.bold: true }
                             MouseArea {
                                 id: chosenArea
                                 anchors.fill: parent
@@ -407,7 +407,7 @@ FocusScope {
                         Rectangle {
                             width: 20; height: parent.height
                             color: removeArea.containsMouse ? Qt.alpha(picker.theme.accent, .3) : "transparent"
-                            Word { anchors.centerIn: parent; text: "✕"; font.pixelSize: 10; color: picker.theme.accent; opacity: removeArea.containsMouse ? 1 : .7 }
+                            Word { anchors.centerIn: parent; text: "✕"; font.pixelSize: picker.theme.size.small; color: picker.theme.accent; opacity: removeArea.containsMouse ? 1 : .7 }
                             MouseArea {
                                 id: removeArea
                                 anchors.fill: parent
@@ -424,7 +424,7 @@ FocusScope {
         RowLayout {
             Layout.fillWidth: true
             Heading { text: "ALL RADARS"; Layout.fillWidth: true }
-            Word { text: picker.filter !== "" ? picker.rows.length + " OF " + picker.radars.length : picker.radars.length; font.pixelSize: 10; opacity: .5 }
+            Word { text: picker.filter !== "" ? picker.rows.length + " OF " + picker.radars.length : picker.radars.length; font.pixelSize: picker.theme.size.small; opacity: .5 }
         }
         // The filter: id, name or country. `/` comes here; Escape, Return,
         // Tab or Down go back to the list with the filter kept.
@@ -439,7 +439,7 @@ FocusScope {
                 anchors.leftMargin: 8
                 anchors.rightMargin: 8
                 spacing: 8
-                Word { text: "/"; font.pixelSize: 11; opacity: .55 }
+                Word { text: "/"; font.pixelSize: picker.theme.size.caption; opacity: .55 }
                 TextInput {
                     id: filterField
                     Layout.fillWidth: true
@@ -448,14 +448,14 @@ FocusScope {
                     selectionColor: Qt.alpha(picker.theme.accent, .4)
                     selectedTextColor: picker.theme.foreground
                     font.family: picker.theme.font
-                    font.pixelSize: 12
+                    font.pixelSize: picker.theme.size.body
                     verticalAlignment: TextInput.AlignVCenter
                     clip: true
                     Word {
                         anchors.fill: parent
                         visible: !filterField.text
                         text: "FILTER · ID, NAME, COUNTRY"
-                        font.pixelSize: 10; opacity: .45
+                        font.pixelSize: picker.theme.size.small; opacity: .45
                     }
                     Keys.onPressed: event => {
                         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Down || event.key === Qt.Key_Return
@@ -523,15 +523,15 @@ FocusScope {
                     }
                     Word { text: row.modelData.site.id; font.bold: true; color: row.ink; Layout.preferredWidth: 72 }
                     Word { text: row.modelData.site.name.toUpperCase(); color: row.ink; opacity: .9; Layout.fillWidth: true }
-                    Word { text: row.modelData.site.country; font.pixelSize: 10; opacity: .55 }
-                    Word { text: Math.round(Mosaic.fullKm(row.modelData.site)) + " KM"; font.pixelSize: 10; opacity: row.entry ? .8 : .45; color: row.ink; horizontalAlignment: Text.AlignRight; Layout.preferredWidth: 46 }
+                    Word { text: row.modelData.site.country; font.pixelSize: picker.theme.size.small; opacity: .55 }
+                    Word { text: Math.round(Mosaic.fullKm(row.modelData.site)) + " KM"; font.pixelSize: picker.theme.size.small; opacity: row.entry ? .8 : .45; color: row.ink; horizontalAlignment: Text.AlignRight; Layout.preferredWidth: 46 }
                 }
             }
             Word {
                 anchors.centerIn: parent
                 visible: !picker.rows.length
                 text: "NO RADAR MATCHES"
-                font.pixelSize: 10; opacity: .5; font.letterSpacing: 1
+                font.pixelSize: picker.theme.size.small; opacity: .5; font.letterSpacing: 1
             }
         }
         Rectangle { Layout.fillWidth: true; height: 1; color: Qt.alpha(picker.theme.foreground, .17) }
@@ -542,7 +542,7 @@ FocusScope {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 elide: Text.ElideNone
-                font.pixelSize: 10; opacity: .55
+                font.pixelSize: picker.theme.size.small; opacity: .55
                 text: "↑↓ MOVE · SPACE TICK\n/ FILTER · R RULE" + (picker.draft.rule === "height" ? " · [ ] HEIGHT" : "")
             }
             Step { label: "CANCEL"; implicitHeight: 24; onActivated: picker.close() }

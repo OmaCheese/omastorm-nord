@@ -50,11 +50,14 @@ FocusScope {
     }
     signal expandRequested()
     signal closeRequested()
-    implicitWidth: 308
+    // S46: the card grows with Omarchy's text size (never below its 308 ×
+    // 372 at base 12), so larger text still fits; RadarBar's panel follows.
+    readonly property real grow: Math.max(1, theme.size.k)
+    implicitWidth: Math.round(308 * grow)
     // Match RadarBar's fixed KeyboardPanel contentHeight (400 − 28 inset).
     // Do not track layout.implicitHeight — time labels and status text
     // settling after open made the panel shrink and grow.
-    implicitHeight: 372
+    implicitHeight: Math.round(372 * grow)
     // The card exists only while it is open, so its buffer does too; a
     // smaller one than the window's (the phone's cap).
     Engine {
@@ -96,7 +99,7 @@ FocusScope {
     component Label: Text {
         color: card.theme.foreground
         font.family: card.theme.font
-        font.pixelSize: 12
+        font.pixelSize: card.theme.size.body
         elide: Text.ElideRight
     }
     component Control: Button {
@@ -131,10 +134,10 @@ FocusScope {
             readonly property string siteId: card.state ? card.state.site.id : ""
             readonly property string siteName: connection.site ? connection.site.name : ""
             readonly property bool idIsName: !!siteId && !!siteName && siteId === siteId.toLowerCase()
-            Label { text: parent.idIsName ? parent.siteName : parent.siteId || "—"; font.bold: true; font.pixelSize: 14 }
+            Label { text: parent.idIsName ? parent.siteName : parent.siteId || "—"; font.bold: true; font.pixelSize: card.theme.size.title }
             Label { Layout.fillWidth: true; text: parent.idIsName ? "" : parent.siteName; opacity: .65 }
             Rectangle { width: 5; height: 5; radius: 3; color: card.statusColor }
-            Label { text: card.statusText; color: card.statusColor; font.pixelSize: 11 }
+            Label { text: card.statusText; color: card.statusColor; font.pixelSize: card.theme.size.caption }
         }
         Rectangle {
             Layout.fillWidth: true
@@ -157,7 +160,7 @@ FocusScope {
                 treatment: card.session.treatment
                 weakFloor: card.session.weakFloor
                 relief: card.session.relief
-                labelSize: 10
+                labelSize: card.theme.size.small
                 product: card.state ? card.state.product : null
                 // S30: a My mosaic height frame's holes are hatched only
                 // inside the chosen radars' reach (no circles drawn here).
@@ -225,7 +228,7 @@ FocusScope {
                 target: card.session
                 function onViewChanged() { map.applyView(); }
             }
-            Label { anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 8; text: "⤢"; font.pixelSize: 20; opacity: .65 }
+            Label { anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 8; text: "⤢"; font.pixelSize: card.theme.size.body + 8; opacity: .65 }
             // What the rings mean (S29).
             Rectangle {
                 anchors.top: parent.top; anchors.left: parent.left; anchors.margins: 8
@@ -238,7 +241,7 @@ FocusScope {
                     x: 4; y: 2
                     width: card.width - 64
                     wrapMode: Text.Wrap
-                    font.pixelSize: 9; opacity: .75
+                    font.pixelSize: card.theme.size.small; opacity: .75
                     text: map.ringNote.toUpperCase()
                 }
             }
@@ -247,14 +250,14 @@ FocusScope {
                 Rectangle {
                     implicitWidth: product.implicitWidth + 10; implicitHeight: 20
                     color: Qt.alpha(card.theme.background, .92)
-                    Label { id: product; anchors.centerIn: parent; font.pixelSize: 10; opacity: .8
+                    Label { id: product; anchors.centerIn: parent; font.pixelSize: card.theme.size.small; opacity: .8
                         text: card.scan ? card.scan.productName.toUpperCase() + (card.scan.kind === "grid" ? " · COMPOSITE" : (card.scan.product || "REF") === "REF" ? " " + card.scan.elevationDeg.toFixed(1) + "°" : "") : "" }
                 }
                 Item { Layout.fillWidth: true }
                 Rectangle {
                     implicitWidth: time.implicitWidth + 10; implicitHeight: 20
                     color: Qt.alpha(card.theme.background, .92)
-                    Label { id: time; anchors.centerIn: parent; font.pixelSize: 10; opacity: .8
+                    Label { id: time; anchors.centerIn: parent; font.pixelSize: card.theme.size.small; opacity: .8
                         text: {
                             if (!card.scan || !card.scan.scanTime) return "";
                             var loc = Qt.locale(), d = new Date(card.scan.scanTime);
@@ -357,7 +360,7 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 12
                     // S41: while loading, the step has the whole row.
-                    Label { font.pixelSize: 10; opacity: .55; visible: !connection.loading; text: card.frames.length ? Qt.formatTime(new Date(card.frames[0].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
+                    Label { font.pixelSize: card.theme.size.small; opacity: .55; visible: !connection.loading; text: card.frames.length ? Qt.formatTime(new Date(card.frames[0].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
                     // While it plays: frames held of the loop and their memory
                     // against this card's cap (Engine.qml, bufferNote).
                     // S31: what is loading, from the engine (state.loading),
@@ -368,7 +371,7 @@ FocusScope {
                     Label {
                         Layout.fillWidth: true
                         horizontalAlignment: Text.AlignHCenter
-                        font.pixelSize: 10; font.bold: true; color: card.theme.accent
+                        font.pixelSize: card.theme.size.small; font.bold: true; color: card.theme.accent
                         elide: Text.ElideRight
                         visible: !!connection.loading
                         text: connection.loading ? connection.percent + " % · " + (connection.activeStep ? connection.activeStep.name : "") : ""
@@ -376,19 +379,19 @@ FocusScope {
                     Label {
                         Layout.fillWidth: true
                         horizontalAlignment: Text.AlignHCenter
-                        font.pixelSize: 9; opacity: .45
+                        font.pixelSize: card.theme.size.small; opacity: .45
                         visible: connection.looping && connection.bufferTarget > 0
                         text: connection.bufferReady + "/" + connection.bufferTarget + " · " + connection.bufferMB + " of " + connection.bufferCapMB + " MB"
                             + (connection.bufferDropped > 0 ? " · −" + connection.bufferDropped : "")
                     }
                     Item { Layout.fillWidth: true; visible: !connection.loading && !(connection.looping && connection.bufferTarget > 0) }
-                    Label { font.pixelSize: 10; opacity: .55; visible: !connection.loading; text: card.condition === "ok" ? "now" : card.frames.length ? Qt.formatTime(new Date(card.frames[card.frames.length - 1].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
+                    Label { font.pixelSize: card.theme.size.small; opacity: .55; visible: !connection.loading; text: card.condition === "ok" ? "now" : card.frames.length ? Qt.formatTime(new Date(card.frames[card.frames.length - 1].scanTime), Qt.locale().timeFormat(Locale.ShortFormat)) : " " }
                 }
             }
         }
         Label {
             Layout.fillWidth: true
-            font.pixelSize: 8
+            font.pixelSize: card.theme.size.small
             opacity: .5
             elide: Text.ElideRight
             // The frame's own credit, verbatim (docs/protocol.md,

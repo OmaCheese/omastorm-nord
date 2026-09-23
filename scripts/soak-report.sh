@@ -10,8 +10,8 @@
 #   scripts/soak-report.sh --engine web     # web | bar | both (default)
 #
 # Engines (override for a private run):
-#   web: WEB_RUNTIME=/run/user/1000/omastorm-web/omastorm-nord  WEB_CACHE=~/.cache/omastorm-web/omastorm-nord
-#   bar: BAR_RUNTIME=/run/user/1000/omastorm-nord               BAR_CACHE=~/.cache/omastorm-nord
+#   web: WEB_RUNTIME=/run/user/<uid>/omastorm-web/omastorm-nord  WEB_CACHE=~/.cache/omastorm-web/omastorm-nord
+#   bar: BAR_RUNTIME=/run/user/<uid>/omastorm-nord               BAR_CACHE=~/.cache/omastorm-nord
 #   WEB_UNIT=omastorm-web (the gateway whose journal holds the /tex lines; empty: skip)
 #
 # Sources of the request numbers:

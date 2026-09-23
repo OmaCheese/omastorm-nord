@@ -271,7 +271,7 @@ Item {
         || treatmentMenu.opened || productMenu.opened || mapMenu.opened || legendZoom !== ""
         || (mosaicPicker.open && !mosaicPicker.docked)
     function wheelSinks() {
-        return [helpChip, scaleBar, ringCaptionBox, loadingCard, mapCredit, northMark,
+        return [helpChip, followChip, scaleBar, ringCaptionBox, loadingCard, mapCredit, northMark,
                 obsLayer.legendItem, obsLayer.tipItem, lightningLayer.keyItem, mosaicPicker];
     }
     function wheelBlockedAt(mx, my) {
@@ -353,7 +353,7 @@ Item {
         function legend(name: string): void { app.legendZoom = name; }
         function rect(name: string): string {
             var it = ({map: map, picker: picker.cardItem, chip: siteTitle, menu: mapMenu.cardItem, submenu: mapMenu.subItem,
-                       layers: layersPanel, sheet: sheet, location: locationPicker, mosaic: mosaicPicker, treatment: treatmentMenu, product: productMenu,
+                       layers: layersPanel.cardItem, sheet: sheet.cardItem, location: locationPicker.cardItem, mosaic: mosaicPicker, treatment: treatmentMenu, product: productMenu,
                        help: helpChip, scale: scaleBar, rings: ringCaptionBox, loading: loadingCard, credit: mapCredit, north: northMark,
                        obsLegend: obsLayer.legendItem, obsTip: obsLayer.tipItem, lightningKey: lightningLayer.keyItem,
                        legend: legend, legendCard: legendZoomCard})[name];

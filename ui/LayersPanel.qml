@@ -35,6 +35,8 @@ Item {
     signal resetRequested()
     property bool opened: false
     property int cursor: 0
+    /// S46: the theme's type scale (a fallback for a bare host).
+    readonly property var sizes: theme && theme.size ? theme.size : ({small: 10, caption: 11, body: 12, label: 13, title: 14, k: 1})
     visible: opened
     focus: opened
     readonly property string source: store ? store.source : "stations"
@@ -131,7 +133,7 @@ Item {
     component Word: Text {
         color: panel.theme ? panel.theme.foreground : "#a9b1d6"
         font.family: panel.theme ? panel.theme.font : "monospace"
-        font.pixelSize: panel.theme ? panel.theme.baseSize : 12
+        font.pixelSize: panel.sizes.body
         elide: Text.ElideRight
     }
     MouseArea { anchors.fill: parent; onClicked: panel.close() }
@@ -142,7 +144,7 @@ Item {
         readonly property point anchor: panel.opened && panel.chip ? panel.chip.mapToItem(panel, 0, panel.chip.height) : Qt.point(0, 0)
         x: Math.round(Math.max(6, Math.min(panel.width - width - 6, anchor.x)))
         y: Math.round(Math.min(panel.height - height - 6, anchor.y + 6))
-        width: 250
+        width: Math.round(250 * Math.max(1, panel.sizes.k))
         height: column.implicitHeight + 12
         color: Qt.alpha(panel.theme ? panel.theme.background : "#1a1b26", .95)
         border.width: 1
@@ -157,8 +159,8 @@ Item {
                 Layout.fillWidth: true
                 Layout.leftMargin: 10; Layout.rightMargin: 10
                 Layout.bottomMargin: 4
-                Word { text: "LAYERS"; font.pixelSize: 10; opacity: .6; Layout.fillWidth: true }
-                Word { text: panel.keyText; font.pixelSize: 10; opacity: .45 }
+                Word { text: "LAYERS"; font.pixelSize: panel.sizes.small; opacity: .6; Layout.fillWidth: true }
+                Word { text: panel.keyText; font.pixelSize: panel.sizes.small; opacity: .45 }
             }
             Repeater {
                 model: panel.rows
@@ -172,7 +174,7 @@ Item {
                     readonly property color ink: hot ? accent : panel.theme ? panel.theme.foreground : "#a9b1d6"
                     Layout.fillWidth: true
                     // Review S4: a status of two lines makes the row taller.
-                    implicitHeight: Math.max(36, rowText.implicitHeight + 8)
+                    implicitHeight: Math.max(Math.round(36 * Math.max(1, panel.sizes.k)), rowText.implicitHeight + 8)
                     color: hot ? Qt.alpha(panel.theme ? panel.theme.foreground : "#a9b1d6", .08) : "transparent"
                     RowLayout {
                         anchors.fill: parent
@@ -188,7 +190,7 @@ Item {
                             Word { text: row.modelData.label; color: row.ink; Layout.fillWidth: true }
                             Word {
                                 text: parent.status ? (parent.status.state === "loading" ? "● " : parent.status.state === "error" ? "✗ " : "! ") + parent.status.text : row.modelData.note
-                                font.pixelSize: 9
+                                font.pixelSize: panel.sizes.small
                                 opacity: parent.status ? .95 : .55
                                 color: parent.status && parent.status.state === "loading" ? row.accent
                                     : parent.status ? (panel.theme && panel.theme.red ? panel.theme.red : "#e0787b") : row.ink
@@ -197,7 +199,7 @@ Item {
                                 maximumLineCount: 2
                             }
                         }
-                        Word { text: String(row.index + 1); font.pixelSize: 10; opacity: .45 }
+                        Word { text: String(row.index + 1); font.pixelSize: panel.sizes.small; opacity: .45 }
                         // The switch: a track with a knob, accent when on.
                         Rectangle {
                             id: track
@@ -228,7 +230,7 @@ Item {
                 id: sourceRowItem
                 readonly property bool hot: sourceArea.containsMouse || panel.cursor === panel.sourceRow
                 Layout.fillWidth: true
-                implicitHeight: 36
+                implicitHeight: Math.round(36 * Math.max(1, panel.sizes.k))
                 color: hot ? Qt.alpha(panel.theme ? panel.theme.foreground : "#a9b1d6", .08) : "transparent"
                 MouseArea { id: sourceArea; anchors.fill: parent; hoverEnabled: true; onClicked: panel.cursor = panel.sourceRow }
                 RowLayout {
@@ -236,7 +238,7 @@ Item {
                     anchors.leftMargin: 10
                     anchors.rightMargin: 10
                     spacing: 4
-                    Word { text: "FROM"; font.pixelSize: 10; opacity: .6; Layout.preferredWidth: 38 }
+                    Word { text: "FROM"; font.pixelSize: panel.sizes.small; opacity: .6; Layout.preferredWidth: Math.round(38 * Math.max(1, panel.sizes.k)) }
                     Repeater {
                         model: panel.sourceNames
                         Rectangle {
@@ -245,7 +247,7 @@ Item {
                             readonly property bool on: panel.source === modelData[0]
                             readonly property color accent: panel.theme ? panel.theme.accent : "#7aa2f7"
                             Layout.fillWidth: true
-                            implicitHeight: 20
+                            implicitHeight: Math.round(20 * Math.max(1, panel.sizes.k))
                             radius: 3
                             color: on ? accent : segArea.containsMouse ? Qt.alpha(accent, .18) : "transparent"
                             border.width: 1
@@ -253,7 +255,7 @@ Item {
                             Word {
                                 anchors.centerIn: parent
                                 text: seg.modelData[1]
-                                font.pixelSize: 9
+                                font.pixelSize: panel.sizes.small
                                 color: seg.on ? (panel.theme ? panel.theme.background : "#1a1b26") : (panel.theme ? panel.theme.foreground : "#a9b1d6")
                             }
                             MouseArea {
@@ -264,7 +266,7 @@ Item {
                             }
                         }
                     }
-                    Word { text: "5"; font.pixelSize: 10; opacity: .45; Layout.leftMargin: 4 }
+                    Word { text: "5"; font.pixelSize: panel.sizes.small; opacity: .45; Layout.leftMargin: 4 }
                 }
             }
             // S47: Reset, the cure for anything stuck.
@@ -298,7 +300,7 @@ Item {
             Word {
                 visible: text !== ""
                 text: panel.status
-                font.pixelSize: 9
+                font.pixelSize: panel.sizes.small
                 opacity: .55
                 Layout.fillWidth: true
                 Layout.leftMargin: 10; Layout.rightMargin: 10

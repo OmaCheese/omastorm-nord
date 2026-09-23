@@ -855,7 +855,10 @@ pub(crate) mod tests {
         fetcher.reset();
         assert_eq!(fetcher.failed.get("dmi-obs.json"), Some(&5));
         assert!(!dir.join("fmi.xml").exists(), "a good body goes");
-        assert!(dir.join("dmi-obs.json").exists(), "a failed part's copy stays");
+        assert!(
+            dir.join("dmi-obs.json").exists(),
+            "a failed part's copy stays"
+        );
         assert!(fetcher.loading());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1017,7 +1020,14 @@ pub(crate) mod tests {
         lists[0].1.push(station(now - 600_000, Some(9.0)));
         let hub = Hub::default();
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        hub.set(1, Layers { temp: true, wind: false }, &tx);
+        hub.set(
+            1,
+            Layers {
+                temp: true,
+                wind: false,
+            },
+            &tx,
+        );
         hub.publish(line(&lists, now));
         hub.publish(line(&lists, now + 30_000));
         assert!(rx.try_recv().is_ok());

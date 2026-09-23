@@ -8,8 +8,8 @@ import QtQuick.Layouts
 // outside, Escape or the layers key closes it; Up, Down (or j, k) move,
 // Space or Return flips the row, 1 2 3 flip a row directly. S43: a fourth
 // row chooses where temperature and wind come from, STATIONS, GRID (the MET
-// Nordic analysis) or BOTH; Left and Right (h, l) or Space move along it, 4
-// steps it.
+// Nordic analysis) or BOTH; Left and Right (h, l) or Space move along it, 5
+// steps it (review S4).
 Item {
     id: panel
     property var theme
@@ -44,7 +44,7 @@ Item {
         else if (cursor === sourceRow && (event.key === Qt.Key_Right || event.key === Qt.Key_L)) store.cycleSource(1);
         else if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { if (cursor === sourceRow) store.cycleSource(1); else flip(cursor); }
         else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_3) { cursor = event.key - Qt.Key_1; flip(cursor); }
-        else if (event.key === Qt.Key_4) { cursor = sourceRow; store.cycleSource(1); }
+        else if (event.key === Qt.Key_5) { cursor = sourceRow; store.cycleSource(1); }
         else event.accepted = false;
     }
     // Norway's Frost needs a client ID; the panel says why there is no
@@ -197,7 +197,7 @@ Item {
                             }
                         }
                     }
-                    Word { text: "4"; font.pixelSize: 10; opacity: .45; Layout.leftMargin: 4 }
+                    Word { text: "5"; font.pixelSize: 10; opacity: .45; Layout.leftMargin: 4 }
                 }
             }
             Word {

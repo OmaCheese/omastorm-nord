@@ -36,6 +36,10 @@ QtObject {
     property string layersLine: ""
     property var obs: null
     property var grid: null
+    /// Review S5: an S42 engine answered `source` with an error; the layers
+    /// go again without it, and the grid says why it is missing.
+    property bool gridRefused: false
+    readonly property var refusedGrid: ({time: "", provider: {id: "metnordic", status: "failed", note: "grid needs a newer engine"}, attribution: ""})
     readonly property string layerSource: layers && (layers.source === "grid" || layers.source === "both") ? layers.source : "stations"
     readonly property bool stationsWanted: !!(layers && (layers.temp || layers.wind)) && layerSource !== "grid"
     readonly property bool gridWanted: !!(layers && (layers.temp || layers.wind)) && layerSource !== "stations"
@@ -48,8 +52,9 @@ QtObject {
         if (!socket || !socket.connected) return;
         // Review N7: the same layers again (a store reload) are not re-sent.
         var command = {type: "set_layers", temp: !!layers.temp, wind: !!layers.wind};
-        // An S42 engine knows only stations; `source` goes out when it is not.
-        if (layerSource !== "stations") command.source = layerSource;
+        // An S42 engine knows only stations; `source` goes out when it is not
+        // and the engine has not refused it (review S5).
+        if (layerSource !== "stations" && !gridRefused) command.source = layerSource;
         var line = JSON.stringify(command);
         if (layersSent && line === layersLine) return;
         layersSent = true;
@@ -594,6 +599,7 @@ QtObject {
                 products = message.products || [];
                 mosaic = message.mosaic && Array.isArray(message.mosaic.rules) ? message.mosaic : null;
                 layersSent = false;
+                gridRefused = false;
                 sendLayers();
             }
             else if (message.type === "state") {
@@ -625,6 +631,11 @@ QtObject {
                 if (pendingId !== "" && (frame.id === pendingId || !(message.timeline || []).some(t => t.id === pendingId))) pendingId = "";
                 // A loop belongs to its station; another station ends it.
                 if (loopSite !== "" && message.site.id !== loopSite) requestLoop("");
+            } else if (message.type === "error" && message.command === "set_layers" && layerSource !== "stations" && !gridRefused) {
+                gridRefused = true;
+                layersLine = "";
+                sendLayers();
+                grid = gridWanted ? refusedGrid : null;
             } else if (message.type === "error") {
                 rejection = message.message;
                 if (message.command === "seek") pendingId = "";

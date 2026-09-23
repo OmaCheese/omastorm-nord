@@ -801,7 +801,8 @@ Item {
     // or null. Columns are linear in longitude and rows in Mercator y, so
     // the picture is placed by its corners and scaled with the map.
     property var underlay: null
-    property real underlayOpacity: .5
+    // Review S3: stronger on a dark theme, where a faint field turns muddy.
+    property real underlayOpacity: theme && theme.light ? .45 : .68
     Image {
         id: underlayImage
         readonly property var b: map.underlay && map.underlay.bounds ? map.underlay.bounds : [0, 0, 0, 0]

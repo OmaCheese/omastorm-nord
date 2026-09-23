@@ -187,9 +187,7 @@ Item {
         if (points.length) {
             var cols = grid.wind.cols > 0 ? grid.wind.cols : points.length;
             var spacingPx = (grid.wind.spacingKm || 24) * world / (2 * Math.PI * 6371 * Math.cos(map.centerLat * Math.PI / 180));
-            var lengths = points.filter(g => g[2] !== null).map(g => arrowLength(g[2])).sort((a, b) => a - b);
-            var p95 = lengths.length ? lengths[Math.min(lengths.length - 1, Math.floor(lengths.length * .95))] : 14;
-            var k = Math.max(1, Math.ceil((p95 + 10) / Math.max(1, spacingPx)));
+            var k = Math.max(1, Math.ceil((gridP95 + 10) / Math.max(1, spacingPx)));
             var margin = 80, gridTime = grid.time;
             for (var i = 0; i < points.length; i++) {
                 var row = Math.floor(i / cols), col = i % cols, g = points[i];
@@ -216,6 +214,11 @@ Item {
     // S43: a pan brings other grid points into view (the stations stay).
     function schedulePan() { if (gridPoints.length) thin.restart(); }
     onStationsChanged: rethin()
+    // Review N5: the grid's 95th percentile arrow, once per grid message.
+    readonly property real gridP95: {
+        var lengths = gridPoints.filter(g => g[2] !== null).map(g => arrowLength(g[2])).sort((a, b) => a - b);
+        return lengths.length ? lengths[Math.min(lengths.length - 1, Math.floor(lengths.length * .95))] : 14;
+    }
     onGridPointsChanged: rethin()
     onWidthChanged: schedulePan()
     onHeightChanged: schedulePan()
@@ -395,8 +398,16 @@ Item {
             Item {
                 visible: stationLayer.temp && stationLayer.showLegend
                 width: 170; height: 24
+                // Review S3: with the grid's field on, the ramp is drawn as
+                // the field is, at its opacity over the theme's background.
+                Rectangle {
+                    visible: !!stationLayer.underlay
+                    width: parent.width; height: 8; radius: 4
+                    color: stationLayer.theme ? stationLayer.theme.background : "#1a1b26"
+                }
                 Rectangle {
                     id: bar
+                    opacity: stationLayer.underlay && stationLayer.map ? stationLayer.map.underlayOpacity : 1
                     width: parent.width; height: 8; radius: 4
                     gradient: Gradient {
                         orientation: Gradient.Horizontal

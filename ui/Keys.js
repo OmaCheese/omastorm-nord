@@ -53,7 +53,7 @@ var ROWS = [
      { label: "oldest / newest frame", actions: ["oldest", "newest"] },
      { label: "Pixels, Glyphs, Stipple", actions: ["pixels", "glyphs", "stipple"] },
      { label: "weak returns: hide / show", actions: ["weak"] },
-     { label: "layers: radar, temperature, wind", actions: ["layers"] },
+     { label: "layers: radar, temp, wind, lightning", actions: ["layers"] },
      { label: "reset: reload radar and layers", actions: ["reset_all"] },
      { label: "this sheet · esc closes", actions: ["help"] }]
 ];

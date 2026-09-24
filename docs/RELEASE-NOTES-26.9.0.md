@@ -101,7 +101,8 @@ old client that sends no `set_layers` gets none of them)
 - **The MET Nordic grid:** MET Norway's hourly 1 km analysis, read over
   OPeNDAP as a strided subset (about 2 MB an hour, never the 114 MB file):
   temperature as a field under the radar, wind as arrows on a lattice. One
-  probe and one subset per new hour, none while no client shows it.
+  subset per new hour; until it is published, a probe every 10 minutes;
+  nothing while no client shows it.
 - **Lightning:** FMI's NORDLIS strikes over the Nordics, polled at most once
   a minute while a client has it on (off by default). The first fetch
   brings the last 5 hours, the live loop's span; the strikes go to clients

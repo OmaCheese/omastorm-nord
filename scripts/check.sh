@@ -88,6 +88,7 @@ tests() { # the compiled tests; the cap ends a hung test and its daemons
 }
 step fmt bash scripts/cargo.sh fmt --check || failed=1
 step clippy bash scripts/cargo.sh clippy --offline --locked --all-targets -- -D warnings || failed=1
+step shellcheck shellcheck -x run.sh scripts/*.sh || failed=1
 # The engine and the test binaries, so the tests and the windows below
 # start without compiling under each other. Without them there is nothing
 # to run, and each window would only wait out its timeout.

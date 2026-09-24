@@ -31,12 +31,12 @@ mkdir -p data/raw
 countries='SE|NO|FI|AX|DK|EE|LV|LT|ES|PT|AD|GI'
 regenerate() {
   local name
-  for name in $(awk '{print $2}' data/SHA256SUMS); do
+  while read -r _ name; do
     [[ -f $name ]] || {
       printf 'Missing %s: run bash scripts/extract-fixtures.sh (or refresh-fixtures.sh) first.\n' "$name" >&2
       exit 1
     }
-  done
+  done <data/SHA256SUMS
   work=$(mktemp -d "${TMPDIR:-/tmp}/omastorm-regenerate.XXXXXX")
   trap 'rm -rf "$work"' EXIT
   awk -F '\t' -v re="^($countries)\$" '$9 ~ re' data/raw/cities5000.txt >"$work/cities5000.txt"
@@ -59,9 +59,9 @@ regenerate() {
   done
   local sums=$work/SHA256SUMS
   : >"$sums"
-  for name in $(awk '{print $2}' data/SHA256SUMS); do
+  while read -r _ name; do
     sha256sum "$name" >>"$sums"
-  done
+  done <data/SHA256SUMS
   diff -u data/SHA256SUMS "$sums" || true
   cp -f "$sums" data/SHA256SUMS
   sha256sum -c --quiet data/SHA256SUMS

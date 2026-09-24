@@ -1,5 +1,9 @@
 # Engine to UI protocol
 
+`S<n>` names the development stream that added a feature (and marks protocol
+versions here); `DEC-<n>` names an internal design decision. Those working
+records are not part of this repository.
+
 Version 2. The Rust engine (`omastorm-engine`) is the server. The Quickshell UI is a thin client. Radar values never
 travel over this protocol; they go to the GPU as texture files.
 

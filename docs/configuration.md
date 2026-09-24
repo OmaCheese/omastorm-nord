@@ -5,12 +5,16 @@
 The UI reads two files with different responsibilities. Explicit configuration
 wins; remembered state fills in values the user has not configured. Neither
 file contains radar frames or downloaded map data, and neither is read by the
-engine. The UI sends the commands described in [protocol.md](protocol.md).
+engine; `frost.env` is the one file under `~/.config/omastorm-nord/` the engine
+reads. The UI sends the commands described in [protocol.md](protocol.md).
 
 | File | Owner and purpose | Contents |
 | --- | --- | --- |
 | `~/.config/omastorm-nord/config.toml` | User-managed, deliberate preferences | Optional fixed launch center, radar override, treatment, weak-return floor, keybindings |
 | `$XDG_STATE_HOME/omastorm-nord/state.json` | App-managed, remembered session | Last map center, zoom, and optional radar lock chosen in the UI |
+| `$XDG_STATE_HOME/omastorm-nord/layers.json` | App-managed | The LAYERS switches (radar, temperature, wind, lightning) and where temperature and wind come from |
+| `$XDG_STATE_HOME/omastorm-nord/mosaic.json` | App-managed | My mosaic's radars, rule and height |
+| `$XDG_CONFIG_HOME/omastorm-nord/frost.env` | User-managed secret, read by the **engine** | `FROST_CLIENT_ID=…` for Norway's weather stations (below) |
 
 When `XDG_STATE_HOME` is unset, state lives at
 `~/.local/state/omastorm-nord/state.json`. Onboarding, panning, zooming, and UI lock
@@ -138,8 +142,8 @@ the machine's own state and weather files are not read unless
   (`+ =`), `zoom_out` (`-`), `reset` (`0`, the resolved location), `previous_frame` (`[`),
   `next_frame` (`]`), `play` (`Space`), `oldest` (`Home`), `newest` (`End`),
   `pixels` `glyphs` `stipple` (`1 2 3`), `weak` (`w`), `layers` (`Ctrl+L`,
-  the LAYERS panel), `reset_all` (`Shift+R`, S47: reload the radar and the
-  weather layers with the current choices, docs/protocol.md Reset), `help`
+  the LAYERS panel), `reset_all` (`Shift+R`: reload the radar and the
+  weather layers with the current choices, [protocol.md](protocol.md) Reset), `help`
   (`?`), `close` (`Escape`).
   A value that is not a quoted string, a sequence Qt cannot parse, an
   unknown action, or a key another action already holds leaves that action
@@ -163,3 +167,36 @@ Invalid fields are dropped. A missing file is no remembered view.
 `OMASTORM_LOCATION` names another weather.json (`name`, `latitude`,
 `longitude`, written by the shell's weather panel) for checks; coordinates
 outside ±90/±180 are ignored.
+
+## Weather layers
+
+The LAYERS switches are remembered in `layers.json` beside `state.json`:
+radar on, temperature, wind and lightning off, and temperature and wind from
+the stations until you change them. `OMASTORM_LAYERS` (`radar,temp,wind,lightning`,
+any subset, `none` for none, plus `grid` or `both` for the source) outranks
+the file for checks and captures and is never written back.
+
+### Frost client ID
+
+Norway's weather stations come from MET Norway's Frost API, which needs a
+free client ID from <https://frost.met.no/auth/requestCredentials.html>. The
+engine takes it from `FROST_CLIENT_ID` in its environment, else from a
+`FROST_CLIENT_ID=` line in `$XDG_CONFIG_HOME/omastorm-nord/frost.env`
+(default `~/.config/omastorm-nord/frost.env`; quotes and a leading `export`
+are allowed). Create it with `umask 077` or `chmod 600` it, so only you can
+read it. Only the ID is used, as HTTP basic auth
+to frost.met.no; a `FROST_CLIENT_SECRET` line is ignored. The engine never
+writes the ID to a URL, a log line or the cache.
+
+The file is read at every station update, so adding or changing the ID
+needs no restart. Without an ID, Norway is skipped: the `obs` line marks
+Frost `skipped`, LAYERS says “Frost: no client ID”, and Sweden, Finland and
+Denmark still show. The MET Nordic grid needs no ID.
+
+## Text size
+
+The window and the popover size their text from Omarchy's `[font]
+base-size` in `~/.config/omarchy/shell.toml` (what
+`omarchy-display-text-size <px>` sets; 12 when unset): a type scale from
+base − 2 (never under 8 px) to base + 7, with cards and rows scaling with
+it. The file is watched, so a change re-flows an open window.

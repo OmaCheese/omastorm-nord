@@ -1,5 +1,9 @@
 # Engine to UI protocol
 
+`S<n>` names the development stream that added a feature (and marks protocol
+versions here); `DEC-<n>` names an internal design decision. Those working
+records are not part of this repository.
+
 Version 2. The Rust engine (`omastorm-engine`) is the server. The Quickshell UI is a thin client. Radar values never
 travel over this protocol; they go to the GPU as texture files.
 
@@ -911,8 +915,7 @@ with the beam centre `h = R cos(e) / cos(e + s/R) − R` above the antenna.
 
 The engine reads only the angles a product needs: one for `REF`, the scans
 a pseudo-CAPPI chooses somewhere, every scan for `CMAX`, `ETOP` and `VIL`,
-DBZH only, with range requests where the provider allows. What a frame
-costs is measured per provider in the streams' logs (`coord/log/`).
+DBZH only, with range requests where the provider allows.
 
 ### Storm height and rain mass
 
@@ -1295,9 +1298,7 @@ reason).
   window are both closed. None is ever kept warm. A composite kept warm (`OMASTORM_WARM=sweden`)
   is, like any selected station, not polled by its warm poller while it is
   selected, so while one of its products is shown its `REF` ring pauses; it
-  backfills the gap when `REF` is shown again or the station is left. The
-  measured bytes, requests and seconds per frame are in
-  `coord/log/S24b.md`.
+  backfills the gap when `REF` is shown again or the station is left.
 
 ## Sections and profiles
 
@@ -1357,8 +1358,7 @@ never stored:
   or, after a cut only a newer frame asked for (a section standing on
   screen), 30 seconds; then dropped. While a section is set, a new newest
   frame builds the next grid and cuts the section again; nothing else
-  builds one. A Nordic grid is about 77 MB while held; its fill seconds and
-  the engine's memory are in `coord/log/S24c.md`.
+  builds one. A Nordic grid is about 77 MB while held.
 
 **`set_section`.** `from` and `to` are points (`lat` in [−90, 90], `lon` in
 [−180, 180]) at least 2 km apart; anything else is answered with an

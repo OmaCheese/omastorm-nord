@@ -37,7 +37,7 @@ pub const LEVEL_M: u32 = 500;
 /// A column is `FACTOR` × `FACTOR` of the 2,000 m texels: 4,000 m of Web
 /// Mercator, about 2 km of ground at 60° N. The Nordic grid is then 836 ×
 /// 1149 columns, 77 MB; at 2,000 m its codes, counts and radar bits would be
-/// 92 MB each and its column masks 31 MB, ~307 MB (`coord/log/S24c.md`).
+/// 92 MB each and its column masks 31 MB, ~307 MB.
 pub const FACTOR: i64 = 2;
 /// A section's column length on the ground, and the most columns.
 pub const COLUMN_M: f64 = 2000.0;

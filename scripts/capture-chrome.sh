@@ -13,12 +13,12 @@
 #     overlay leaves map.span unchanged, and over the bare map changes it;
 #   - a right press and drag opens the menu and never pans.
 # RUN names the directory for the runtime, cache, state and harness
-# (default ~/Projects/omastorm-S46-run/chrome); the PNGs go to review/s46/.
+# (default target/capture-chrome); the PNGs go to review/s46/.
 # ONLY="themes sizes popover live picker ipc wheel" picks sections (default: all).
 # S48 adds the picker section: its PNGs go to review/s48/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-run=${RUN:-$HOME/Projects/omastorm-S46-run/chrome}
+run=${RUN:-$PWD/target/capture-chrome}
 out=$PWD/review/s46
 mkdir -p "$run/rt" "$run/cache" "$run/state" "$out"
 chmod 700 "$run/rt"

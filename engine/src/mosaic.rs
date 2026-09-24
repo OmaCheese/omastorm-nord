@@ -4281,16 +4281,16 @@ mod tests {
 
     /// Review SF2: the live cold run's arrivals (2026-09-15, Nordic Rain
     /// mass from an empty tilt store; each volume's time from its tilt
-    /// files, the silent radars from engine.log; written by
-    /// ~/Projects/omastorm-S31-run/arrivals.py) replayed through the
-    /// schedule: the first stage's percentage after each arrival, as the
-    /// tracker shows it (never down; 99 until the frame). Ignored: it needs
-    /// that file (`S31_ARRIVALS` names another).
+    /// files, the silent radars from engine.log; written by a one-off
+    /// script, not in the repository) replayed through the schedule: the
+    /// first stage's percentage after each arrival, as the tracker shows
+    /// it (never down; 99 until the frame). Ignored: it needs that file,
+    /// named by `S31_ARRIVALS`.
     #[test]
     #[ignore]
     fn the_cold_runs_arrivals_replayed() {
-        let path = std::env::var("S31_ARRIVALS")
-            .unwrap_or_else(|_| "/home/rb/Projects/omastorm-S31-run/arrivals.json".into());
+        let path =
+            std::env::var("S31_ARRIVALS").expect("S31_ARRIVALS names the live run's arrivals.json");
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let n = v["radars"].as_u64().unwrap() as usize;
@@ -4375,7 +4375,7 @@ mod tests {
     /// as the volumes land, `build` is empty until the first ends, and
     /// `history` is dim until the frame is drawn.
     ///
-    /// Ignored: it needs that file (`S31_ARRIVALS` names another).
+    /// Ignored: it needs that file, named by `S31_ARRIVALS`.
     /// `cargo test --offline the_cold_runs_stages_replayed -- --ignored
     /// --nocapture`.
     #[test]
@@ -4387,8 +4387,8 @@ mod tests {
         /// Built and sent, to the frame in the client's timeline.
         const DRAW_MS: i64 = 200;
 
-        let path = std::env::var("S31_ARRIVALS")
-            .unwrap_or_else(|_| "/home/rb/Projects/omastorm-S31-run/arrivals.json".into());
+        let path =
+            std::env::var("S31_ARRIVALS").expect("S31_ARRIVALS names the live run's arrivals.json");
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let n = v["radars"].as_u64().unwrap() as usize;

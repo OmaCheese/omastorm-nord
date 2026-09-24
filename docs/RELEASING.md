@@ -10,15 +10,15 @@ publication requires a new version. Never pin an unpublished or unverified
 binary.
 
 **Omastorm Nord (this fork).** The engine is versioned CalVer `YY.M.patch`
-(`26.9.0`, then `26.9.1`, next month `26.10.0`; coord DEC-15) so an
+(`26.9.0`, then `26.9.1`, next month `26.10.0`) so an
 `engine-*` or `v*` tag never collides with upstream's `0.1.x` tags, which a
 GitHub fork copies. `engine/release.pin` `repo=` names the fork
 (`OmaCheese/omastorm-nord`): the builders copy it into the candidate pin, and
 `tag-engine-release.sh` and `release-engine.sh` both read it, so the "already
 released?" guard asks the fork. The release scripts expect the published
-default branch to be `main` (the local trunk `se-main` is pushed as `main`). Publish only the CI (Ubuntu 24.04)
-binaries: a laptop build on Arch needs the host's newer glibc (2.44 here). The
-first publication is the ordered runbook `coord/P2-RUNBOOK.md`.
+default branch to be `main`. Publish only the CI (Ubuntu 24.04) binaries: a
+build on a rolling-release desktop links against a newer glibc than the
+Ubuntu runners have.
 
 The pin contains a shared `tag` and `repo`, and an `asset_<architecture>` /
 `sha256_<architecture>` pair for each published Linux architecture

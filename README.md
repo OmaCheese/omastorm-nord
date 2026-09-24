@@ -43,13 +43,11 @@ window.
   station, town, or county. Pick Sweden or Nordic for a composite, or My mosaic
   for the radars you chose.
 - **Timeline.** Up to 60 scans per station, cached locally. Play, step, scrub.
-  Frames left from an earlier session leave the timeline once a new frame
-  arrives, so the loop never jumps from this morning to now; offline, they
-  stay.
+  Old frames from an earlier session never splice onto new ones.
 - **Weather layers.** Temperature and wind from about 700 weather stations in
   Sweden, Norway, Finland and Denmark (Norway's need a free Frost client ID),
-  MET Norway's hourly MET Nordic analysis under them, and lightning strikes from FMI's NORDLIS network with a fading
-  30-minute trail. All off until you switch them on in LAYERS.
+  MET Norway's hourly MET Nordic analysis under them, and lightning strikes
+  from FMI's NORDLIS network with a fading 30-minute trail. All off until you switch them on in LAYERS.
 - **Loading you can see.** A cold load shows its steps and one overall
   percentage; a stuck load or layer has one Reset.
 - **Three treatments.** Glyphs, Pixels, and Stipple sample the same gate and
@@ -79,8 +77,8 @@ This clones the plugin into `~/.config/omarchy/plugins/omacheese.omastorm-nord` 
 asks which bar section to use. The first time the popover opens it downloads
 the pinned engine binary from this repository's GitHub Releases, verifies its
 sha256 against `engine/release.pin`, and installs it under
-`~/.local/share/omastorm-nord/bin`. Runtime files, cached data, remembered view state, and configuration stay
-inside Omastorm's own directories.
+`~/.local/share/omastorm-nord/bin`. Runtime files, cached data, remembered
+view state, and configuration stay inside Omastorm's own directories.
 
 From a checkout instead, to work on it: `mise setup`, then `mise plugin-link`
 points the bar at the checkout, which runs its own engine build.
@@ -229,7 +227,7 @@ the grid once an hour (MET Norway writes each hour's analysis about 15
 minutes after it), lightning at most once a minute.
 
 Norway's stations come from MET Norway's Frost API, which needs a free client
-ID; see [Configuration](#configuration). Without one, Norway's stations are
+ID; see [the Frost client ID](#norways-weather-stations-a-frost-client-id). Without one, Norway's stations are
 left out and the other three countries still show. The MET Nordic grid needs
 no ID and covers Norway too.
 
@@ -287,7 +285,8 @@ last map center, zoom, and UI radar lock separately in
 `Shift+H`, or LOCATION, opens the location picker; it writes state, not config.
 
 Explicit center coordinates win on every launch. Without them, Omastorm
-restores your last view, then falls back to weather or the location prompt. Radar selection is independent: a configured lock wins, otherwise a
+restores your last view, then falls back to weather or the location prompt.
+Radar selection is independent: a configured lock wins, otherwise a
 remembered lock is restored, otherwise the nearest radar follows the map.
 
 ```toml
@@ -321,14 +320,15 @@ the file readable only by you:
 
 ```sh
 mkdir -p ~/.config/omastorm-nord
-printf 'FROST_CLIENT_ID=%s\n' 'your-client-id' > ~/.config/omastorm-nord/frost.env
-chmod 600 ~/.config/omastorm-nord/frost.env
+(umask 077; printf 'FROST_CLIENT_ID=%s\n' 'your-client-id' > ~/.config/omastorm-nord/frost.env)
 ```
+
+For an existing file: `chmod 600 ~/.config/omastorm-nord/frost.env`.
 
 The engine reads the file (under `$XDG_CONFIG_HOME` when that is set) each
 time it updates the stations, every 30 seconds while a station layer is on,
-so a new ID takes effect without a restart. A `FROST_CLIENT_ID` in the engine's environment wins over the file.
-The client secret Frost also gives you is not used. The ID is sent only to
+so a new ID takes effect without a restart. A `FROST_CLIENT_ID` in the
+engine's environment wins over the file. The client secret Frost also gives you is not used. The ID is sent only to
 frost.met.no, as HTTP basic auth, and never written to a URL, a log or the
 cache.
 
@@ -363,8 +363,9 @@ The next popover or window starts it again. Please attach both logs to a
 [bug report](https://github.com/OmaCheese/omastorm-nord/issues).
 
 A load or a weather layer that seems stuck: press `Shift+R` (Reset) before
-restarting anything. It reloads with your current choices and keeps what is
-on disk.
+restarting anything. It reloads with your current choices; the radar volumes
+and frames on disk are kept, the weather layers are fetched again, and
+playback stops (press Space to play again).
 
 A weather layer that is on but draws nothing says why under its name in
 LAYERS: “Frost: no client ID” (see
@@ -384,6 +385,7 @@ size, `[font] base-size` in `~/.config/omarchy/shell.toml`, which
 omarchy plugin remove omacheese.omastorm-nord
 ~/.local/share/omastorm-nord/bin/omastorm-engine stop
 rm -rf ~/.local/share/omastorm-nord ~/.cache/omastorm-nord ~/.local/state/omastorm-nord
+rm -rf "$XDG_RUNTIME_DIR/omastorm-nord"                  # the engine's socket and logs
 rm -rf ~/.config/omastorm-nord                            # your config.toml and frost.env; keep them to reinstall later
 rm -f ~/.local/share/applications/omastorm-nord.desktop   # if you added the launcher entry
 ```
@@ -404,14 +406,16 @@ both.
 Every source is open data; each frame and layer names its credit in the
 window and the popover, as the engine sends it.
 
-| What | From | Licence | Credit shown |
+| What | From | Licence | Credited as |
 | --- | --- | --- | --- |
 | Swedish radars and SMHI's national composite | [SMHI](https://www.smhi.se/) open data | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | SMHI |
 | Norwegian, Finnish and Danish radars | MET Norway, FMI and DMI, through [EUMETNET Open Radar Data](https://www.eumetnet.eu/) | CC BY 4.0 | MET Norway, FMI, DMI |
 | The Nordic composite | [EUMETNET OPERA](https://www.eumetnet.eu/activities/observations-programme/current-activities/opera/), through Open Radar Data | CC BY 4.0 | EUMETNET OPERA |
 | Weather stations | SMHI (metobs), FMI (open WFS), DMI (metObs), MET Norway ([Frost](https://frost.met.no)) | CC BY 4.0 | each station's provider |
 | Temperature and wind grid | MET Norway's MET Nordic analysis ([thredds.met.no](https://thredds.met.no)) | CC BY 4.0 | MET Norway |
+| My mosaic | the radars you chose | as each radar | the chosen radars' owners, named on each frame |
 | Lightning | FMI's open WFS, the NORDLIS network | CC BY 4.0 | FMI NORDLIS |
+| Terrain, on `Height` above ground | Mapzen Terrain Tiles (below) | as below | terrain: Mapzen Terrain Tiles (AWS open data; Kartverket, NLS Finland, SDFE, EU-DEM/Copernicus) |
 | Basemap | © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, tiles by [OpenFreeMap](https://openfreemap.org) (© OpenMapTiles) | [ODbL](https://opendatacommons.org/licenses/odbl/1-0/) | OpenFreeMap © OpenMapTiles Data from OpenStreetMap |
 | Coastlines, borders, lakes | [Natural Earth](https://www.naturalearthdata.com/) | public domain | |
 | Place names and search | [GeoNames](https://www.geonames.org/) | CC BY 4.0 | |

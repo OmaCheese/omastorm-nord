@@ -183,7 +183,8 @@ free client ID from <https://frost.met.no/auth/requestCredentials.html>. The
 engine takes it from `FROST_CLIENT_ID` in its environment, else from a
 `FROST_CLIENT_ID=` line in `$XDG_CONFIG_HOME/omastorm-nord/frost.env`
 (default `~/.config/omastorm-nord/frost.env`; quotes and a leading `export`
-are allowed). Keep the file mode 600. Only the ID is used, as HTTP basic auth
+are allowed). Create it with `umask 077` or `chmod 600` it, so only you can
+read it. Only the ID is used, as HTTP basic auth
 to frost.met.no; a `FROST_CLIENT_SECRET` line is ignored. The engine never
 writes the ID to a URL, a log line or the cache.
 
@@ -197,5 +198,5 @@ Denmark still show. The MET Nordic grid needs no ID.
 The window and the popover size their text from Omarchy's `[font]
 base-size` in `~/.config/omarchy/shell.toml` (what
 `omarchy-display-text-size <px>` sets; 12 when unset): a type scale from
-base − 2 (never under 8 px) to base + 7, with cards and rows growing with it
-above 12. The file is watched, so a change re-flows an open window.
+base − 2 (never under 8 px) to base + 7, with cards and rows scaling with
+it. The file is watched, so a change re-flows an open window.

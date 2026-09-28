@@ -77,6 +77,8 @@ if OMASTORM_ENGINE_ASSET="$scratch/bogus" "${install_cmd[@]}" 2>"$scratch/mismat
   fail 'Installer accepted a sha256 mismatch'
 fi
 rg -q 'sha256 mismatch' "$scratch/mismatch.err" || fail "Mismatch error was unclear: $(cat "$scratch/mismatch.err")"
+# The popover shows the log's last line: the diagnosis is that line.
+[[ $(tail -n1 "$scratch/mismatch.err") == 'Engine sha256 mismatch'* ]] || fail 'The mismatch is not the last line'
 [[ ! -e $dest ]] || fail 'Mismatch wrote a dest'
 
 # Matching asset installs, is executable, and hashes to the pin.
@@ -108,6 +110,7 @@ base=http://127.0.0.1:$(cat "$scratch/port")
 started=$SECONDS
 refused 'A stalled server' 'curl exit 28' env OMASTORM_ENGINE_MAX_TIME=2 OMASTORM_ENGINE_URL="$base/stall" "${install_cmd[@]}"
 (( SECONDS - started <= 10 )) || fail "A stalled server took $((SECONDS - started)) s against a 2 s deadline"
+[[ $(tail -n1 "$scratch/refused.err") == 'Could not download '*'curl exit 28'* ]] || fail 'The download failure is not the last line'
 big=$((70 << 20))
 refused 'A chunked reply over the cap' "from $base/chunked/$big: it is larger than the 64 MiB cap" \
   env OMASTORM_ENGINE_URL="$base/chunked/$big" "${install_cmd[@]}"

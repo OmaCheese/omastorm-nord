@@ -126,19 +126,19 @@ else
   if (( rc == 63 )); then
     die "Refusing $asset from $url: it is larger than the $((max_bytes >> 20)) MiB cap for the engine."
   elif (( rc != 0 )); then
-    die "Could not download $asset from $url (curl exit $rc; a download is given up after $max_time s)." \
-      "Publish GitHub Release $tag on $repo with that asset matching $pin_file, and make the repository public so the asset is anonymous." \
-      "From a checkout with Rust: bash scripts/cargo.sh build --locked && bash run.sh"
+    # The popover shows the log's last line: the diagnosis goes last.
+    die "Maintainers: publish GitHub Release $tag on $repo with that asset matching $pin_file, and make the repository public so the asset is anonymous." \
+      "From a checkout with Rust: bash scripts/cargo.sh build --locked && bash run.sh" \
+      "Could not download $asset from $url (curl exit $rc; a download is given up after $max_time s). Check the network; the plugin tries again every 20 s."
   fi
 fi
 (( $(size_of "$tmp") <= max_bytes )) || die "Refusing $asset: it is larger than the $((max_bytes >> 20)) MiB cap for the engine."
 
 got=$(hash_of "$tmp")
 if [[ $got != "$sha256" ]]; then
-  die "Engine sha256 mismatch for $asset." \
-    "expected $sha256" \
+  die "expected $sha256" \
     "got      $got" \
-    "The committed pin is the source of truth; a substituted asset is refused."
+    "Engine sha256 mismatch for $asset: the committed pin is the source of truth, so a substituted asset is refused."
 fi
 
 # Checked again, since the download can take minutes. Staged beside dest so

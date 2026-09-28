@@ -34,11 +34,16 @@ fi
 if [[ ${1:-} == --ensure ]]; then
   # The plugin bootstrap runs detached; its stderr goes to the log, created
   # afresh under noclobber (O_EXCL), so a link planted at its name is never
-  # followed.
+  # followed. One bootstrap at a time, locked before the log is touched: the
+  # plugin retries every 20 s, and a retry that replaced the log would hide
+  # a slow download's outcome. The daemon must not inherit the lock.
+  lock=
   if [[ -n $log ]]; then
     [[ $log != /* || -e $log_dir || -L $log_dir ]] || mkdir -m 700 -- "$log_dir"
     why=$(log_refusal)
     [[ -z $why ]] || refuse_log "$why" >&2
+    exec {lock}< "$log_dir"
+    flock -n "$lock" || exit 0
     rm -f -- "$log"
     umask_was=$(umask)
     umask 077
@@ -48,9 +53,11 @@ if [[ ${1:-} == --ensure ]]; then
     umask "$umask_was"
   fi
   if [[ -x target/debug/omastorm-engine ]]; then
+    [[ -z $lock ]] || exec {lock}<&-
     exec target/debug/omastorm-engine ensure
   fi
   engine=$(bash scripts/fetch-engine.sh --print-path)
+  [[ -z $lock ]] || exec {lock}<&-
   exec "$engine" ensure
 fi
 if [[ ! -f ui/shaders/radar.frag.qsb || ! -f ui/shaders/tile.frag.qsb ]]; then

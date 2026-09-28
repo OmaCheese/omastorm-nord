@@ -18,14 +18,16 @@ chmod 700 "$scratch/rt"
 trap 'rm -rf "$scratch"' EXIT
 root=$scratch/root
 cp -- run.sh "$root/run.sh"
-# The stand-in engine says it ran: to stderr, which is the log, and a marker.
+# The stand-in engine says it ran: to stderr, which is the log, and a
+# marker; it lists its open files, which the daemon would inherit.
 cat > "$root/target/debug/omastorm-engine" <<'ENGINE'
 #!/bin/sh
 echo "stand-in engine: $1" >&2
+for f in /proc/$$/fd/*; do readlink "$f"; done > "$FDS"
 : > "$MARKER"
 ENGINE
 chmod +x "$root/target/debug/omastorm-engine"
-export MARKER=$scratch/ran
+export MARKER=$scratch/ran FDS=$scratch/fds
 rt=$scratch/rt
 dir=$rt/omastorm-nord
 log=$dir/bootstrap.log
@@ -51,6 +53,20 @@ ensure
 printf 'an old line\n' > "$log"
 ensure
 [[ $(cat "$log") == 'stand-in engine: ensure' ]] || fail 'The next bootstrap did not start a fresh log'
+if rg -qxF "$dir" "$FDS"; then fail 'The engine inherited the bootstrap lock'; fi
+# While one bootstrap holds the lock (a slow download), a retry leaves at
+# once and keeps its log: the first one's outcome is what the popover reads.
+# The holder execs sleep, so killing it releases the lock.
+(exec {held}< "$dir"; flock "$held"; exec sleep 30) & holder=$!
+for _ in {1..50}; do flock -n "$dir" true || break; sleep .1; done
+printf 'the running download\n' > "$log"
+rm -f "$MARKER"
+ensure || fail 'A retry beside a running bootstrap failed'
+[[ $(cat "$log") == 'the running download' ]] || fail "A retry replaced the running bootstrap's log: $(cat "$log")"
+[[ ! -e $MARKER ]] || fail 'A retry ran the engine beside a running bootstrap'
+kill "$holder"
+wait "$holder" 2>/dev/null || true
+flock -n "$dir" true || fail 'The lock holder did not let go'
 
 # Planted at the log: a symlink (to a file, or to nothing yet), a FIFO.
 rm -f "$log"

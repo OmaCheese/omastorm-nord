@@ -199,6 +199,36 @@ if FAIL_ASSET=$arm bash scripts/pin-engine-release.sh --verify-only > failure.lo
 [[ $(sha256sum engine/release.pin) == "$before" ]] || fail 'Failed verify-only changed the tracked pin'
 bash scripts/pin-engine-release.sh --verify-only
 [[ $(sha256sum engine/release.pin) == "$before" ]] || fail 'verify-only changed the tracked pin'
+cp engine/release.pin old.pin
 bash scripts/pin-engine-release.sh
-cmp engine/release.pin target/dist/release.pin
-echo 'Engine release: both architectures, ELF labels, exact checksums, and publication gate PASS'
+# The new pin is the candidate plus every hash the old one accepted, as
+# previous_ lines (fetch-engine.sh still replaces those engines).
+{
+  cat target/dist/release.pin
+  printf '# Engines earlier pins installed; fetch-engine.sh still replaces them.\n'
+  for arch in x86_64 aarch64; do
+    awk -F= -v a="$arch" '$1 == "sha256_" a || $1 == "previous_sha256_" a { print "previous_sha256_" a "=" $2 }' old.pin
+  done
+} > expected.pin
+cmp engine/release.pin expected.pin || fail 'The pin did not carry the old hashes forward' "$(diff expected.pin engine/release.pin)"
+# The same candidate again changes nothing; a later one keeps them all, once.
+cp engine/release.pin pinned.pin
+bash scripts/pin-engine-release.sh
+cmp engine/release.pin pinned.pin || fail 'Pinning the same candidate again changed the pin'
+x86=omastorm-engine-x86_64-unknown-linux-gnu
+printf 'next\n' >> "published/$x86"
+next=$(sha256sum "published/$x86" | awk '{print $1}')
+sed "s/^sha256_x86_64=.*/sha256_x86_64=$next/" target/dist/release.pin > next.pin
+bash scripts/pin-engine-release.sh next.pin
+die() { fail "$@"; }
+source scripts/engine-pin.sh
+read_engine_pin old.pin
+old_x86=${hashes[x86_64]} old_arm=${hashes[aarch64]}
+read_engine_pin pinned.pin
+fixture_x86=${hashes[x86_64]}
+read_engine_pin engine/release.pin
+[[ ${hashes[x86_64]} == "$next" ]] || fail 'The later pin does not name its own asset'
+[[ ${previous[x86_64]} == "$fixture_x86 $old_x86" ]] || fail "x86_64 previous hashes: ${previous[x86_64]}"
+[[ ${previous[aarch64]} == "$old_arm" ]] || fail "aarch64 previous hashes: ${previous[aarch64]}"
+[[ $(rg -c '^# Engines earlier pins' engine/release.pin) == 1 ]] || fail 'The previous-hash comment repeats'
+echo 'Engine release: both architectures, ELF labels, exact checksums, publication gate, previous hashes carried PASS'

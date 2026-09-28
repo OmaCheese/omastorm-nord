@@ -17,6 +17,18 @@ for arg in "$@"; do
 done
 work=$(mktemp -d "${TMPDIR:-/tmp}/omastorm-release.XXXXXX")
 trap 'rm -rf "$work"' EXIT
+# fetch-engine.sh replaces an engine at its install path only when it knows
+# the bytes. Every hash the pin being replaced accepted (its own and its
+# previous_ lines) is carried forward as previous_sha256_<arch>, so an
+# engine an older plugin installed before its sha256 record existed is
+# still upgraded, and nobody has to remember the list.
+declare -A carry=()
+if [[ -f engine/release.pin ]]; then
+  read_engine_pin engine/release.pin
+  for arch in x86_64 aarch64; do
+    carry[$arch]="${hashes[$arch]:-} ${previous[$arch]:-}"
+  done
+fi
 cp -- "$candidate" "$work/release.pin"
 read_engine_pin "$work/release.pin"
 for arch in x86_64 aarch64; do
@@ -31,6 +43,25 @@ done
 if (( verify_only )); then
   printf 'Verified published assets; engine/release.pin unchanged.\n'
   exit 0
+fi
+carried=()
+declare -A known=()
+for arch in x86_64 aarch64; do
+  read -ra olds <<< "${carry[$arch]:-}"
+  read -ra kept <<< "${previous[$arch]:-} ${hashes[$arch]:-}"
+  for sum in "${kept[@]}"; do known[$arch:$sum]=1; done
+  for sum in "${olds[@]}"; do
+    [[ -z ${known[$arch:$sum]:-} ]] || continue
+    known[$arch:$sum]=1
+    carried+=("previous_sha256_$arch=$sum")
+  done
+done
+if (( ${#carried[@]} )); then
+  {
+    printf '# Engines earlier pins installed; fetch-engine.sh still replaces them.\n'
+    printf '%s\n' "${carried[@]}"
+  } >> "$work/release.pin"
+  read_engine_pin "$work/release.pin"
 fi
 cp -- "$work/release.pin" engine/release.pin
 printf 'Verified published assets and updated engine/release.pin\n'

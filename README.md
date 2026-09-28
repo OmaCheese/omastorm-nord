@@ -353,7 +353,17 @@ Both are recorded in `engine.log`.
 
 If the popover says the engine could not be installed, the download or its
 sha256 check failed; the reason is in `bootstrap.log` in the same directory,
-and opening the popover again retries. To restart the engine by hand:
+and opening the popover again retries. A download is given up after about 10
+minutes or past 64 MiB (the engine is about 15 MB), and only one runs at a
+time. The installer records the sha256 of the engine it installs in
+`omastorm-engine.sha256` beside it and replaces only the file it installed: a
+symlink, a directory, a modified engine, or a file of your own at
+`~/.local/share/omastorm-nord/bin/omastorm-engine` is refused with
+“Refusing to replace …” and left alone. Remove it if you do not need it,
+and the next try installs the pinned engine. The same goes for a symlink or
+a file of another user at `bootstrap.log` (“Refusing the bootstrap log …”).
+The popover needs `XDG_RUNTIME_DIR` (a login session sets it) and says so
+without it. To restart the engine by hand:
 
 ```sh
 ~/.local/share/omastorm-nord/bin/omastorm-engine stop
@@ -384,7 +394,7 @@ size, `[font] base-size` in `~/.config/omarchy/shell.toml`, which
 ```sh
 omarchy plugin remove omacheese.omastorm-nord
 ~/.local/share/omastorm-nord/bin/omastorm-engine stop
-rm -rf ~/.local/share/omastorm-nord ~/.cache/omastorm-nord ~/.local/state/omastorm-nord
+rm -rf ~/.local/share/omastorm-nord ~/.cache/omastorm-nord ~/.local/state/omastorm-nord   # the engine and its sha256 record, caches, view state
 rm -rf "$XDG_RUNTIME_DIR/omastorm-nord"                  # the engine's socket and logs
 rm -rf ~/.config/omastorm-nord                            # your config.toml and frost.env; keep them to reinstall later
 rm -f ~/.local/share/applications/omastorm-nord.desktop   # if you added the launcher entry

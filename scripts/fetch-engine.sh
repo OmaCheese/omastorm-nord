@@ -145,6 +145,8 @@ cp -- "$tmp" "$stage"
 chmod 755 -- "$stage"
 mv -fT -- "$stage" "$dest"
 stage=
-keep_record || die "Installed $dest, but could not write $record; the next pinned engine will not replace it."
+# Without the record the next pinned engine would be refused; every launch
+# tries to write it again, so this one still starts.
+keep_record || echo "Installed $dest but could not write $record yet." >&2
 
 finish "$@"

@@ -71,9 +71,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # A client that gives up at its cap or deadline resets the socket.
+        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            super().handle_error(request, client_address)
+
+
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    server.daemon_threads = True
+    server = Server(("127.0.0.1", 0), Handler)
     portfile = sys.argv[1]
     with open(portfile + ".tmp", "w") as f:
         f.write(str(server.server_address[1]))

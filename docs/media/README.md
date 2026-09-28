@@ -18,17 +18,16 @@ required; the demo also needs Ruby for its temporary harness. Frames are
 grabbed as the scene settles, so the video runs a little faster than real
 time and is not a latency measurement.
 
-- `omastorm-demo.mp4`: one live take, about 37 s, 1280×720, H.264, no audio:
-  the home view, the loop, a pan and zoom to Lake Vänern, the three
-  treatments, weak returns, the picker switching station, the keys sheet.
+- `omastorm-demo.mp4`: one live take, about 37 s, 1280×720, H.264, no audio,
+  in the C.UTF-8 locale (km, 24-hour clock): the home view over Vara with its
+  full loop, a pan and zoom to Lake Vänern, the three treatments, weak
+  returns, the picker switching to Kiruna, the keys sheet. The take starts
+  once the loop's history has finished loading.
 - `omastorm-preview.gif`: the home view and the zoom, cut from the video.
 - `window-live.png`, `popover.png`: Vara over Västra Götaland, from the vendored
   SMHI volume `data/raw/radar_vara_qcvol_202609131055.h5` (13 Sep 2026 12:55
   CEST), in the C.UTF-8 locale for km and a 24-hour clock. Archive mode keeps
   the pictures reproducible and SMHI unpolled; the badge reads ARCHIVED.
-  `capture-demo.sh` films live Vara now; the video and GIF the README links
-  are still upstream's live KJAX take until the fork's first release
-  replaces them.
 
 Upload only the generated media files with `gh release upload <tag> <files...>`
 and point the README URLs at that tag. For immutable releases, upload media

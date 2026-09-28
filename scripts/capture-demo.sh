@@ -24,15 +24,18 @@ mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME" "$demo_dir/shaders" "$demo_dir/fra
 jq -r --arg id "$site" '.sites[] | select(.id==$id) | "center_lat = \(.lat)\ncenter_lon = \(.lon)\nlocked_radar = \"\(.id)\""' engine/data/sites.json > "$OMASTORM_CONFIG"
 cleanup() { target/debug/omastorm-engine stop >/dev/null 2>&1 || true; }
 trap cleanup EXIT
-cp ui/LoadingBar.qml ui/Theme.qml ui/Engine.qml ui/RadarMark.qml ui/RadarMap.qml ui/SitePicker.qml ui/Sites.js ui/KeysSheet.qml ui/Keys.js ui/Timeline.js ui/Config.qml ui/Toml.js ui/Location.js ui/LocationPicker.qml ui/LocationPrompt.qml ui/Remembered.qml ui/PluginSession.qml ui/qmldir "$demo_dir/"
+cp ui/*.qml ui/*.js ui/qmldir "$demo_dir/"
 cp ui/shaders/*.qsb "$demo_dir/shaders/"
 ruby - "$demo_dir" <<'RUBY'
 dir = ARGV.fetch(0)
 s = File.read('ui/RadarWindow.qml').sub('Item {', 'ShellRoot {')
 harness = <<'QML'
-    // Start once the station is live and the backfill has given it a loop.
+    // Start once the station is live and the backfill has finished: a take
+    // that grabs every frame reads the socket slowly, and a history fill
+    // still arriving (60 frames) fills the engine's client queue, which
+    // closes the window's connection mid-take.
     Timer { interval: 500; running: true; repeat: true
-        onTriggered: if (app.scan && app.scan.scanTime && app.frames.filter(f => f.status === "complete").length >= 8) { running = false; waitTiles.start(); } }
+        onTriggered: if (app.scan && app.scan.scanTime && !engine.loading && app.frames.filter(f => f.status === "complete").length >= 8) { running = false; waitTiles.start(); } }
     Timer { id: waitTiles; interval: 5000; onTriggered: { app.resetView(); demo.homeSpan = map.span; demo.advance(); } }
     QtObject {
         id: demo
@@ -96,7 +99,7 @@ export OMASTORM_QML="$demo_dir/shell.qml"
 export OMASTORM_WIDTH=1280 OMASTORM_HEIGHT=720
 export OMASTORM_DEMO_FRAMES="$demo_dir/frames" OMASTORM_DEMO_HOME="$site"
 export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic
-export QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl
+export QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl LC_ALL=C.UTF-8
 unset OMASTORM_CAPTURE
 timeout 900 bash run.sh > "$demo_dir/capture.log" 2>&1
 rg -q DEMO_LIVE_PASSED "$demo_dir/capture.log" || { tail -20 "$demo_dir/capture.log" >&2; echo "The take did not finish" >&2; exit 1; }

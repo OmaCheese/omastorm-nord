@@ -28,6 +28,15 @@ builds write the GNU target's binary, checksums, and a candidate pin under
 The current x86 release is retained until a new release includes ARM64.
 Never add the ARM asset to an already published, immutable release.
 
+`scripts/fetch-engine.sh` refuses an asset over 64 MiB (x86_64 is about
+15 MB), so keep release binaries stripped. It replaces the file at the
+install path only when it knows the bytes: the sha256 it recorded when it
+installed them, the pin's, or a `previous_sha256_<architecture>` line.
+Those lines, repeatable, are the hashes earlier pins installed; `mise
+engine-pin` carries the old pin's current and previous hashes forward when
+it writes a new pin, so an engine installed before the record existed is
+still upgraded. Do not delete them.
+
 ## Release paths
 
 Users run `main`: a merged change reaches them on their next plugin update. A
@@ -91,9 +100,10 @@ the build machine's newer Arch glibc.
 5. Download the published `release.pin` or the `engine-release` workflow
    artifact into `target/dist/`. Run `mise engine-verify` to require every
    public binary to match the candidate checksums. It writes nothing.
-6. Run `mise engine-pin` to write `engine/release.pin`. Run `mise check`,
-   then commit the pin separately and push. Users receive it on their next
-   plugin update.
+6. Run `mise engine-pin` to write `engine/release.pin`; it carries the old
+   pin's hashes forward as `previous_sha256_<architecture>` lines. Run
+   `mise check`, then commit the pin separately and push. Users receive it
+   on their next plugin update.
 
 `mise engine-verify` and `mise engine-pin` call
 [scripts/pin-engine-release.sh](../scripts/pin-engine-release.sh). Neither

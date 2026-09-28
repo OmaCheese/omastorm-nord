@@ -8,23 +8,31 @@ engine_machine() {
   esac
 }
 
+# previous_sha256_<arch> lines, repeatable, are engines earlier pins
+# installed (pin-engine-release.sh carries them forward): fetch-engine.sh
+# still replaces one it finds at its install path. previous[<arch>] holds
+# them space-separated.
 read_engine_pin() {
   local file=$1 line key val arch
   [[ -f $file ]] || die "Omastorm engine pin missing: $file"
   tag='' repo=''
-  declare -gA assets=() hashes=()
+  declare -gA assets=() hashes=() previous=()
   local -A seen=()
   while IFS= read -r line || [[ -n $line ]]; do
     [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
     key=${line%%=*}
     val=${line#*=}
     [[ -n $key && $line == *=* ]] || die "Invalid pin line in $file: $line"
-    [[ -z ${seen[$key]:-} ]] || die "Duplicate key in $file: $key"
+    [[ $key == previous_sha256_* || -z ${seen[$key]:-} ]] || die "Duplicate key in $file: $key"
     seen[$key]=1
     case $key in
       tag|repo) printf -v "$key" '%s' "$val" ;;
       asset_x86_64|asset_aarch64) assets[${key#asset_}]=$val ;;
       sha256_x86_64|sha256_aarch64) hashes[${key#sha256_}]=$val ;;
+      previous_sha256_x86_64|previous_sha256_aarch64)
+        [[ $val =~ ^[a-f0-9]{64}$ ]] || die "Previous sha256 in $file is not 64 lowercase hex digits: $val"
+        arch=${key#previous_sha256_}
+        previous[$arch]="${previous[$arch]:-}${previous[$arch]:+ }$val" ;;
       *) die "Unknown key in $file: $key" ;;
     esac
   done < "$file"

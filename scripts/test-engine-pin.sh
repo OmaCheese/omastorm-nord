@@ -156,6 +156,22 @@ OMASTORM_ENGINE_PIN=$scratch/next.pin OMASTORM_ENGINE_ASSET=$scratch/next "${ins
   || fail 'A previous install was not replaced by the new pin'
 OMASTORM_ENGINE_ASSET="$debug" "${install_cmd[@]}"
 [[ $(sha256sum -- "$dest" | awk '{print $1}') == "$sum" ]] || fail 'The debug engine did not replace the next one'
+# An engine an older plugin installed before the record existed, first
+# launched after a pin bump: replaced when the new pin lists it as a
+# previous_ hash (pin-engine-release.sh carries them forward), refused
+# without that line. Two previous_ lines: the key repeats.
+printf 'engine v1\n' > "$scratch/v1"
+v1_sum=$(sha256sum -- "$scratch/v1" | awk '{print $1}')
+rm -f "$dest" "$dest.sha256"
+install -m 755 -- "$scratch/v1" "$dest"
+refused 'An unrecorded older engine, not listed' "Refusing to replace $dest: it is not the engine this installer put there" \
+  env OMASTORM_ENGINE_PIN="$scratch/next.pin" OMASTORM_ENGINE_ASSET="$scratch/next" "${install_cmd[@]}"
+[[ $(cat "$dest") == 'engine v1' ]] || fail 'An unlisted older engine was replaced'
+{ cat "$scratch/next.pin"; printf 'previous_sha256_%s=%s\n' "$native" "$other_sum" "$native" "$v1_sum"; } > "$scratch/previous.pin"
+OMASTORM_ENGINE_PIN=$scratch/previous.pin OMASTORM_ENGINE_ASSET=$scratch/next "${install_cmd[@]}"
+[[ $(sha256sum -- "$dest" | awk '{print $1}') == "$next_sum" && $(cat "$dest.sha256") == "$next_sum" ]] \
+  || fail 'A listed older engine was not replaced by the new pin'
+OMASTORM_ENGINE_ASSET="$debug" "${install_cmd[@]}"
 # Someone's own file there.
 rm -f "$dest"
 printf 'my own tool\n' > "$dest"
@@ -247,7 +263,9 @@ rg -q "No pinned $other engine" "$scratch/arch.err" || fail 'Missing architectur
 sed "/^sha256_$native=/d" "$pin" > "$scratch/incomplete.pin"
 cp "$pin" "$scratch/duplicate.pin"
 printf 'sha256_%s=%s\n' "$native" "$sum" >> "$scratch/duplicate.pin"
-for bad in incomplete duplicate; do
+cp "$pin" "$scratch/previous-bad.pin"
+printf 'previous_sha256_%s=not-a-hash\n' "$native" >> "$scratch/previous-bad.pin"
+for bad in incomplete duplicate previous-bad; do
   if OMASTORM_ENGINE_PIN=$scratch/$bad.pin "${install_cmd[@]}" 2>"$scratch/pin.err"; then
     fail "Installer accepted $bad pin"
   fi

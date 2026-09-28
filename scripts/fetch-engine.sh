@@ -35,11 +35,12 @@ dest=$dest_dir/omastorm-engine
 # Provenance: run.sh executes $dest, so it must be a plain file of this
 # user's, and this installer replaces only a file it put there. $record
 # holds the sha256 of the engine it last installed; a file at $dest is
-# replaced only while it still has that hash (ours, untouched) or the pin's
-# (bytes this installer verifies). Anything else is someone's own file and
-# is refused. Every install writes the record, and so does a launch that
-# finds the pinned engine already there, which adopts an engine installed
-# before the record existed.
+# replaced only while it still has that hash (ours, untouched), the pin's
+# (bytes this installer verifies), or one of the pin's previous_ hashes
+# (engines earlier pins installed, carried forward by pin-engine-release.sh).
+# Anything else is someone's own file and is refused. Every install writes
+# the record, and so does a launch that finds the pinned engine already
+# there, which adopts an engine installed before the record existed.
 record=$dest.sha256
 
 hash_of() { sha256sum -- "$1" | awk '{print $1}'; }
@@ -64,7 +65,7 @@ check_ours() { # dest is missing, or a regular file this installer put there
   check_dest
   [[ -e $dest ]] || return 0
   have=$(hash_of "$dest")
-  [[ $have == "$sha256" || $have == "$(recorded)" ]] \
+  [[ $have == "$sha256" || $have == "$(recorded)" || " ${previous[$machine]:-} " == *" $have "* ]] \
     || refuse "it is not the engine this installer put there (no matching sha256 in $record)"
 }
 # Temp and rename in the same directory: a symlink at $record is replaced,

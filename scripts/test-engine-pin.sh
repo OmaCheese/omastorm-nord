@@ -105,7 +105,9 @@ OMASTORM_ENGINE_URL="file://$debug" bash scripts/fetch-engine.sh
 # failure and when the installer is killed.
 rm -f "$dest" "$dest.sha256"
 python3 scripts/fake-download.py "$scratch/port" & server=$!
-for _ in {1..50}; do [[ -s $scratch/port ]] && break; sleep .1; done
+# Up to 10 s for the port, then a clear failure rather than a bad URL.
+for _ in {1..100}; do [[ -s $scratch/port ]] && break; sleep .1; done
+[[ -s $scratch/port ]] || fail 'The fake server did not start'
 base=http://127.0.0.1:$(cat "$scratch/port")
 started=$SECONDS
 refused 'A stalled server' 'curl exit 28' env OMASTORM_ENGINE_MAX_TIME=2 OMASTORM_ENGINE_URL="$base/stall" "${install_cmd[@]}"

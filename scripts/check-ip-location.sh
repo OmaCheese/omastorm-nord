@@ -248,7 +248,9 @@ if rg -q 'ReferenceError|TypeError|Binding loop|Unable to assign' "$scratch/log"
 # chunked with no Content-Length, the lookup fails. Then the stub, a curl
 # that ignores --max-filesize: head and the length check refuse it too.
 python3 scripts/fake-download.py "$scratch/port" "$scratch/ok.json" & server=$!
-for _ in {1..50}; do [[ -s $scratch/port ]] && break; sleep .1; done
+# Up to 10 s for the port, then a clear failure rather than a bad URL.
+for _ in {1..100}; do [[ -s $scratch/port ]] && break; sleep .1; done
+[[ -s $scratch/port ]] || { echo 'The fake server did not start' >&2; exit 1; }
 base=http://127.0.0.1:$(cat "$scratch/port")
 printf '%s%*s' "$fixture" 100000 '' > "$scratch/padded.json"
 cap_case() { # expect, url, PATH

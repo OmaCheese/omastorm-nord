@@ -76,22 +76,22 @@ ShellRoot {
         fake.state = {source: source || "live", site: {id: "", locked: false, follow: true}};
         s.initialize();
     }
-    function waitSettled(next, limit) {
+    function waitSettled(next) {
         waiter.next = next;
         waiter.ticks = 0;
-        waiter.limit = limit || 100;
         waiter.start();
     }
     Timer {
         id: waiter
         property var next
         property int ticks: 0
-        property int limit: 100
         interval: 20; repeat: true
         onTriggered: {
             ticks++;
             var s = PluginSession;
-            if (s.locationPending && ticks < limit) return;
+            // Up to 10 s: mise check runs this beside the Rust build, and a
+            // lookup is a few processes (bash, curl, head).
+            if (s.locationPending && ticks < 500) return;
             stop();
             try { next(); } catch (e) { console.error(e); Qt.quit(); }
         }
@@ -140,7 +140,7 @@ ShellRoot {
                 assertThat(!s.hasView && s.needsLocation && !s.locationPending && !!s.locationError, "a reply over the cap fails like a network error");
             console.log("IP_CAP_PASSED " + expect);
             Qt.quit();
-        }, 500);
+        });
     }
     function afterFirstLookup() {
         var s = PluginSession;

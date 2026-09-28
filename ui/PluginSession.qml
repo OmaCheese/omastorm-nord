@@ -102,9 +102,8 @@ QtObject {
         var url = Quickshell.env("OMASTORM_LOCATION_URL") || "https://wttr.in/?format=j2";
         // The reply is capped before QML holds it: curl stops past the cap
         // (exit 63) and head cuts the stream for a curl that would not, so a
-        // longer reply fails like a network error (locator), never as a
-        // partial parse. The URL, agent and cap are arguments, never shell
-        // text.
+        // longer reply takes the network-error path, never a partial parse.
+        // The URL, agent and cap are arguments, never shell text.
         locator.command = ["bash", "-c",
             'set -o pipefail; curl -fsS --max-time 10 --max-filesize "$3" -A "$2" -- "$1" | head -c "$(($3 + 1))"',
             "omastorm-locate", url, "omastorm-nord (fork of https://omastorm.com)", String(locateCap)];

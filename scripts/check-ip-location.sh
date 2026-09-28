@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Consent IP location through the shared session: stub curl, no network,
-# personal configuration, shell bootstrap, or shared daemon.
+# personal configuration, shell bootstrap, or shared daemon. Then the reply
+# cap, through the real curl against a local server.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 scratch=$(mktemp -d /tmp/omastorm-ip-check.XXXXXX)
-trap 'rm -rf "$scratch"' EXIT
+server=
+trap '[[ -z $server ]] || kill "$server" 2>/dev/null; rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/bin" "$scratch/runtime"
 cp -r ui "$scratch/ui"
 sed -i '/Quickshell.execDetached(/c\        return;' "$scratch/ui/PluginSession.qml"
@@ -74,20 +76,22 @@ ShellRoot {
         fake.state = {source: source || "live", site: {id: "", locked: false, follow: true}};
         s.initialize();
     }
-    function waitSettled(next) {
+    function waitSettled(next, limit) {
         waiter.next = next;
         waiter.ticks = 0;
+        waiter.limit = limit || 100;
         waiter.start();
     }
     Timer {
         id: waiter
         property var next
         property int ticks: 0
+        property int limit: 100
         interval: 20; repeat: true
         onTriggered: {
             ticks++;
             var s = PluginSession;
-            if (s.locationPending && ticks < 100) return;
+            if (s.locationPending && ticks < limit) return;
             stop();
             try { next(); } catch (e) { console.error(e); Qt.quit(); }
         }
@@ -100,6 +104,8 @@ ShellRoot {
             stop();
             try {
                 s.engine = fake;
+                var cap = Quickshell.env("OMASTORM_LOCATE_CASE");
+                if (cap) { capCase(cap); return; }
                 var good = Location.parseWttrHome('{"nearest_area":[{"areaName":[{"value":"Stamford"}],"latitude":"41.05","longitude":"-73.54"}]}');
                 assertThat(good && good.lat === 41.05 && good.name === "Stamford", "parse wttr home");
                 assertThat(Location.parseWttrHome("{}") === null, "reject empty wttr");
@@ -119,6 +125,22 @@ ShellRoot {
                 waitSettled(afterFirstLookup);
             } catch (e) { console.error(e); Qt.quit(); }
         }
+    }
+    // The reply cap: every reply here is valid JSON (ok.json padded with
+    // spaces), so only the cap can refuse it, and a cut at the cap would
+    // still parse.
+    function capCase(expect) {
+        var s = PluginSession;
+        fresh({}, "", null);
+        action("approximateLocation").clicked();
+        waitSettled(function () {
+            if (expect === "found")
+                assertThat(s.hasView && s.locationSource === "ip" && s.placeName === "Stamford", "a reply under the cap is used");
+            else
+                assertThat(!s.hasView && s.needsLocation && !s.locationPending && !!s.locationError, "a reply over the cap fails like a network error");
+            console.log("IP_CAP_PASSED " + expect);
+            Qt.quit();
+        }, 500);
     }
     function afterFirstLookup() {
         var s = PluginSession;
@@ -219,4 +241,27 @@ OMASTORM_CONFIG="$scratch/empty.toml" OMASTORM_STATE="$scratch/state.json" \
   timeout 20 quickshell -p "$scratch/ui/Test.qml" > "$scratch/log" 2>&1 || { cat "$scratch/log"; exit 1; }
 cat "$scratch/log"
 rg -q IP_LOCATION_PASSED "$scratch/log"
-! rg -q 'ReferenceError|TypeError|Binding loop|Unable to assign' "$scratch/log"
+if rg -q 'ReferenceError|TypeError|Binding loop|Unable to assign' "$scratch/log"; then exit 1; fi
+
+# The reply cap (64 KiB). The real curl against scripts/fake-download.py:
+# under the cap the place is found; one byte over it, or megabytes over,
+# chunked with no Content-Length, the lookup fails. Then the stub, a curl
+# that ignores --max-filesize: head and the length check refuse it too.
+python3 scripts/fake-download.py "$scratch/port" & server=$!
+for _ in {1..50}; do [[ -s $scratch/port ]] && break; sleep .1; done
+base=http://127.0.0.1:$(cat "$scratch/port")
+printf '%s%*s' "$fixture" 100000 '' > "$scratch/padded.json"
+cap_case() { # expect, url, PATH
+  OMASTORM_LOCATE_CASE=$1 OMASTORM_LOCATION_URL=$2 PATH=$3 \
+    OMASTORM_CONFIG="$scratch/empty.toml" OMASTORM_STATE="$scratch/cap-state.json" \
+    XDG_RUNTIME_DIR="$scratch/runtime" QT_QPA_PLATFORM=offscreen \
+    timeout 20 quickshell -p "$scratch/ui/Test.qml" > "$scratch/cap.log" 2>&1 || { cat "$scratch/cap.log"; exit 1; }
+  rg -q "IP_CAP_PASSED $1" "$scratch/cap.log" || { cat "$scratch/cap.log"; echo "Reply cap: $2 was not $1" >&2; exit 1; }
+  if rg -q 'ReferenceError|TypeError|Binding loop|Unable to assign' "$scratch/cap.log"; then cat "$scratch/cap.log"; exit 1; fi
+  rm -f "$scratch/cap-state.json"
+}
+cap_case found "$base/padded/60000?file=$scratch/ok.json" "$PATH"
+cap_case failed "$base/padded/65537?file=$scratch/ok.json" "$PATH"
+cap_case failed "$base/padded/$((10 << 20))?file=$scratch/ok.json" "$PATH"
+cap_case failed "file://$scratch/padded.json" "$scratch/bin:$PATH"
+echo 'IP location reply cap PASS'

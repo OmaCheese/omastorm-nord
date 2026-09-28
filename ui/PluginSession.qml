@@ -100,8 +100,14 @@ QtObject {
         locationError = "";
         locationPending = true;
         var url = Quickshell.env("OMASTORM_LOCATION_URL") || "https://wttr.in/?format=j2";
-        locator.command = ["curl", "-fsS", "--max-time", "10", "-A",
-            "omastorm-nord (fork of https://omastorm.com)", url];
+        // The reply is capped before QML holds it: curl stops past the cap
+        // (exit 63) and head cuts the stream for a curl that would not, so a
+        // longer reply fails like a network error (locator), never as a
+        // partial parse. The URL, agent and cap are arguments, never shell
+        // text.
+        locator.command = ["bash", "-c",
+            'set -o pipefail; curl -fsS --max-time 10 --max-filesize "$3" -A "$2" -- "$1" | head -c "$(($3 + 1))"',
+            "omastorm-locate", url, "omastorm-nord (fork of https://omastorm.com)", String(locateCap)];
         // Bind the attempt to this launch. If a prior curl is still dying after
         // cancel, queue one restart instead of overwriting its exit attribution.
         locator.attempt = locateAttempt;
@@ -161,6 +167,9 @@ QtObject {
         acceptIpLocation(place);
     }
 
+    // A format=j2 reply is a few KB (no hourly forecast); 64 KiB leaves room
+    // and still bounds what the bar process holds.
+    readonly property int locateCap: 65536
     property Process locator: Process {
         property int attempt: 0
         property bool queued: false
@@ -178,7 +187,10 @@ QtObject {
                 }
                 return;
             }
-            session.finishIpLocation(exitCode, String(stdout.text || ""), attempt);
+            // More than the cap got through only past a curl that ignores
+            // --max-filesize; fail it as curl would (63).
+            var over = !!stdout.data && stdout.data.byteLength > session.locateCap;
+            session.finishIpLocation(over ? 63 : exitCode, over ? "" : String(stdout.text || ""), attempt);
         }
     }
 
@@ -484,20 +496,41 @@ QtObject {
     // recovers on its own. argv, never shell text, since checkout paths may
     // contain spaces; bash will not start in Quickshell's cwd
     // (qrc:/qs-blackhole), so env -C moves it home. Its stderr lands in
-    // bootstrap.log beside the socket, and the popover shows the last line
-    // while there is no engine.
+    // bootstrap.log beside the socket (run.sh keeps it private), and the
+    // popover shows the last line while there is no engine. The engine
+    // refuses to run without an absolute XDG_RUNTIME_DIR (runtime_path in
+    // engine/src/main.rs), and the log has no other private place, so
+    // without one there is no bootstrap and the popover says why.
     readonly property string root: Quickshell.env("OMASTORM_ROOT") || Quickshell.env("HOME") + "/.config/omarchy/plugins/omacheese.omastorm-nord"
-    readonly property string bootstrapLog: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omastorm-nord/bootstrap.log"
+    readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || ""
+    readonly property bool hasRuntime: runtimeDir.startsWith("/")
+    readonly property string bootstrapLog: hasRuntime ? runtimeDir + "/omastorm-nord/bootstrap.log" : ""
+    readonly property string noRuntime: "The engine needs XDG_RUNTIME_DIR set to an absolute path (a login session sets it), and this session has none."
     function bootstrap() {
+        if (!hasRuntime) { startupError = noRuntime; return; }
         Quickshell.execDetached(["env", "-C", Quickshell.env("HOME"), "OMASTORM_BOOTSTRAP_LOG=" + bootstrapLog, "bash", root + "/run.sh", "--ensure"]);
     }
-    property Timer bootstrapRetry: Timer { interval: 20000; repeat: true; running: !session.engine.state; onTriggered: session.bootstrap() }
-    property FileView bootstrapLogFile: FileView {
-        path: session.bootstrapLog
-        watchChanges: true
-        printErrors: false
-        onFileChanged: reload()
-        onLoaded: { var lines = text().trim().split("\n"); session.startupError = session.engine.state ? "" : lines[lines.length - 1]; }
+    property Timer bootstrapRetry: Timer { interval: 20000; repeat: true; running: !session.engine.state && session.hasRuntime; onTriggered: session.bootstrap() }
+    // run.sh --bootstrap-log prints only the log's last 4 KiB, and only
+    // from a plain file of this user's in a private dir (the same rules
+    // --ensure writes it under): a planted symlink (to /dev/zero, or
+    // someone's file) or a FIFO is refused, its reason shown instead. Polled
+    // while a popover is open with no engine: a watch would miss the log
+    // when the runtime dir has no omastorm-nord yet, as after every boot.
+    property Process bootstrapLogReader: Process {
+        command: ["env", "-C", Quickshell.env("HOME"), "OMASTORM_BOOTSTRAP_LOG=" + session.bootstrapLog, "bash", session.root + "/run.sh", "--bootstrap-log"]
+        stdout: StdioCollector { waitForEnd: true }
+        onExited: function (exitCode) {
+            var text = String(stdout.text || "").trim();
+            if (session.engine.state || (!text && exitCode !== 0)) return;
+            var lines = text.split("\n");
+            session.startupError = lines[lines.length - 1];
+        }
+    }
+    property Timer bootstrapLogPoll: Timer {
+        interval: 2000; repeat: true; triggeredOnStart: true
+        running: session.popovers > 0 && !session.engine.state && session.hasRuntime
+        onTriggered: if (!session.bootstrapLogReader.running) session.bootstrapLogReader.running = true
     }
     Component.onCompleted: { applyTreatment(); resolve(); bootstrap(); }
 }

@@ -192,7 +192,14 @@ chmod 755 -- "$dest"
 refused 'A file this installer did not write' "Refusing to replace $dest: it is not the engine this installer put there" \
   env OMASTORM_ENGINE_ASSET="$debug" "${install_cmd[@]}"
 [[ $(cat "$dest") == 'my own tool' ]] || fail 'A file this installer did not write was replaced'
-rg -qF "rm -- '$dest'" "$scratch/refused.err" || fail 'The refusal does not say how to clear the path'
+rg -qF "rm -- $(printf %q "$dest")" "$scratch/refused.err" || fail 'The refusal does not say how to clear the path'
+# The command it gives works for a path with a quote and a space in it.
+quoted_home="$scratch/it's here"
+mkdir -p "$quoted_home/omastorm-nord/bin"
+printf 'mine\n' > "$quoted_home/omastorm-nord/bin/omastorm-engine"
+if XDG_DATA_HOME=$quoted_home OMASTORM_ENGINE_ASSET="$debug" "${install_cmd[@]}" 2> "$scratch/quoted.err"; then fail 'A quoted path was replaced'; fi
+clear=$(sed -n 's/.*(\(rm -- .*\)); Omastorm.*/\1/p' "$scratch/quoted.err")
+bash -c "$clear" && [[ ! -e $quoted_home/omastorm-nord/bin/omastorm-engine ]] || fail "The given command did not clear the path: $clear"
 # A symlink, to the pinned engine or to someone's file.
 rm -f "$dest"
 cp -- "$debug" "$scratch/linked"

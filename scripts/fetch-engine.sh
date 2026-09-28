@@ -46,7 +46,9 @@ record=$dest.sha256
 hash_of() { sha256sum -- "$1" | awk '{print $1}'; }
 size_of() { stat -Lc %s -- "$1"; }
 refuse() {
-  die "Refusing to replace $dest: $1. Remove it if you do not need it (rm -- '$dest'); Omastorm then installs its engine there on the next try."
+  local quoted
+  printf -v quoted '%q' "$dest"
+  die "Refusing to replace $dest: $1. Remove it if you do not need it (rm -- $quoted); Omastorm then installs its engine there on the next try."
 }
 check_dest() {
   if [[ -L $dest ]]; then

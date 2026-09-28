@@ -521,7 +521,9 @@ QtObject {
         stdout: StdioCollector { waitForEnd: true }
         onExited: function (exitCode) {
             var text = String(stdout.text || "").trim();
-            if (session.engine.state || (!text && exitCode !== 0)) return;
+            // Nothing read (no log yet, or a bootstrap between removing and
+            // recreating it) keeps the last text, so it does not flicker.
+            if (session.engine.state || !text) return;
             var lines = text.split("\n");
             session.startupError = lines[lines.length - 1];
         }

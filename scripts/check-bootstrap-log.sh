@@ -140,6 +140,26 @@ ShellRoot {
         shell.running = true;
     }
     function waitFor(want, why, next) { waiter.want = want; waiter.why = why; waiter.next = next; waiter.ticks = 0; waiter.start(); }
+    // Reads the session has made, to wait for two more after a step.
+    property int reads: 0
+    Connections { target: test.s.bootstrapLogReader; function onExited() { test.reads++; } }
+    function stepThenReads(script, n, next) {
+        shell.command = ["bash", "-c", script, "step", test.s.bootstrapLog];
+        shell.next = function () { afterReads(n, next); };
+        shell.running = true;
+    }
+    function afterReads(n, next) { readWaiter.until = reads + n; readWaiter.next = next; readWaiter.start(); }
+    Timer {
+        id: readWaiter
+        property int until
+        property var next
+        interval: 50; repeat: true
+        onTriggered: {
+            if (test.reads < until) return;
+            stop();
+            try { next(); } catch (e) { test.fail(e); }
+        }
+    }
     Timer {
         id: waiter
         property var want
@@ -171,12 +191,17 @@ ShellRoot {
             step('{ head -c 1048576 /dev/zero | tr "\\0" x; printf "\\nthe last line\\n"; } > "$1"',
                 e => e === "the last line", "a 1 MiB log: its last line", function () {
                 assertThat(s.bootstrapLogReader.stdout.data.byteLength <= 4096, "a 1 MiB log: read at most 4 KiB");
-                step('rm -f "$1" && ln -s /dev/zero "$1"',
-                    e => e.startsWith("Refusing the bootstrap log") && e.includes("it is a symlink"), "a symlink to /dev/zero: refused", function () {
-                    step('rm -f "$1" && mkfifo "$1"',
-                        e => e.startsWith("Refusing the bootstrap log") && e.includes("it is not a regular file"), "a FIFO: refused", function () {
-                        console.log("BOOTSTRAP_LOG_PASSED log");
-                        Qt.quit();
+                // The log gone for a moment (a retry recreating it): the
+                // text stays through two reads.
+                stepThenReads('rm -f "$1"', 2, function () {
+                    assertThat(s.startupError === "the last line", "an empty read keeps the last text (popover says: " + s.startupError + ")");
+                    step('ln -s /dev/zero "$1"',
+                        e => e.startsWith("Refusing the bootstrap log") && e.includes("it is a symlink"), "a symlink to /dev/zero: refused", function () {
+                        step('rm -f "$1" && mkfifo "$1"',
+                            e => e.startsWith("Refusing the bootstrap log") && e.includes("it is not a regular file"), "a FIFO: refused", function () {
+                            console.log("BOOTSTRAP_LOG_PASSED log");
+                            Qt.quit();
+                        });
                     });
                 });
             });

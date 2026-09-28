@@ -59,6 +59,14 @@ check_dest() {
 recorded() {
   if [[ -f $record && ! -L $record && -O $record ]]; then head -c 64 -- "$record"; fi
 }
+check_ours() { # dest is missing, or a regular file this installer put there
+  local have
+  check_dest
+  [[ -e $dest ]] || return 0
+  have=$(hash_of "$dest")
+  [[ $have == "$sha256" || $have == "$(recorded)" ]] \
+    || refuse "it is not the engine this installer put there (no matching sha256 in $record)"
+}
 # Temp and rename in the same directory: a symlink at $record is replaced,
 # never written through, and -T refuses a directory there.
 keep_record() {
@@ -91,16 +99,11 @@ fi
 mkdir -p -- "$dest_dir"
 exec {lock}< "$dest_dir"
 flock -n "$lock" || die "The engine download is already running; the engine starts once it is done."
+check_ours
 # The download that held the lock may have just installed the engine.
-check_dest
 if current; then
   keep_record 2>/dev/null || true
   finish "$@"
-fi
-if [[ -e $dest ]]; then
-  have=$(hash_of "$dest")
-  [[ $have == "$sha256" || $have == "$(recorded)" ]] \
-    || refuse "it is not the engine this installer put there (no matching sha256 in $record)"
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/omastorm-engine.XXXXXX")
@@ -137,9 +140,11 @@ if [[ $got != "$sha256" ]]; then
     "The committed pin is the source of truth; a substituted asset is refused."
 fi
 
-# Stage beside dest so the replacement is one rename: a half-written dest is
-# never executable as the engine, and a symlink planted at dest after the
-# check is replaced, not followed.
+# Checked again, since the download can take minutes. Staged beside dest so
+# the replacement is one rename: a half-written dest is never executable as
+# the engine, and a symlink planted at dest after the check is replaced, not
+# followed.
+check_ours
 stage=$(mktemp -- "$dest_dir/.omastorm-engine.XXXXXX")
 cp -- "$tmp" "$stage"
 chmod 755 -- "$stage"

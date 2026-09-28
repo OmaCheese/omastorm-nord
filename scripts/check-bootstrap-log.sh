@@ -114,10 +114,10 @@ import Quickshell.Io
 ShellRoot {
     id: test
     property var s: PluginSession
-    property var steps: []
-    function assertThat(ok, why) { if (!ok) { console.error("FAIL: " + why); Qt.quit(); } }
+    function assertThat(ok, why) { if (!ok) throw new Error(why); }
+    function fail(e) { console.error("FAIL: " + e.message); Qt.quit(); }
     // Run a shell step on the log, then wait for the popover's text.
-    Process { id: shell; property var next; onExited: next() }
+    Process { id: shell; property var next; onExited: { try { next(); } catch (e) { test.fail(e); } } }
     function step(script, want, why, next) {
         shell.command = ["bash", "-c", script, "step", test.s.bootstrapLog];
         shell.next = function () { waitFor(want, why, next); };
@@ -135,8 +135,10 @@ ShellRoot {
             ticks++;
             if (!want(test.s.startupError) && ticks < 160) return;
             stop();
-            test.assertThat(want(test.s.startupError), why + " (popover says: " + test.s.startupError + ")");
-            next();
+            try {
+                test.assertThat(want(test.s.startupError), why + " (popover says: " + test.s.startupError + ")");
+                next();
+            } catch (e) { test.fail(e); }
         }
     }
     Component.onCompleted: {

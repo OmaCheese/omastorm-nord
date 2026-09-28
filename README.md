@@ -353,7 +353,7 @@ Both are recorded in `engine.log`.
 
 If the popover says the engine could not be installed, the download or its
 sha256 check failed; the reason is in `bootstrap.log` in the same directory,
-and opening the popover again retries. A download is given up after 10
+and opening the popover again retries. A download is given up after about 10
 minutes or past 64 MiB (the engine is about 15 MB), and only one runs at a
 time. The installer records the sha256 of the engine it installs in
 `omastorm-engine.sha256` beside it and replaces only the file it installed: a

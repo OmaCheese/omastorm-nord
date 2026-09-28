@@ -14,9 +14,11 @@ source scripts/engine-pin.sh
 # published asset is about 15 MB (x86_64); 64 MiB leaves room for growth.
 # curl 8.4 and later stop a reply that has no Content-Length at the cap as
 # well (test-engine-pin.sh proves it); the size test after the download
-# refuses what an older curl let through. No attempt runs longer than
-# max_time and no retry starts after it; 600 s still fits the engine at
-# 25 kB/s. OMASTORM_ENGINE_MAX_TIME shortens it for checks.
+# refuses what an older curl let through. --max-time bounds each attempt
+# and --retry-max-time stops retries after max_time, so a download ends
+# after about max_time (a retry started just before it can run one more
+# max_time); 600 s still fits the engine at 25 kB/s.
+# OMASTORM_ENGINE_MAX_TIME shortens it for checks.
 max_bytes=$((64 * 1024 * 1024))
 connect_timeout=15
 max_time=${OMASTORM_ENGINE_MAX_TIME:-600}
@@ -135,7 +137,7 @@ else
     # The popover shows the log's last line: the diagnosis goes last.
     die "Maintainers: publish GitHub Release $tag on $repo with that asset matching $pin_file, and make the repository public so the asset is anonymous." \
       "From a checkout with Rust: bash scripts/cargo.sh build --locked && bash run.sh" \
-      "Could not download $asset from $url (curl exit $rc; a download is given up after $max_time s). Check the network; the plugin tries again every 20 s."
+      "Could not download $asset from $url (curl exit $rc; a download is given up after about $max_time s). Check the network; the plugin tries again every 20 s."
   fi
 fi
 (( $(size_of "$stage") <= max_bytes )) || die "Refusing $asset: it is larger than the $((max_bytes >> 20)) MiB cap for the engine."

@@ -247,7 +247,7 @@ if rg -q 'ReferenceError|TypeError|Binding loop|Unable to assign' "$scratch/log"
 # under the cap the place is found; one byte over it, or megabytes over,
 # chunked with no Content-Length, the lookup fails. Then the stub, a curl
 # that ignores --max-filesize: head and the length check refuse it too.
-python3 scripts/fake-download.py "$scratch/port" & server=$!
+python3 scripts/fake-download.py "$scratch/port" "$scratch/ok.json" & server=$!
 for _ in {1..50}; do [[ -s $scratch/port ]] && break; sleep .1; done
 base=http://127.0.0.1:$(cat "$scratch/port")
 printf '%s%*s' "$fixture" 100000 '' > "$scratch/padded.json"
@@ -260,8 +260,8 @@ cap_case() { # expect, url, PATH
   if rg -q 'ReferenceError|TypeError|Binding loop|Unable to assign' "$scratch/cap.log"; then cat "$scratch/cap.log"; exit 1; fi
   rm -f "$scratch/cap-state.json"
 }
-cap_case found "$base/padded/60000?file=$scratch/ok.json" "$PATH"
-cap_case failed "$base/padded/65537?file=$scratch/ok.json" "$PATH"
-cap_case failed "$base/padded/$((10 << 20))?file=$scratch/ok.json" "$PATH"
+cap_case found "$base/padded/60000/ok.json" "$PATH"
+cap_case failed "$base/padded/65537/ok.json" "$PATH"
+cap_case failed "$base/padded/$((10 << 20))/ok.json" "$PATH"
 cap_case failed "file://$scratch/padded.json" "$scratch/bin:$PATH"
 echo 'IP location reply cap PASS'

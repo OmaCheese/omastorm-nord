@@ -4,23 +4,26 @@
 (scripts/check-ip-location.sh) must give up on a stalled or oversized reply
 without the internet.
 
-  fake-download.py PORTFILE
+  fake-download.py PORTFILE [FIXTURE...]
 
 PORTFILE receives the port once the server listens on 127.0.0.1. Paths:
 
   /stall            headers never come; the connection is held for 60 s
   /chunked/N        N bytes of "x", chunked, no Content-Length
   /sized/N          N bytes of "x" with a Content-Length
-  /padded/N?file=F  file F, then spaces up to N bytes in total, chunked
-                    (valid JSON that only a cut at the cap would still parse)
+  /padded/N/NAME    the FIXTURE named NAME (its basename), then spaces up to
+                    N bytes in total, chunked (valid JSON that only a cut at
+                    the cap would still parse); only the files given at start
 """
 import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 CHUNK = 64 * 1024
+# The fixtures /padded serves, by basename, read once at start.
+FIXTURES = {}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -62,12 +65,11 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
-            if parts[0] == "padded":
-                with open(parse_qs(url.query)["file"][0], "rb") as f:
-                    body = f.read()
-                pad = max(0, size - len(body))
-                self.chunked([body] + [b" " * min(CHUNK, pad - i) for i in range(0, pad, CHUNK)])
-                return
+        if len(parts) == 3 and parts[0] == "padded" and parts[1].isdigit() and parts[2] in FIXTURES:
+            size, body = int(parts[1]), FIXTURES[parts[2]]
+            pad = max(0, size - len(body))
+            self.chunked([body] + [b" " * min(CHUNK, pad - i) for i in range(0, pad, CHUNK)])
+            return
         self.send_error(404)
 
 
@@ -81,6 +83,9 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
+    for path in sys.argv[2:]:
+        with open(path, "rb") as f:
+            FIXTURES[os.path.basename(path)] = f.read()
     server = Server(("127.0.0.1", 0), Handler)
     portfile = sys.argv[1]
     with open(portfile + ".tmp", "w") as f:

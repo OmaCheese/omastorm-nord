@@ -33,7 +33,7 @@ mkdir -p "$scratch/tmp"
 server=
 trap '[[ -z $server ]] || kill "$server" 2>/dev/null; rm -rf "$scratch"' EXIT
 export XDG_DATA_HOME="$scratch/data" XDG_CACHE_HOME="$scratch/cache" XDG_RUNTIME_DIR="$scratch/runtime"
-# The installer's private temp dir lands here, so a leftover one is seen.
+# Any temp file the installer made would land here, so a leftover is seen.
 export TMPDIR=$scratch/tmp
 mkdir -p "$XDG_RUNTIME_DIR"
 # The debug build keeps its symbols (about 200 MB, over the installer's
@@ -60,7 +60,7 @@ PIN
 export OMASTORM_ENGINE_PIN=$pin
 dest=$XDG_DATA_HOME/omastorm-nord/bin/omastorm-engine
 install_cmd=(bash scripts/fetch-engine.sh)
-leftover() { # the installer's temp dir or a staged engine, if one is left
+leftover() { # a temp file or a staged engine the installer left, if any
   { find "$TMPDIR" -maxdepth 1 -name 'omastorm-engine.*'; find "$(dirname "$dest")" -maxdepth 1 -name '.omastorm-engine.*'; } 2>/dev/null | head -n1
 }
 refused() { # label, expected message, command...: it fails, says why, leaves no temp
@@ -101,8 +101,8 @@ OMASTORM_ENGINE_URL="file://$debug" bash scripts/fetch-engine.sh
 # is given up at the deadline, and a reply over the 64 MiB cap is cut
 # whether or not it names its length; curl's own refusal (exit 63) names
 # the URL, so a chunked reply shows that curl cut it mid-stream. Nothing is
-# installed and the temp dir goes, on each failure and when the installer
-# is killed.
+# installed, and the download (a hidden file beside dest) goes on each
+# failure and when the installer is killed.
 rm -f "$dest" "$dest.sha256"
 python3 scripts/fake-download.py "$scratch/port" & server=$!
 for _ in {1..50}; do [[ -s $scratch/port ]] && break; sleep .1; done
@@ -119,11 +119,11 @@ refused 'A Content-Length over the cap' "from $base/sized/$big: it is larger tha
 truncate -s 65M "$scratch/huge"
 refused 'A local asset over the cap' 'larger than the 64 MiB cap' env OMASTORM_ENGINE_ASSET="$scratch/huge" "${install_cmd[@]}"
 # One installer at a time: while a stalled one holds the download, a second
-# refuses at once. Killed (a logout), the stalled one still removes its temp
-# dir; setsid gives it and its curl one process group to signal.
+# refuses at once. Killed (a logout), the stalled one still removes its
+# download; setsid gives it and its curl one process group to signal.
 setsid env OMASTORM_ENGINE_MAX_TIME=60 OMASTORM_ENGINE_URL="$base/stall" "${install_cmd[@]}" 2>/dev/null & stalled=$!
 for _ in {1..50}; do [[ -n $(leftover) ]] && break; sleep .1; done
-[[ -n $(leftover) ]] || fail 'The stalled installer made no temp dir'
+[[ -n $(leftover) ]] || fail 'The stalled installer staged no download'
 started=$SECONDS
 if OMASTORM_ENGINE_ASSET="$debug" "${install_cmd[@]}" 2> "$scratch/lock.err"; then fail 'A second installer ran beside the first'; fi
 rg -qF 'already running' "$scratch/lock.err" || fail "Second installer error was unclear: $(cat "$scratch/lock.err")"
@@ -132,6 +132,16 @@ kill -TERM -- -"$stalled"
 wait "$stalled" || true
 [[ -z $(leftover) ]] || fail "A killed installer left $(leftover)"
 [[ ! -e $dest ]] || fail 'A bounded download wrote a dest'
+# SIGKILL runs no trap: the staged download stays until the next install,
+# which removes it under the lock.
+setsid env OMASTORM_ENGINE_MAX_TIME=60 OMASTORM_ENGINE_URL="$base/stall" "${install_cmd[@]}" 2>/dev/null & stalled=$!
+for _ in {1..50}; do [[ -n $(leftover) ]] && break; sleep .1; done
+kill -KILL -- -"$stalled"
+wait "$stalled" || true
+[[ -n $(leftover) ]] || fail 'SIGKILL left no staged download to clean up'
+OMASTORM_ENGINE_ASSET="$debug" "${install_cmd[@]}"
+[[ -z $(leftover) ]] || fail "The next install did not remove $(leftover)"
+rm -f "$dest" "$dest.sha256"
 
 # Provenance: a regular file at dest is replaced only while it has the hash
 # this installer recorded beside it, or the pin's. A symlink (even to the

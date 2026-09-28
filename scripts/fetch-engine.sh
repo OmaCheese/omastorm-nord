@@ -107,22 +107,26 @@ if current; then
   finish "$@"
 fi
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/omastorm-engine.XXXXXX")
-stage=
-trap 'rm -rf "$work"; [[ -z $stage ]] || rm -f -- "$stage"' EXIT
-tmp=$work/$asset
+# Downloaded straight into a hidden file beside dest, so the replacement is
+# one rename: a half-written dest is never executable as the engine, and a
+# symlink planted at dest after the check is replaced, not followed. The
+# EXIT trap removes the file on any failure; under the lock, one a killed
+# installer left is removed first.
+rm -f -- "$dest_dir"/.omastorm-engine.??????
+stage=$(mktemp -- "$dest_dir/.omastorm-engine.XXXXXX")
+trap '[[ -z $stage ]] || rm -f -- "$stage"' EXIT
 
 if [[ -n ${OMASTORM_ENGINE_ASSET:-} ]]; then
   [[ -f $OMASTORM_ENGINE_ASSET ]] || die "OMASTORM_ENGINE_ASSET is not a file: $OMASTORM_ENGINE_ASSET"
   (( $(size_of "$OMASTORM_ENGINE_ASSET") <= max_bytes )) \
     || die "OMASTORM_ENGINE_ASSET is larger than the $((max_bytes >> 20)) MiB cap for the engine: $OMASTORM_ENGINE_ASSET"
-  cp -- "$OMASTORM_ENGINE_ASSET" "$tmp"
+  cp -- "$OMASTORM_ENGINE_ASSET" "$stage"
 else
   url=${OMASTORM_ENGINE_URL:-https://github.com/$repo/releases/download/$tag/$asset}
   rc=0
   curl -fsSL --retry 2 --retry-max-time "$max_time" --connect-timeout "$connect_timeout" \
     --max-time "$max_time" --max-filesize "$max_bytes" \
-    -A "omastorm-nord/$tag (fork of https://omastorm.com)" -o "$tmp" -- "$url" || rc=$?
+    -A "omastorm-nord/$tag (fork of https://omastorm.com)" -o "$stage" -- "$url" || rc=$?
   if (( rc == 63 )); then
     die "Refusing $asset from $url: it is larger than the $((max_bytes >> 20)) MiB cap for the engine."
   elif (( rc != 0 )); then
@@ -132,22 +136,17 @@ else
       "Could not download $asset from $url (curl exit $rc; a download is given up after $max_time s). Check the network; the plugin tries again every 20 s."
   fi
 fi
-(( $(size_of "$tmp") <= max_bytes )) || die "Refusing $asset: it is larger than the $((max_bytes >> 20)) MiB cap for the engine."
+(( $(size_of "$stage") <= max_bytes )) || die "Refusing $asset: it is larger than the $((max_bytes >> 20)) MiB cap for the engine."
 
-got=$(hash_of "$tmp")
+got=$(hash_of "$stage")
 if [[ $got != "$sha256" ]]; then
   die "expected $sha256" \
     "got      $got" \
     "Engine sha256 mismatch for $asset: the committed pin is the source of truth, so a substituted asset is refused."
 fi
 
-# Checked again, since the download can take minutes. Staged beside dest so
-# the replacement is one rename: a half-written dest is never executable as
-# the engine, and a symlink planted at dest after the check is replaced, not
-# followed.
+# Checked again, since the download can take minutes.
 check_ours
-stage=$(mktemp -- "$dest_dir/.omastorm-engine.XXXXXX")
-cp -- "$tmp" "$stage"
 chmod 755 -- "$stage"
 mv -fT -- "$stage" "$dest"
 stage=
